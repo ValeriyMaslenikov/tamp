@@ -18,6 +18,7 @@ import {
 import { showToast } from "../lib/toast";
 
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
+const TERMINAL = new Set<Phase>(["done", "failed", "cancelled"]);
 
 const PHASE_LABELS: Partial<Record<Phase, string>> = {
   pass1: "Pass 1",
@@ -27,6 +28,17 @@ const PHASE_LABELS: Partial<Record<Phase, string>> = {
 
 function isBusy(j: JobState | undefined): boolean {
   return !!j && (j.phase === "queued" || RUNNING.has(j.phase));
+}
+
+export function isTerminal(phase: Phase): boolean {
+  return TERMINAL.has(phase);
+}
+
+/** Identity of the visible video list; job statuses are painted separately. */
+export function videoListSignature(videos: RecentVideo[]): string {
+  return JSON.stringify(
+    videos.map((v) => [v.path, v.sizeBytes, v.createdMs, v.thumbPath]),
+  );
 }
 
 export interface ListView {
@@ -46,6 +58,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
   const dismissed = new Set<string>(); // job ids no longer shown on rows
   const dismissTimers = new Map<string, number>();
   const rowByPath = new Map<string, HTMLElement>();
+  const rowCleanups = new Map<string, () => void>(); // path -> hover/preview teardown
+  const postErrorToasted = new Set<string>(); // job ids whose postError was toasted
+  let lastSignature: string | null = null;
 
   function jobForPath(path: string): JobState | undefined {
     const id = jobByPath.get(path);
@@ -72,8 +87,16 @@ export function createListView(getSettings: () => Settings | null): ListView {
     dismissTimers.set(job.id, t);
   }
 
+  function noticePostError(state: JobState): void {
+    if (state.phase !== "done" || !state.postError) return;
+    if (postErrorToasted.has(state.id)) return;
+    postErrorToasted.add(state.id);
+    showToast(state.postError);
+  }
+
   function updateJob(state: JobState): void {
     jobs.set(state.id, state);
+    noticePostError(state);
     if (dismissed.has(state.id)) return;
     jobByPath.set(state.inputPath, state.id);
     if (state.phase === "done") scheduleDismiss(state, 6000);
@@ -83,7 +106,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   function applySnapshot(states: JobState[]): void {
     for (const s of states) {
+      const prev = jobs.get(s.id);
+      // Monotonic per job id: a stale snapshot must never roll a terminal
+      // state (done/failed/cancelled) back to a non-terminal one.
+      if (prev && isTerminal(prev.phase) && !isTerminal(s.phase)) continue;
       jobs.set(s.id, s);
+      noticePostError(s);
       if (dismissed.has(s.id)) continue;
       if (s.phase === "cancelled") {
         dismissed.add(s.id);
@@ -103,6 +131,17 @@ export function createListView(getSettings: () => Settings | null): ListView {
       const [vids, queue] = await Promise.all([listRecents(), queueState()]);
       videos = vids;
       applySnapshot(queue);
+      const sig = videoListSignature(vids);
+      if (sig === lastSignature) {
+        // Same videos: repaint statuses in place so an open hover preview
+        // (and its playing <video>) survives routine panel:shown refreshes.
+        for (const v of videos) {
+          const row = rowByPath.get(v.path);
+          if (row) renderStatusIn(row, v);
+        }
+        return;
+      }
+      lastSignature = sig;
       render();
     } catch (e) {
       showToast(String(e));
@@ -110,6 +149,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
   }
 
   function render(): void {
+    // Tear down old rows first: stop preview videos and pending hover timers
+    // before their elements are dropped, so decoders don't leak.
+    for (const cleanup of rowCleanups.values()) cleanup();
+    rowCleanups.clear();
     rowByPath.clear();
     el.innerHTML = "";
     if (videos.length === 0) {
@@ -139,6 +182,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
           inputBytes: v.sizeBytes,
           outputBytes: null,
           error: null,
+          postError: null,
         });
       }
     } catch (e) {
@@ -288,6 +332,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
       window.clearTimeout(hoverTimer);
       collapseRow(row, expand);
     });
+    rowCleanups.set(v.path, () => {
+      window.clearTimeout(hoverTimer);
+      collapseRow(row, expand);
+    });
 
     renderStatusIn(row, v);
     return row;
@@ -341,7 +389,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
         if (preset && outB > preset.targetMb * 1_000_000) {
           html += `<span class="above-target">above target</span>`;
         }
+        if (j.postError) html += `<span class="post-warn"></span>`;
         status.innerHTML = html;
+        if (j.postError) {
+          const warnEl = status.querySelector<HTMLElement>(".post-warn");
+          if (warnEl) warnEl.textContent = j.postError;
+        }
         bar.style.width = "0%";
         break;
       }

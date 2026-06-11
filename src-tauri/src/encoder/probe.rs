@@ -17,7 +17,7 @@ pub async fn probe(path: &Path) -> Result<ProbeInfo, String> {
             "-show_entries",
             "format=duration",
             "-show_entries",
-            "stream=codec_type,width,height,avg_frame_rate",
+            "stream=codec_type,width,height,avg_frame_rate,duration",
             "-of",
             "json",
         ])
@@ -37,17 +37,22 @@ pub async fn probe(path: &Path) -> Result<ProbeInfo, String> {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("invalid ffprobe output: {e}"))?;
 
-    let duration_secs = json["format"]["duration"]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .ok_or_else(|| "ffprobe reported no duration".to_string())?;
-
     let empty = Vec::new();
     let streams = json["streams"].as_array().unwrap_or(&empty);
     let video = streams
         .iter()
         .find(|s| s["codec_type"] == "video")
         .ok_or_else(|| "no video stream found".to_string())?;
+
+    // MediaRecorder WebMs often carry no container duration; fall back to the
+    // video stream's duration, then to scanning packet timestamps.
+    let duration_secs =
+        match parse_secs(&json["format"]["duration"]).or_else(|| parse_secs(&video["duration"])) {
+            Some(d) => d,
+            None => duration_from_packets(path)
+                .await
+                .ok_or_else(|| "ffprobe reported no duration".to_string())?,
+        };
 
     Ok(ProbeInfo {
         duration_secs,
@@ -56,6 +61,41 @@ pub async fn probe(path: &Path) -> Result<ProbeInfo, String> {
         fps: parse_frame_rate(video["avg_frame_rate"].as_str().unwrap_or("")),
         has_audio: streams.iter().any(|s| s["codec_type"] == "audio"),
     })
+}
+
+fn parse_secs(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|d| d.is_finite() && *d > 0.0)
+}
+
+/// Last-resort duration: demux the video stream and take the largest packet
+/// timestamp. Demux-only (no decode), so it stays fast even for big files.
+async fn duration_from_packets(path: &Path) -> Option<f64> {
+    let output = tokio::process::Command::new(super::bin::ffprobe_path())
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts_time,dts_time",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .flat_map(|line| line.split(',').filter_map(|v| v.parse::<f64>().ok()))
+        .reduce(f64::max)
+        .filter(|d| d.is_finite() && *d > 0.0)
 }
 
 fn parse_frame_rate(rate: &str) -> f64 {

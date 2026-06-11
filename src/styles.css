@@ -255,6 +255,7 @@ textarea {
 .row-status {
   font-size: 11px;
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
 }
@@ -286,6 +287,15 @@ textarea {
 .above-target {
   color: var(--amber);
   font-weight: 500;
+}
+
+.post-warn {
+  flex-basis: 100%;
+  color: var(--amber);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-error {
@@ -351,6 +361,9 @@ textarea {
 
 .row-expand video {
   width: 100%;
+  /* Tall portrait captures must not push the preset chips below the fold. */
+  max-height: 240px;
+  object-fit: contain;
   border-radius: 8px;
   background: #000;
   display: block;

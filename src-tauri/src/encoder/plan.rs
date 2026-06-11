@@ -36,19 +36,25 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
     let mut filters: Vec<String> = Vec::new();
     if preset.max_width.is_some_and(|w| info.width > w) {
         let w = preset.max_width.unwrap();
-        filters.push(format!("scale='min(iw,{w})':-2"));
+        // trunc-to-even so an odd max_width (or odd source) can't produce a
+        // width libx264 rejects in 4:2:0.
+        filters.push(format!("scale='trunc(min(iw,{w})/2)*2':-2"));
     } else if preset.scale_percent.is_some_and(|p| p != 100) {
         let p = preset.scale_percent.unwrap();
         filters.push(format!("scale=trunc(iw*{p}/100/2)*2:-2"));
+    } else {
+        // 4:2:2/4:4:4 sources can legally have odd dimensions, which libx264
+        // rejects once converted to 4:2:0.
+        filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string());
     }
     if preset.max_fps.is_some_and(|f| info.fps > f as f64) {
         filters.push(format!("fps={}", preset.max_fps.unwrap()));
     }
-    let vf = if filters.is_empty() {
-        None
-    } else {
-        Some(filters.join(","))
-    };
+    // Always force 8-bit 4:2:0 output: screen captures are often 4:4:4 or
+    // 10-bit, which would otherwise yield a High profile QuickTime/Discord
+    // can't play. Must stay the last filter in the chain.
+    filters.push("format=yuv420p".to_string());
+    let vf = Some(filters.join(","));
 
     Ok(EncodePlan {
         video_kbit,
@@ -112,7 +118,10 @@ mod tests {
         let plan = build_plan(&info(), &preset(10.0), Path::new(INPUT)).unwrap();
         assert_eq!(plan.video_kbit, 1266);
         assert_eq!(plan.audio_kbit, 0);
-        assert_eq!(plan.vf, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
         assert_eq!(
             plan.output,
             PathBuf::from("/nonexistent-tamp-test/clip (tamped).mp4")
@@ -169,14 +178,31 @@ mod tests {
         let mut p = preset(10.0);
         p.max_width = Some(1280);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf.as_deref(), Some("scale='min(iw,1280)':-2"));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale='trunc(min(iw,1280)/2)*2':-2,format=yuv420p")
+        );
 
         let narrow = ProbeInfo {
             width: 1280,
             ..info()
         };
         let plan = build_plan(&narrow, &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
+    }
+
+    #[test]
+    fn odd_max_width_yields_even_scale_expression() {
+        let mut p = preset(10.0);
+        p.max_width = Some(1281);
+        let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale='trunc(min(iw,1281)/2)*2':-2,format=yuv420p")
+        );
     }
 
     #[test]
@@ -184,7 +210,10 @@ mod tests {
         let mut p = preset(10.0);
         p.scale_percent = Some(50);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf.as_deref(), Some("scale=trunc(iw*50/100/2)*2:-2"));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw*50/100/2)*2:-2,format=yuv420p")
+        );
     }
 
     #[test]
@@ -192,7 +221,10 @@ mod tests {
         let mut p = preset(10.0);
         p.scale_percent = Some(100);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
     }
 
     #[test]
@@ -201,7 +233,10 @@ mod tests {
         p.max_width = Some(4000); // wider than the video — no max_width scaling
         p.scale_percent = Some(50);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf.as_deref(), Some("scale=trunc(iw*50/100/2)*2:-2"));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw*50/100/2)*2:-2,format=yuv420p")
+        );
     }
 
     #[test]
@@ -209,14 +244,20 @@ mod tests {
         let mut p = preset(10.0);
         p.max_fps = Some(30);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf.as_deref(), Some("fps=30"));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p")
+        );
 
         let slow = ProbeInfo {
             fps: 24.0,
             ..info()
         };
         let plan = build_plan(&slow, &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
     }
 
     #[test]
@@ -225,7 +266,24 @@ mod tests {
         p.max_width = Some(1280);
         p.max_fps = Some(30);
         let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
-        assert_eq!(plan.vf.as_deref(), Some("scale='min(iw,1280)':-2,fps=30"));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale='trunc(min(iw,1280)/2)*2':-2,fps=30,format=yuv420p")
+        );
+    }
+
+    #[test]
+    fn vf_always_present_and_ends_with_yuv420p_format() {
+        let mut scaled = preset(10.0);
+        scaled.max_width = Some(1280);
+        scaled.max_fps = Some(30);
+        let mut percent = preset(10.0);
+        percent.scale_percent = Some(50);
+        for p in [preset(10.0), scaled, percent] {
+            let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
+            let vf = plan.vf.expect("vf must always be present");
+            assert!(vf.ends_with("format=yuv420p"), "{vf}");
+        }
     }
 
     #[test]

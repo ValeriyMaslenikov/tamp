@@ -4,8 +4,25 @@ use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::{NSPasteboard, NSPasteboardWriting};
+use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSWindow, NSWindowCollectionBehavior};
 use objc2_foundation::{NSArray, NSString, NSURL};
+
+/// Lets the panel join the Space of a full-screen app; without
+/// `FullScreenAuxiliary` macOS refuses to show it over full-screen windows.
+/// Must run on the main thread (Tauri's setup hook does).
+pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let ns_window = window
+        .ns_window()
+        .map_err(|e| format!("failed to get NSWindow handle: {e}"))?
+        as *mut NSWindow;
+    // SAFETY: ns_window() returns a live NSWindow owned by this window, and
+    // we only touch it from the main thread.
+    let ns_window = unsafe { &*ns_window };
+    ns_window.setCollectionBehavior(
+        ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    Ok(())
+}
 
 pub fn copy_file_to_clipboard(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
     let path_str = path

@@ -27,8 +27,10 @@ fn make_test_clip(dir: &Path) -> PathBuf {
             "libx264",
             "-preset",
             "ultrafast",
+            // 4:4:4 like real screen captures — the pipeline must force the
+            // output back to 4:2:0 or QuickTime/Discord can't play it.
             "-pix_fmt",
-            "yuv420p",
+            "yuv444p",
             "-c:a",
             "aac",
             "-b:a",
@@ -44,6 +46,49 @@ fn make_test_clip(dir: &Path) -> PathBuf {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+#[tokio::test]
+async fn probe_falls_back_to_packet_timestamps_for_durationless_webm() {
+    // MediaRecorder-style WebM: mux to a pipe so the muxer can't seek back to
+    // write a container duration — probe must fall back to packet timestamps.
+    let out = Command::new(bin::ffmpeg_path())
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30:duration=2",
+            "-c:v",
+            "libvpx",
+            "-deadline",
+            "realtime",
+            "-f",
+            "webm",
+            "-",
+        ])
+        .output()
+        .expect("failed to run bundled ffmpeg — did scripts/fetch-ffmpeg.sh run?");
+    assert!(out.status.success(), "webm generation failed");
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("rec.webm");
+    std::fs::write(&input, &out.stdout).unwrap();
+
+    let info = probe(&input)
+        .await
+        .expect("probe must handle WebMs without container duration");
+    assert!(
+        (1.5..2.5).contains(&info.duration_secs),
+        "unexpected duration {}",
+        info.duration_secs
+    );
+    assert_eq!(info.width, 320);
+    assert_eq!(info.height, 180);
+    assert!(!info.has_audio);
 }
 
 #[tokio::test]
@@ -77,7 +122,10 @@ async fn two_pass_encode_hits_target_size() {
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     assert_eq!(plan.audio_kbit, 96);
-    assert_eq!(plan.vf, None);
+    assert_eq!(
+        plan.vf.as_deref(),
+        Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+    );
     assert!(plan.video_kbit >= 100);
     assert_eq!(plan.output, dir.path().join("clip (tamped).mp4"));
 
@@ -132,5 +180,27 @@ async fn two_pass_encode_hits_target_size() {
     assert!(
         moov < mdat,
         "moov ({moov}) should precede mdat ({mdat}) with +faststart"
+    );
+
+    // The 4:4:4 source must come out as 4:2:0 for player compatibility.
+    let out = Command::new(bin::ffprobe_path())
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=pix_fmt",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(&plan.output)
+        .output()
+        .expect("failed to run bundled ffprobe");
+    assert!(out.status.success(), "ffprobe on output failed");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "yuv420p",
+        "output must be 4:2:0"
     );
 }

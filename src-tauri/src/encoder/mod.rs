@@ -31,6 +31,9 @@ pub struct JobState {
     pub input_bytes: u64,
     pub output_bytes: Option<u64>,
     pub error: Option<String>,
+    /// Set when a post-action (clipboard copy / trash original) fails after a
+    /// successful encode; `phase` stays `Done`.
+    pub post_error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize)]
@@ -134,17 +137,20 @@ impl Encoder {
             input_bytes: meta.len(),
             output_bytes: None,
             error: None,
+            post_error: None,
         };
         {
             let mut jobs = self.inner.jobs.lock().unwrap();
-            if jobs.len() >= MAX_TRACKED_JOBS {
+            // Evict terminal jobs only: dropping a running/queued job would
+            // silence its terminal event, skip partial-output cleanup, and
+            // orphan its post-actions. If every tracked job is still active,
+            // let the list grow temporarily — later enqueues trim it back.
+            while jobs.len() >= MAX_TRACKED_JOBS {
                 match jobs.iter().position(|j| j.phase.is_terminal()) {
                     Some(pos) => {
                         jobs.remove(pos);
                     }
-                    None => {
-                        jobs.remove(0);
-                    }
+                    None => break,
                 }
             }
             jobs.push(state.clone());
@@ -346,22 +352,32 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
             .len();
 
         if actual as f64 <= target_bytes || attempt == 1 {
-            if let Some(state) = update_job(inner, &job.id, |j| {
-                j.phase = Phase::Done;
-                j.progress = 1.0;
-                j.output_bytes = Some(actual);
-            }) {
-                emit_state(inner, &state, true);
-            }
+            // Run post-actions first so their failures ride along on the
+            // final Done state instead of vanishing into stderr.
+            let mut post_failures: Vec<String> = Vec::new();
             if job.post.copy_to_clipboard {
                 if let Err(e) = crate::platform::copy_file_to_clipboard(&inner.app, &plan.output) {
                     eprintln!("tamp: copy to clipboard failed: {e}");
+                    post_failures.push(format!(
+                        "Couldn't copy to clipboard (the file is at {}): {e}",
+                        plan.output.to_string_lossy()
+                    ));
                 }
             }
             if job.post.trash_original {
                 if let Err(e) = trash::delete(&job.input) {
                     eprintln!("tamp: failed to move original to Trash: {e}");
+                    post_failures.push(format!("Couldn't move the original to Trash: {e}"));
                 }
+            }
+            let post_error = (!post_failures.is_empty()).then(|| post_failures.join("; "));
+            if let Some(state) = update_job(inner, &job.id, |j| {
+                j.phase = Phase::Done;
+                j.progress = 1.0;
+                j.output_bytes = Some(actual);
+                j.post_error = post_error;
+            }) {
+                emit_state(inner, &state, true);
             }
             return Ok(());
         }

@@ -1,4 +1,5 @@
 import {
+  getSettings,
   pickFolder,
   saveSettings,
   type Preset,
@@ -24,6 +25,7 @@ export function createPreferencesView(opts: {
   let lastJson = "";
   let editorOpen = false;
   let editingId: string | null = null; // null while editorOpen => creating a new preset
+  let editorEl: HTMLElement | null = null; // live editor node, reused across repaints
 
   function render(settings: Settings): void {
     const json = JSON.stringify(settings);
@@ -33,47 +35,75 @@ export function createPreferencesView(opts: {
     }
     current = settings;
     lastJson = json;
-    editorOpen = false;
-    editingId = null;
+    // The editor only closes from its own Save/Cancel; repaint around it.
     paint();
   }
 
-  async function persist(mutate: (draft: Settings) => void): Promise<void> {
-    if (!current) return;
+  function closeEditor(): void {
+    editorOpen = false;
+    editingId = null;
+    editorEl = null;
+  }
+
+  function openEditor(id: string | null): void {
+    editorOpen = true;
+    editingId = id;
+    editorEl = null;
+    paint();
+  }
+
+  function adopt(canonical: Settings): void {
+    current = canonical;
+    lastJson = JSON.stringify(canonical);
+    paint();
+    opts.onSettings(canonical);
+  }
+
+  async function persist(mutate: (draft: Settings) => void): Promise<boolean> {
+    if (!current) return false;
     const draft: Settings = JSON.parse(JSON.stringify(current));
     mutate(draft);
     try {
-      const canonical = await saveSettings(draft);
-      editorOpen = false;
-      editingId = null;
-      current = canonical;
-      lastJson = JSON.stringify(canonical);
-      paint();
-      opts.onSettings(canonical);
+      adopt(await saveSettings(draft));
+      return true;
     } catch (e) {
       showToast(String(e));
-      paint(); // snap controls back to the persisted state
+      // Part of the change may have been persisted (e.g. everything except
+      // launch-at-login); re-fetch and repaint from the canonical state.
+      try {
+        adopt(await getSettings());
+      } catch {
+        paint(); // backend unreachable; snap controls back to last known state
+      }
+      return false;
     }
+  }
+
+  function editor(p: Preset | null): HTMLElement {
+    if (!editorEl) editorEl = editorCard(p);
+    return editorEl; // detached nodes keep input state across repaints
   }
 
   function paint(): void {
     el.innerHTML = "";
     if (!current) return;
     el.append(sectionLabel("Presets"));
+    let editorPlaced = false;
     for (const p of current.presets) {
-      el.append(
-        editorOpen && editingId === p.id ? editorCard(p) : presetCard(p),
-      );
+      if (editorOpen && editingId === p.id) {
+        el.append(editor(p));
+        editorPlaced = true;
+      } else {
+        el.append(presetCard(p));
+      }
     }
-    if (editorOpen && editingId === null) {
-      el.append(editorCard(null));
+    if (editorOpen && !editorPlaced) {
+      // New preset, or the edited preset vanished in a remote update;
+      // either way keep whatever the user has typed.
+      el.append(editor(null));
     } else {
       const add = button("+ New preset", "btn-primary btn-block");
-      add.addEventListener("click", () => {
-        editorOpen = true;
-        editingId = null;
-        paint();
-      });
+      add.addEventListener("click", () => openEditor(null));
       el.append(add);
     }
     el.append(sectionLabel("Behavior"), behaviorCard());
@@ -140,11 +170,7 @@ export function createPreferencesView(opts: {
     radioLabel.append(radio, radioText);
 
     const edit = button("Edit", "btn-ghost");
-    edit.addEventListener("click", () => {
-      editorOpen = true;
-      editingId = p.id;
-      paint();
-    });
+    edit.addEventListener("click", () => openEditor(p.id));
 
     const del = button("Delete", "btn-ghost btn-danger");
     del.disabled = s.presets.length <= 1;
@@ -239,8 +265,7 @@ export function createPreferencesView(opts: {
     const save = button("Save", "btn-primary");
     const cancel = button("Cancel", "btn-ghost");
     cancel.addEventListener("click", () => {
-      editorOpen = false;
-      editingId = null;
+      closeEditor();
       paint();
     });
     save.addEventListener("click", () => {
@@ -274,6 +299,11 @@ export function createPreferencesView(opts: {
         const idx = d.presets.findIndex((x) => x.id === preset.id);
         if (idx >= 0) d.presets[idx] = preset;
         else d.presets.push(preset);
+      }).then((ok) => {
+        if (ok) {
+          closeEditor();
+          paint();
+        }
       });
     });
     actions.append(save, cancel);

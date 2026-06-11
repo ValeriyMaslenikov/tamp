@@ -50,6 +50,8 @@ export interface JobState {
   inputBytes: number;
   outputBytes: number | null;
   error: string | null;
+  /** Set when a post-action (clipboard copy / trash original) failed after a successful encode. */
+  postError: string | null;
 }
 
 export const listRecents = (): Promise<RecentVideo[]> =>

@@ -6,34 +6,45 @@ pub mod settings;
 mod thumbs;
 mod tray;
 
-use tauri::{Emitter, Manager};
+use std::sync::atomic::AtomicBool;
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
+
+/// True while a native dialog (folder picker) is open; the release-only
+/// hide-on-blur handler must not close the panel when the dialog takes focus.
+pub struct DialogOpen(pub AtomicBool);
+
+/// Shows the panel when there is no tray-click rect to position against
+/// (app relaunch, Dock/Finder reopen).
+fn show_panel_fallback(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        // No tray click happened, so the positioner has no tray rect;
+        // top-right of the primary monitor approximates the tray area.
+        // (Current-monitor positioning can land on a sleeping display.)
+        if let Ok(Some(monitor)) = panel.primary_monitor() {
+            let scale = monitor.scale_factor();
+            let size = monitor.size().to_logical::<f64>(scale);
+            let pos = monitor.position().to_logical::<f64>(scale);
+            let width = panel
+                .outer_size()
+                .map(|s| s.width as f64 / scale)
+                .unwrap_or(420.0);
+            let _ = panel.set_position(tauri::LogicalPosition::new(
+                pos.x + size.width - width - 8.0,
+                pos.y + 32.0,
+            ));
+        }
+        let _ = panel.show();
+        let _ = panel.set_focus();
+        let _ = app.emit("panel:shown", ());
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(panel) = app.get_webview_window("panel") {
-                // No tray click happened, so the positioner has no tray rect;
-                // top-right of the primary monitor approximates the tray area.
-                // (Current-monitor positioning can land on a sleeping display.)
-                if let Ok(Some(monitor)) = panel.primary_monitor() {
-                    let scale = monitor.scale_factor();
-                    let size = monitor.size().to_logical::<f64>(scale);
-                    let pos = monitor.position().to_logical::<f64>(scale);
-                    let width = panel
-                        .outer_size()
-                        .map(|s| s.width as f64 / scale)
-                        .unwrap_or(420.0);
-                    let _ = panel.set_position(tauri::LogicalPosition::new(
-                        pos.x + size.width - width - 8.0,
-                        pos.y + 32.0,
-                    ));
-                }
-                let _ = panel.show();
-                let _ = panel.set_focus();
-                let _ = app.emit("panel:shown", ());
-            }
+            show_panel_fallback(app);
         }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -68,6 +79,7 @@ pub fn run() {
             }
 
             app.manage(settings::SettingsState(std::sync::Mutex::new(loaded)));
+            app.manage(DialogOpen(AtomicBool::new(false)));
             app.manage(encoder::Encoder::start(app.handle().clone()));
             tray::create(app.handle())?;
 
@@ -76,6 +88,9 @@ pub fn run() {
             if let Some(panel) = app.get_webview_window("panel") {
                 if let Err(e) = panel.set_visible_on_all_workspaces(true) {
                     eprintln!("tamp: failed to set panel visible on all workspaces: {e}");
+                }
+                if let Err(e) = platform::configure_panel(&panel) {
+                    eprintln!("tamp: failed to configure panel for full-screen overlay: {e}");
                 }
             }
             Ok(())
@@ -86,6 +101,15 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             if let tauri::WindowEvent::Focused(false) = _event {
                 if _window.label() == "panel" {
+                    // A native dialog (folder picker) taking focus must not
+                    // close the panel out from under it.
+                    let dialog_open = _window
+                        .app_handle()
+                        .try_state::<DialogOpen>()
+                        .is_some_and(|s| s.0.load(std::sync::atomic::Ordering::SeqCst));
+                    if dialog_open {
+                        return;
+                    }
                     if let Err(e) = _window.hide() {
                         eprintln!("tamp: failed to hide panel on focus loss: {e}");
                     }
@@ -116,6 +140,11 @@ pub fn run() {
             if let Some(encoder) = app_handle.try_state::<encoder::Encoder>() {
                 encoder.shutdown();
             }
+        }
+        // Relaunching from Finder/Dock should bring the panel back.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            show_panel_fallback(app_handle);
         }
         _ => {}
     });
