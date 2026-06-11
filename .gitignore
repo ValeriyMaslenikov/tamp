@@ -26,3 +26,6 @@ dist-ssr
 # FFmpeg sidecars (fetched by scripts/fetch-ffmpeg.sh)
 src-tauri/binaries/
 public/autotest.json
+
+# demo assets for README screenshots (staged locally by scripts, never shipped)
+public/mock/
