@@ -121,8 +121,11 @@ Requires [Bun](https://bun.sh) and [Rust](https://rustup.rs).
 
 tamp bundles a static [FFmpeg](https://ffmpeg.org) and runs a classic two-pass
 H.264 encode: video bitrate = (target size − audio budget) ÷ duration, minus a ~5%
-container margin, `aac 96k` audio, `+faststart` for instant remote playback. If the
-result still overshoots (rare), it re-encodes once with a corrected bitrate.
+container margin, `aac 96k` audio, `+faststart` for instant remote playback. When the
+target would starve that bitrate (think a 4K screen recording into 10 MB), tamp
+automatically caps the frame rate at 30 fps and steps the resolution down just enough
+to keep the result legible. If the result still overshoots (rare), it re-encodes once
+with a corrected bitrate.
 The panel is a [Tauri 2](https://tauri.app) webview; the engine, folder scanning, and
 clipboard integration are Rust.
 

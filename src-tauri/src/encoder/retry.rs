@@ -39,12 +39,22 @@ pub const MAX_RE_ENCODES: u8 = 3;
 pub const MIN_VIDEO_KBIT: u32 = 50;
 
 /// Per-re-encode safety shrink applied on top of the proportional
-/// `target/actual` correction. Each successive re-encode tightens further so
-/// a stubborn overshoot converges instead of oscillating around the target.
+/// `target/actual` correction for SOFTWARE overshoots. Each successive
+/// re-encode tightens further so a stubborn overshoot converges instead of
+/// oscillating around the target.
 const SHRINK: [f64; MAX_RE_ENCODES as usize] = [0.95, 0.90, 0.85];
 
 /// Decides what to do after the attempt numbered `attempt_index` (0 is the
 /// initial encode) produced `actual_bytes` at `video_kbit` on `encoder`.
+///
+/// A HARDWARE overshoot retries software at `video_kbit * 0.95`, NOT at an
+/// actual-derived correction: hardware only ever runs the planned bitrate,
+/// and VideoToolbox overshooting means its quality floor IGNORED the request
+/// (a 498 kbit request once came out at 89.7 MB) — which says nothing about
+/// how two-pass software will track the same rate, while the actual-derived
+/// correction (52 kbit there) is one libx264 refuses outright. Software
+/// overshoots are real, so they keep the proportional `target/actual`
+/// correction with the compounding shrink schedule.
 pub fn next_action(
     video_kbit: u32,
     actual_bytes: u64,
@@ -58,8 +68,13 @@ pub fn next_action(
     if attempt_index >= MAX_RE_ENCODES {
         return NextAction::GiveUp;
     }
-    let shrink = SHRINK[attempt_index as usize];
-    let corrected = (video_kbit as f64 * (target_bytes / actual_bytes as f64) * shrink) as u32;
+    let corrected = match encoder {
+        EncoderKind::Hardware => (video_kbit as f64 * 0.95) as u32,
+        EncoderKind::Software => {
+            let shrink = SHRINK[attempt_index as usize];
+            (video_kbit as f64 * (target_bytes / actual_bytes as f64) * shrink) as u32
+        }
+    };
     if corrected < MIN_VIDEO_KBIT {
         return NextAction::GiveUp;
     }
@@ -69,10 +84,7 @@ pub fn next_action(
         // requested bitrate far more accurately than VideoToolbox's
         // single-pass rate control, so a hardware job switches on its FIRST
         // overshoot and a software job simply tightens its bitrate.
-        encoder: match encoder {
-            EncoderKind::Hardware => EncoderKind::Software,
-            EncoderKind::Software => EncoderKind::Software,
-        },
+        encoder: EncoderKind::Software,
     }
 }
 
@@ -125,6 +137,41 @@ mod tests {
                 "attempt {attempt}"
             );
         }
+    }
+
+    #[test]
+    fn hardware_overshoot_retries_at_the_planned_bitrate_times_095() {
+        // The production bug: VideoToolbox ignored a 498 kbit request and
+        // emitted 89.7 MB against a 10 MB target. The actual-derived
+        // correction (498 * 10/89.7 * 0.95 = 52 kbit) is meaningless —
+        // hardware ignoring the rate says nothing about x264, and libx264
+        // refuses bitrates that low ("estimated minimum is 73 kbps"). The
+        // switch must hand software the PLANNED bitrate * 0.95 instead.
+        assert_eq!(
+            next_action(498, 89_700_000, 10_000_000.0, 0, EncoderKind::Hardware),
+            NextAction::Retry {
+                video_kbit: 473, // 498 * 0.95
+                encoder: EncoderKind::Software
+            }
+        );
+        // The 50 kbit floor still applies on the switch (50 * 0.95 = 47).
+        assert_eq!(
+            next_action(50, 89_700_000, 10_000_000.0, 0, EncoderKind::Hardware),
+            NextAction::GiveUp
+        );
+    }
+
+    #[test]
+    fn software_overshoot_keeps_the_actual_derived_correction() {
+        // The same numbers from SOFTWARE mean the encoder genuinely emitted
+        // 9x the target, so the proportional correction stands.
+        assert_eq!(
+            next_action(498, 89_700_000, 10_000_000.0, 0, EncoderKind::Software),
+            NextAction::Retry {
+                video_kbit: 52, // 498 * (10/89.7) * 0.95
+                encoder: EncoderKind::Software
+            }
+        );
     }
 
     #[test]

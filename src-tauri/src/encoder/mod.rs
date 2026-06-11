@@ -74,6 +74,21 @@ pub type ChildSlot = Arc<Mutex<Option<tokio::process::Child>>>;
 const MAX_TRACKED_JOBS: usize = 50;
 const EMIT_THROTTLE: Duration = Duration::from_millis(100);
 
+/// Bits per pixel per frame below which h264_videotoolbox's quality floor
+/// IGNORES the requested bitrate (a 498 kbit request once emitted 89.7 MB):
+/// such an attempt is wasted work that always overshoots, so the worker
+/// skips straight to two-pass software. Rare after the planner's
+/// auto-degradation — only a plan held at the 640px width floor can still
+/// sit below this.
+pub const HW_MIN_BPP: f64 = 0.013;
+
+/// Whether a plan's bitrate is dense enough for the VideoToolbox attempt to
+/// be worth running. Plans with unknown geometry carry `f64::INFINITY` and
+/// are never gated out on a guess.
+fn hardware_viable(plan: &plan::EncodePlan) -> bool {
+    plan.bpp >= HW_MIN_BPP
+}
+
 struct QueuedJob {
     id: String,
     input: PathBuf,
@@ -379,6 +394,21 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
 
     let info = probe::probe(&job.input).await?;
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
+    if plan.auto_fps.is_some() || plan.auto_width.is_some() {
+        let caps: Vec<String> = plan
+            .auto_fps
+            .map(|f| format!("{f} fps"))
+            .into_iter()
+            .chain(plan.auto_width.map(|w| format!("{w}px")))
+            .collect();
+        crate::log_info!(
+            "job {}: auto-capped to {} to fit {} MB ({:.4} bits/pixel/frame)",
+            job.id,
+            caps.join(" and "),
+            job.preset.target_mb,
+            plan.bpp
+        );
+    }
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
     if let Some(state) = update_job(inner, &job.id, |j| {
@@ -438,7 +468,15 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
         // encoder. The convergence loop handles oversize retries and the
         // hardware -> software switch, and fails rather than ever returning
         // an over-target output.
-        let use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
+        let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
+        if use_hardware && !hardware_viable(&plan) {
+            crate::log_info!(
+                "job {}: plan is {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor — it would ignore the rate and overshoot; starting on two-pass software directly",
+                job.id,
+                plan.bpp
+            );
+            use_hardware = false;
+        }
         run_video_convergence(
             &mut plan,
             &info,
@@ -1505,6 +1543,61 @@ mod tests {
     fn error_tail_trims_trailing_whitespace_per_line() {
         let stderr = "a   \nb\t\nc";
         assert_eq!(error_tail(stderr, 2), "b\nc");
+    }
+
+    fn mp4_preset(target_mb: f64) -> Preset {
+        Preset {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            target_mb,
+            max_fps: None,
+            max_width: None,
+            scale_percent: None,
+            strip_audio: false,
+            format: OutputFormat::Mp4,
+        }
+    }
+
+    #[test]
+    fn hardware_gated_out_when_the_plan_sits_under_its_bpp_floor() {
+        // A long square recording into 10 MB plans 126 kbit; even held at the
+        // planner's 640px width floor that is ~0.010 bits/pixel/frame — below
+        // VideoToolbox's quality floor, where it would ignore the rate — so
+        // the worker must start on two-pass software directly.
+        let info = probe::ProbeInfo {
+            duration_secs: 600.0,
+            width: 2160,
+            height: 2160,
+            fps: 30.0,
+            has_audio: false,
+        };
+        let plan = plan::build_plan(
+            &info,
+            &mp4_preset(10.0),
+            Path::new("/nonexistent-tamp-test/clip.mov"),
+        )
+        .unwrap();
+        assert!(plan.bpp < HW_MIN_BPP, "bpp {}", plan.bpp);
+        assert!(!hardware_viable(&plan));
+    }
+
+    #[test]
+    fn hardware_allowed_for_ordinary_plans() {
+        let info = probe::ProbeInfo {
+            duration_secs: 60.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            has_audio: false,
+        };
+        let plan = plan::build_plan(
+            &info,
+            &mp4_preset(10.0),
+            Path::new("/nonexistent-tamp-test/clip.mov"),
+        )
+        .unwrap();
+        assert!(plan.bpp >= HW_MIN_BPP, "bpp {}", plan.bpp);
+        assert!(hardware_viable(&plan));
     }
 
     #[test]

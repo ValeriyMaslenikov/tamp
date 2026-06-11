@@ -13,6 +13,43 @@ pub struct EncodePlan {
     pub format: OutputFormat,
     /// Palette-encode parameters; `Some` exactly when `format` is `Gif`.
     pub gif: Option<GifParams>,
+    /// Frame-rate cap the planner imposed ON ITS OWN (replacing a higher —
+    /// never a lower — user cap) because the target bitrate would starve the
+    /// configured frame rate. `None` when the user's settings already fit.
+    pub auto_fps: Option<u32>,
+    /// Width the planner downscaled to ON ITS OWN, always below the user's
+    /// own effective width (max_width / scale_percent stay ceilings) and
+    /// never below [`AUTO_MIN_WIDTH`]. `None` when no auto-downscale ran.
+    pub auto_width: Option<u32>,
+    /// Bits per pixel per frame of the planned encode AFTER auto-degradation
+    /// — the starvation metric the worker's VideoToolbox gate keys on.
+    /// `f64::INFINITY` for GIF plans (not bitrate-targeted) and when the
+    /// probe couldn't determine geometry/fps, so the gate never triggers on
+    /// a guess.
+    pub bpp: f64,
+}
+
+/// Bits per pixel per frame below which screen content stops being legible
+/// for any encoder (and far below which VideoToolbox's rate control ignores
+/// the requested bitrate entirely). When a plan lands under this floor the
+/// planner degrades it: frame rate capped to [`AUTO_FPS_CAP`] first, then
+/// the video is downscaled until the floor holds.
+pub const BPP_FLOOR: f64 = 0.02;
+
+/// The frame rate auto-degradation caps to before touching resolution.
+/// A user `max_fps` BELOW this is always respected and never raised.
+const AUTO_FPS_CAP: u32 = 30;
+
+/// Auto-downscale never goes below this width (must stay even): narrower
+/// screen recordings are unreadable, so past this point the plan proceeds
+/// under [`BPP_FLOOR`] and the convergence loop is the backstop.
+const AUTO_MIN_WIDTH: u32 = 640;
+
+/// Bits per pixel per frame for `video_kbit` over a `pixels`-sized frame at
+/// `fps` — the starvation metric behind the planner's auto-degradation and
+/// the worker's VideoToolbox gate.
+fn bits_per_pixel_frame(video_kbit: u32, pixels: f64, fps: f64) -> f64 {
+    f64::from(video_kbit) * 1000.0 / (pixels * fps)
 }
 
 /// GIF encodes are palette-based, not bitrate-targeted: size is steered by
@@ -45,6 +82,9 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
                 fps: preset.max_fps.unwrap_or(12),
                 max_width: preset.max_width.unwrap_or(480),
             }),
+            auto_fps: None,
+            auto_width: None,
+            bpp: f64::INFINITY,
         });
     }
 
@@ -74,8 +114,67 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         video_kbit = video_kbit.min(cap);
     }
 
+    // Automatic quality-floor degradation. A huge high-fps capture into a
+    // small target can plan a bitrate that starves ANY encoder (a 3456x2234
+    // @57fps recording into 10 MB plans ~0.001 bits/pixel/frame; VideoToolbox
+    // ignores rates that low and libx264 refuses them outright), so when the
+    // plan lands under BPP_FLOOR the frame rate is capped first, then the
+    // video is downscaled until the floor holds — never above the user's own
+    // fps/width caps, never below AUTO_MIN_WIDTH.
+    let mut fps_eff = match preset.max_fps {
+        Some(cap) => info.fps.min(f64::from(cap)),
+        None => info.fps,
+    };
+    // Effective dimensions after the user's own scale filter, mirroring the
+    // filter emission below. Heights are estimates — ffmpeg's `-2` rounding
+    // can differ by a pixel, which is noise at bits-per-pixel scale.
+    let (mut eff_w, mut eff_h) = if preset.max_width.is_some_and(|w| info.width > w) {
+        let w = f64::from(preset.max_width.unwrap() & !1);
+        (w, f64::from(info.height) * w / f64::from(info.width))
+    } else if preset.scale_percent.is_some_and(|p| p != 100) {
+        let w = f64::from((info.width * preset.scale_percent.unwrap() / 100) & !1);
+        (w, f64::from(info.height) * w / f64::from(info.width))
+    } else {
+        (f64::from(info.width & !1), f64::from(info.height & !1))
+    };
+    let mut auto_fps: Option<u32> = None;
+    let mut auto_width: Option<u32> = None;
+    // Unknown geometry/fps stays INFINITY: neither the degradation here nor
+    // the worker's hardware gate may ever trigger on a guess.
+    let mut bpp = f64::INFINITY;
+    if eff_w > 0.0 && eff_h > 0.0 && fps_eff > 0.0 {
+        bpp = bits_per_pixel_frame(video_kbit, eff_w * eff_h, fps_eff);
+        if bpp < BPP_FLOOR && fps_eff > f64::from(AUTO_FPS_CAP) {
+            // A user max_fps at or below the cap already left fps_eff there
+            // and stays untouched.
+            fps_eff = f64::from(AUTO_FPS_CAP);
+            auto_fps = Some(AUTO_FPS_CAP);
+            bpp = bits_per_pixel_frame(video_kbit, eff_w * eff_h, fps_eff);
+        }
+        if bpp < BPP_FLOOR {
+            let target_pixels = f64::from(video_kbit) * 1000.0 / (BPP_FLOOR * fps_eff);
+            let aspect = eff_w / eff_h;
+            let w = (((target_pixels * aspect).sqrt() as u32) & !1).max(AUTO_MIN_WIDTH);
+            // Never upscale: when the width floor asks for >= the current
+            // (user-capped) width there is nothing left to shrink — proceed
+            // under the floor and let the convergence loop be the backstop.
+            if f64::from(w) < eff_w {
+                eff_h *= f64::from(w) / eff_w;
+                eff_w = f64::from(w);
+                auto_width = Some(w);
+                bpp = bits_per_pixel_frame(video_kbit, eff_w * eff_h, fps_eff);
+            }
+        }
+    }
+
     let mut filters: Vec<String> = Vec::new();
-    if preset.max_width.is_some_and(|w| info.width > w) {
+    if let Some(w) = auto_width {
+        // The auto width REPLACES the user's scale filter: it is always
+        // narrower than the user's own effective width, so max_width /
+        // scale_percent remain ceilings, and min(iw,…) keeps the
+        // never-upscale guarantee.
+        filters.push(format!("scale='trunc(min(iw,{w})/2)*2':-2"));
+    } else if preset.max_width.is_some_and(|w| info.width > w) {
         let w = preset.max_width.unwrap();
         // trunc-to-even so an odd max_width (or odd source) can't produce a
         // width libx264 rejects in 4:2:0.
@@ -88,7 +187,9 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         // rejects once converted to 4:2:0.
         filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string());
     }
-    if preset.max_fps.is_some_and(|f| info.fps > f as f64) {
+    if let Some(fps) = auto_fps {
+        filters.push(format!("fps={fps}"));
+    } else if preset.max_fps.is_some_and(|f| info.fps > f as f64) {
         filters.push(format!("fps={}", preset.max_fps.unwrap()));
     }
     // Always force 8-bit 4:2:0 output: screen captures are often 4:4:4 or
@@ -104,6 +205,9 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         output,
         format: preset.format,
         gif: None,
+        auto_fps,
+        auto_width,
+        bpp,
     })
 }
 
@@ -347,9 +451,14 @@ mod tests {
         let plan = build_plan(&info(), &preset(10.0), Path::new(INPUT)).unwrap();
         assert_eq!(plan.video_kbit, 1266);
         assert_eq!(plan.audio_kbit, 0);
+        // 1266 kbit over 1920x1080 at the 60 fps source is ~0.010 bpp — under
+        // the quality floor — so the planner auto-caps to 30 fps (which alone
+        // clears the floor: ~0.020 bpp, no downscale needed).
+        assert_eq!(plan.auto_fps, Some(30));
+        assert_eq!(plan.auto_width, None);
         assert_eq!(
             plan.vf.as_deref(),
-            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=30,format=yuv420p")
         );
         assert_eq!(
             plan.output,
@@ -412,8 +521,10 @@ mod tests {
             Some("scale='trunc(min(iw,1280)/2)*2':-2,format=yuv420p")
         );
 
+        // 30 fps so the bpp floor stays out of this test's way.
         let narrow = ProbeInfo {
             width: 1280,
+            fps: 30.0,
             ..info()
         };
         let plan = build_plan(&narrow, &p, Path::new(INPUT)).unwrap();
@@ -449,7 +560,16 @@ mod tests {
     fn scale_percent_100_is_noop() {
         let mut p = preset(10.0);
         p.scale_percent = Some(100);
-        let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
+        // 30 fps so the bpp floor stays out of this test's way.
+        let plan = build_plan(
+            &ProbeInfo {
+                fps: 30.0,
+                ..info()
+            },
+            &p,
+            Path::new(INPUT),
+        )
+        .unwrap();
         assert_eq!(
             plan.vf.as_deref(),
             Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
@@ -513,6 +633,137 @@ mod tests {
             let vf = plan.vf.expect("vf must always be present");
             assert!(vf.ends_with("format=yuv420p"), "{vf}");
         }
+    }
+
+    /// Sparse file of `bytes` length: build_plan only stats the size, so the
+    /// 491 MB production input costs no real disk.
+    fn sparse_input(dir: &Path, name: &str, bytes: u64) -> PathBuf {
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(bytes).unwrap();
+        path
+    }
+
+    /// The probe of the real-world starved recording: 3456x2234 @ ~57 fps,
+    /// 127.78 s, with audio.
+    fn starved_info() -> ProbeInfo {
+        ProbeInfo {
+            duration_secs: 127.78,
+            width: 3456,
+            height: 2234,
+            fps: 57.0,
+            has_audio: true,
+        }
+    }
+
+    #[test]
+    fn starved_production_case_auto_caps_fps_and_downscales() {
+        // The production bug: a 491 MB 3456x2234@57 screen recording into a
+        // 10 MB target plans 498 kbit — 0.0011 bits/pixel/frame, starvation
+        // for ANY encoder (VideoToolbox ignored the rate and emitted 89.7 MB;
+        // libx264 refused the post-overshoot correction outright). The
+        // planner must cap to 30 fps, then downscale until BPP_FLOOR holds —
+        // empirically ~1132px, which fit the same file in 9.71 MB.
+        let dir = tempfile::tempdir().unwrap();
+        let input = sparse_input(dir.path(), "screen.mov", 491_014_761);
+        let plan = build_plan(&starved_info(), &preset(10.0), &input).unwrap();
+        assert_eq!(plan.video_kbit, 498); // 76000/127.78 - 96
+        assert_eq!(plan.auto_fps, Some(30));
+        let w = plan.auto_width.expect("starved plan must auto-downscale");
+        assert!((1100..=1200).contains(&w), "auto width {w}");
+        assert_eq!(w % 2, 0, "auto width must be even: {w}");
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some(format!("scale='trunc(min(iw,{w})/2)*2':-2,fps=30,format=yuv420p").as_str())
+        );
+        assert!(plan.bpp >= 0.019, "bpp {}", plan.bpp);
+    }
+
+    #[test]
+    fn unstarved_plan_gets_no_auto_degradation() {
+        // 1920x1080@30 over 60 s into 10 MB is 1266 kbit ≈ 0.020 bpp — at the
+        // floor, so nothing is auto-applied and the vf chain is untouched.
+        let info = ProbeInfo {
+            fps: 30.0,
+            ..info()
+        };
+        let plan = build_plan(&info, &preset(10.0), Path::new(INPUT)).unwrap();
+        assert_eq!(plan.auto_fps, None);
+        assert_eq!(plan.auto_width, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
+        assert!(plan.bpp >= BPP_FLOOR, "bpp {}", plan.bpp);
+    }
+
+    #[test]
+    fn auto_fps_never_raises_a_lower_user_cap() {
+        // A user max_fps of 24 is BELOW the 30 fps auto-cap: the starved plan
+        // must keep fps=24 (auto_fps stays None) and degrade via width only.
+        let dir = tempfile::tempdir().unwrap();
+        let input = sparse_input(dir.path(), "screen.mov", 491_014_761);
+        let mut p = preset(10.0);
+        p.max_fps = Some(24);
+        let plan = build_plan(&starved_info(), &p, &input).unwrap();
+        assert_eq!(plan.auto_fps, None, "a user cap below 30 stays untouched");
+        let w = plan.auto_width.expect("still starved at 24 fps");
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some(format!("scale='trunc(min(iw,{w})/2)*2':-2,fps=24,format=yuv420p").as_str())
+        );
+        assert!(plan.bpp >= 0.019, "bpp {}", plan.bpp);
+    }
+
+    #[test]
+    fn user_max_width_stays_the_ceiling_for_auto_degradation() {
+        // Without a user cap the production case auto-downscales to ~1132px.
+        // With max_width 800 the user's own scaling already clears the floor
+        // at the source frame rate — nothing may raise the width back up.
+        let dir = tempfile::tempdir().unwrap();
+        let input = sparse_input(dir.path(), "screen.mov", 491_014_761);
+        let mut p = preset(10.0);
+        p.max_width = Some(800);
+        let plan = build_plan(&starved_info(), &p, &input).unwrap();
+        assert_eq!(plan.auto_fps, None);
+        assert_eq!(plan.auto_width, None);
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale='trunc(min(iw,800)/2)*2':-2,format=yuv420p")
+        );
+        assert!(plan.bpp >= BPP_FLOOR, "bpp {}", plan.bpp);
+
+        // Still starved UNDER the user's cap (5 MB target): the auto width
+        // must land below the 800px ceiling, never above it.
+        let mut p5 = preset(5.0);
+        p5.max_width = Some(800);
+        let plan = build_plan(&starved_info(), &p5, &input).unwrap();
+        assert_eq!(plan.auto_fps, Some(30));
+        let w = plan.auto_width.expect("still starved at 800px");
+        assert!((640..800).contains(&w), "auto width {w}");
+        assert_eq!(w % 2, 0, "auto width must be even: {w}");
+    }
+
+    #[test]
+    fn auto_width_floors_at_640() {
+        // A long square recording plans 126 kbit; the ideal width (~458px)
+        // falls below the floor, so the planner holds at 640 even though the
+        // bpp stays under BPP_FLOOR — the convergence loop is the backstop.
+        let info = ProbeInfo {
+            duration_secs: 600.0,
+            width: 2160,
+            height: 2160,
+            fps: 30.0,
+            has_audio: false,
+        };
+        let plan = build_plan(&info, &preset(10.0), Path::new(INPUT)).unwrap();
+        assert_eq!(plan.auto_fps, None); // source is already at 30 fps
+        assert_eq!(plan.auto_width, Some(640));
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale='trunc(min(iw,640)/2)*2':-2,format=yuv420p")
+        );
+        assert!(plan.bpp < BPP_FLOOR, "bpp {}", plan.bpp); // proceed anyway
     }
 
     #[test]
@@ -618,8 +869,13 @@ mod tests {
 
     #[test]
     fn webm_audio_budget_is_64k() {
+        // 1280x720@30 keeps the bpp floor out of this test's way (full-HD at
+        // 1202 kbit would trigger the auto-degradation).
         let info = ProbeInfo {
             has_audio: true,
+            width: 1280,
+            height: 720,
+            fps: 30.0,
             ..info()
         };
         let mut p = preset(10.0);
