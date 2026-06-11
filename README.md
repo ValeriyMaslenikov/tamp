@@ -31,18 +31,31 @@ Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that i
 
 ## Features
 
-- 🎯 **Size-first presets** — "fit under N MB" is the primary control, with optional FPS caps
-  and downscaling. Ships with a *Discord (10 MB)* preset; add your own for Slack, email, etc.
+- 🎯 **Size-first presets** — "fit under N MB" is the primary control, with optional FPS caps,
+  downscaling, and audio stripping. Ships with a *Discord (10 MB)* preset; add your own for
+  Slack, email, etc.
+- 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated via VideoToolbox), WebM
+  (two-pass VP9 + Opus) for the web, and GIF (palette-optimized, size-targeted) for the
+  messengers that still insist on it.
 - ⚡ **One click, zero imports** — tamp watches your recording folders (Desktop by default).
-  No drag & drop, no open dialogs. Click a row and it's encoding.
+  Click a row and it's encoding; click again later and tamp *reuses* the existing output
+  instantly instead of re-encoding (outputs carry a tiny config fingerprint in the name).
+- ⌨️ **Keyboard-first** — a global shortcut (<kbd>⌘⌥T</kbd>) compresses your latest recording
+  without even opening the panel; <kbd>⌘⌥O</kbd> toggles the panel; inside, type to filter,
+  arrows select, <kbd>⏎</kbd>/<kbd>d</kbd> run the default preset, <kbd>e</kbd> expands,
+  <kbd>esc</kbd> backs out.
+- 🔍 **Preview before you commit** — expand any row for a generated mini-montage preview
+  (TikTok-style cuts, instant even for gigabyte files), pick a preset, or run a one-off
+  **Custom conversion** with its own size/fps/scale/format.
+
+  <img src="docs/expanded.png" width="345" alt="expanded row with preview, presets, and custom conversion" />
 - 📊 **Progress in the menu bar** — a live percentage next to the tray icon; queue more
   videos while one is encoding.
-- 🖱️ **Hover preview** — with multiple presets, hovering a row plays a muted 2× preview
-  and lets you pick a preset for that specific video.
 - 📋 **Clipboard-ready output** — the finished file is copied as a *file* (not a path),
   so ⌘V attaches it directly in Discord/Slack.
 - 🗑️ **Reclaim disk space** — optionally move the bulky original to the Trash (recoverable)
-  after a successful compress.
+  after a successful compress. Deleted the original? The compressed copy stays in the list
+  with its before/after sizes.
 - 🔒 **Local and private** — everything runs on your machine with a bundled static FFmpeg.
   No uploads, no telemetry, no account.
 
@@ -80,12 +93,22 @@ Requires [Bun](https://bun.sh) and [Rust](https://rustup.rs).
 ## Usage notes
 
 - **Default preset on click** — clicking a video row immediately compresses with the
-  default preset (★ in Preferences). Hover the row to pick a different preset per video.
-- **Presets** — each preset sets a max file size, and optionally: cap FPS, limit width
-  (or scale by percentage), strip audio. tamp computes the bitrate from the video's
-  duration to hit the size, with a small safety margin.
-- **Output** — saved as `<name> (tamped).mp4` next to the original. tamp's own outputs
-  never show up in the recordings list.
+  default preset (★ in Preferences). The chevron (or <kbd>e</kbd>) expands the row for a
+  preview, per-video preset choice, or a custom one-off conversion.
+- **Presets** — each preset sets a max file size, an output format (MP4/WebM/GIF), and
+  optionally: cap FPS, limit width (or scale by percentage), strip audio. tamp computes
+  the bitrate from the video's duration to hit the size, with a small safety margin —
+  and never exceeds the source's own bitrate, so files don't grow.
+- **Global shortcuts** — <kbd>⌘⌥T</kbd> compresses the newest recording with the default
+  preset and puts the result on your clipboard (a notification warns if the latest
+  recording is older than 10 minutes — both configurable); <kbd>⌘⌥O</kbd> opens the panel.
+- **Output** — saved as `<name> (tamped 823f).mp4` next to the original (the 4 characters
+  fingerprint the preset's settings, so each config keeps exactly one output and re-clicks
+  reuse it). tamp's own outputs never show up in the recordings list while their original
+  exists.
+- **One preset per video with Trash enabled** — when "Move original to Trash" is on, the
+  original is gone after the first conversion, so tamp blocks a second preset on the same
+  video instead of failing halfway. Turn the toggle off to export several formats.
 - **Watched folders** — Preferences → Watched folders. Desktop is the default; add
   wherever your recorder saves.
 
