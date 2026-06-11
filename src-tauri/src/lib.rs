@@ -1,6 +1,8 @@
 mod commands;
 pub mod encoder;
+pub mod journal;
 pub mod platform;
+mod previews;
 mod scanner;
 pub mod settings;
 mod thumbs;
@@ -67,12 +69,14 @@ pub fn run() {
             }
             match app.path().app_cache_dir() {
                 Ok(cache_dir) => {
-                    let thumbs_dir = cache_dir.join("thumbs");
-                    if let Err(e) = std::fs::create_dir_all(&thumbs_dir) {
-                        eprintln!("tamp: failed to create thumbnail cache dir: {e}");
-                    }
-                    if let Err(e) = scope.allow_directory(&thumbs_dir, false) {
-                        eprintln!("tamp: failed to allow asset access to thumbnail cache: {e}");
+                    for (subdir, what) in [("thumbs", "thumbnail"), ("previews", "preview")] {
+                        let dir = cache_dir.join(subdir);
+                        if let Err(e) = std::fs::create_dir_all(&dir) {
+                            eprintln!("tamp: failed to create {what} cache dir: {e}");
+                        }
+                        if let Err(e) = scope.allow_directory(&dir, false) {
+                            eprintln!("tamp: failed to allow asset access to {what} cache: {e}");
+                        }
                     }
                 }
                 Err(e) => eprintln!("tamp: cannot resolve app cache dir: {e}"),
@@ -80,6 +84,8 @@ pub fn run() {
 
             app.manage(settings::SettingsState(std::sync::Mutex::new(loaded)));
             app.manage(DialogOpen(AtomicBool::new(false)));
+            app.manage(journal::Journal::load(app.handle()));
+            app.manage(previews::Previews::default());
             app.manage(encoder::Encoder::start(app.handle().clone()));
             tray::create(app.handle())?;
 
@@ -124,6 +130,8 @@ pub fn run() {
             commands::enqueue,
             commands::cancel_job,
             commands::queue_state,
+            commands::ensure_preview,
+            commands::copy_file,
             commands::reveal
         ])
         .build(tauri::generate_context!())

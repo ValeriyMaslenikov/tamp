@@ -1,7 +1,9 @@
 import {
   cancelJob,
   convertFileSrc,
+  copyFile,
   enqueue,
+  ensurePreview,
   listRecents,
   queueState,
   type JobState,
@@ -15,6 +17,7 @@ import {
   formatRelativeTime,
   truncateMiddle,
 } from "../lib/format";
+import { stripOutputSuffix } from "../lib/naming";
 import { showToast } from "../lib/toast";
 
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
@@ -37,7 +40,14 @@ export function isTerminal(phase: Phase): boolean {
 /** Identity of the visible video list; job statuses are painted separately. */
 export function videoListSignature(videos: RecentVideo[]): string {
   return JSON.stringify(
-    videos.map((v) => [v.path, v.sizeBytes, v.createdMs, v.thumbPath]),
+    videos.map((v) => [
+      v.path,
+      v.sizeBytes,
+      v.createdMs,
+      v.thumbPath,
+      v.isOutput,
+      v.conversion,
+    ]),
   );
 }
 
@@ -60,6 +70,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
   const rowByPath = new Map<string, HTMLElement>();
   const rowCleanups = new Map<string, () => void>(); // path -> hover/preview teardown
   const postErrorToasted = new Set<string>(); // job ids whose postError was toasted
+  const previewPaths = new Map<string, string>(); // video path -> resolved proxy path
+  let previewSeq = 0; // staleness token for in-flight proxy resolutions
   let lastSignature: string | null = null;
 
   function jobForPath(path: string): JobState | undefined {
@@ -181,6 +193,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
           progress: 0,
           inputBytes: v.sizeBytes,
           outputBytes: null,
+          reused: false,
           error: null,
           postError: null,
         });
@@ -191,6 +204,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
   }
 
   function onRowClick(v: RecentVideo): void {
+    if (v.isOutput) {
+      // Orphaned output: the original is gone, so a click just copies the file.
+      copyFile(v.path)
+        .then(() => showToast("Copied to clipboard"))
+        .catch((e) => showToast(String(e)));
+      return;
+    }
     const j = jobForPath(v.path);
     if (j) {
       if (isBusy(j)) return;
@@ -205,47 +225,95 @@ export function createListView(getSettings: () => Settings | null): ListView {
     void doEnqueue(v, settings.defaultPresetId);
   }
 
-  function expandRow(row: HTMLElement, expand: HTMLElement, v: RecentVideo): void {
-    if (row.classList.contains("is-expanded")) return;
-    const settings = getSettings();
-    if (!settings) return;
-
-    expand.innerHTML = "";
-
+  function proxyVideo(proxyPath: string): HTMLVideoElement {
     const video = document.createElement("video");
     video.muted = true;
     video.autoplay = true;
     video.loop = true;
     video.playsInline = true;
     video.setAttribute("playsinline", "");
-    video.addEventListener("loadedmetadata", () => {
-      video.playbackRate = 2;
-    });
-    video.src = convertFileSrc(v.path);
+    // The montage proxy is already condensed; play it at normal speed.
+    video.src = convertFileSrc(proxyPath);
+    return video;
+  }
 
-    const chips = document.createElement("div");
-    chips.className = "chips";
-    for (const p of settings.presets) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className =
-        "chip" + (p.id === settings.defaultPresetId ? " chip-default" : "");
-      chip.textContent = p.name;
-      chip.title = `Compress with ${p.name}`;
-      chip.addEventListener("click", (e) => {
-        e.stopPropagation();
-        collapseRow(row, expand);
-        void doEnqueue(v, p.id);
-      });
-      chips.appendChild(chip);
+  function expandRow(row: HTMLElement, expand: HTMLElement, v: RecentVideo): void {
+    if (row.classList.contains("is-expanded")) return;
+    const settings = getSettings();
+    if (!settings) return;
+
+    expand.innerHTML = "";
+    const token = String(++previewSeq);
+    expand.dataset.previewToken = token;
+
+    const stage = document.createElement("div");
+    stage.className = "preview-stage";
+
+    const cached = previewPaths.get(v.path);
+    if (cached) {
+      stage.appendChild(proxyVideo(cached));
+    } else {
+      // Show the enlarged thumbnail with a shimmer while the proxy is built.
+      if (v.thumbPath) {
+        const img = document.createElement("img");
+        img.className = "preview-thumb";
+        img.src = convertFileSrc(v.thumbPath);
+        img.alt = "";
+        img.draggable = false;
+        stage.appendChild(img);
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "preview-thumb preview-thumb-placeholder";
+        stage.appendChild(ph);
+      }
+      const loading = document.createElement("div");
+      loading.className = "preview-loading";
+      loading.textContent = "Preparing preview…";
+      stage.appendChild(loading);
+
+      ensurePreview(v.path)
+        .then((proxyPath) => {
+          previewPaths.set(v.path, proxyPath);
+          // Guard staleness: the row may have collapsed or re-expanded since.
+          if (expand.dataset.previewToken !== token) return;
+          if (!row.classList.contains("is-expanded")) return;
+          stage.replaceChildren(proxyVideo(proxyPath));
+        })
+        .catch(() => {
+          if (expand.dataset.previewToken !== token) return;
+          loading.classList.add("is-failed");
+          loading.textContent = "Preview unavailable";
+        });
     }
 
-    expand.append(video, chips);
+    expand.appendChild(stage);
+
+    if (!v.isOutput && settings.presets.length >= 2) {
+      const chips = document.createElement("div");
+      chips.className = "chips";
+      for (const p of settings.presets) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className =
+          "chip" + (p.id === settings.defaultPresetId ? " chip-default" : "");
+        chip.textContent = p.name;
+        chip.title = `Compress with ${p.name}`;
+        chip.addEventListener("click", (e) => {
+          e.stopPropagation();
+          collapseRow(row, expand);
+          void doEnqueue(v, p.id);
+        });
+        chips.appendChild(chip);
+      }
+      expand.appendChild(chips);
+    }
+
     row.classList.add("is-expanded");
   }
 
   function collapseRow(row: HTMLElement, expand: HTMLElement): void {
     if (!row.classList.contains("is-expanded")) return;
+    delete expand.dataset.previewToken;
     const video = expand.querySelector("video");
     if (video) {
       video.pause();
@@ -282,14 +350,30 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     const name = document.createElement("div");
     name.className = "row-name";
-    name.textContent = truncateMiddle(v.name, 36);
     name.title = v.name;
+    if (v.isOutput) {
+      // Orphaned output: show the original's stem with a "compressed" badge.
+      const text = document.createElement("span");
+      text.textContent = truncateMiddle(stripOutputSuffix(v.name), 28);
+      const badge = document.createElement("span");
+      badge.className = "badge-compressed";
+      badge.textContent = "compressed";
+      if (v.conversion?.presetName) badge.title = v.conversion.presetName;
+      name.append(text, badge);
+    } else {
+      name.textContent = truncateMiddle(v.name, 36);
+    }
+
+    const sizeText =
+      v.isOutput && v.conversion?.originalBytes != null
+        ? `${formatBytes(v.conversion.originalBytes)} → ${formatBytes(v.conversion.outputBytes)}`
+        : formatBytes(v.sizeBytes);
 
     const meta = document.createElement("div");
     meta.className = "row-meta";
     meta.innerHTML =
       `<div class="meta"><span class="meta-label">Size</span>` +
-      `<span class="meta-value">${formatBytes(v.sizeBytes)}</span></div>` +
+      `<span class="meta-value">${sizeText}</span></div>` +
       `<div class="meta"><span class="meta-label">Recorded</span>` +
       `<span class="meta-value">${formatRelativeTime(v.createdMs)}</span></div>`;
 
@@ -323,8 +407,6 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     let hoverTimer: number | undefined;
     row.addEventListener("mouseenter", () => {
-      const settings = getSettings();
-      if (!settings || settings.presets.length < 2) return;
       if (isBusy(jobForPath(v.path))) return;
       hoverTimer = window.setTimeout(() => expandRow(row, expand, v), 250);
     });
@@ -382,12 +464,15 @@ export function createListView(getSettings: () => Settings | null): ListView {
       }
       case "done": {
         const outB = j.outputBytes ?? 0;
-        let html =
-          `<span class="done-stat">${formatBytes(j.inputBytes)} → ${formatBytes(outB)}</span>` +
-          `<span class="done-smaller">${formatPercentSmaller(j.inputBytes, outB)}</span>`;
-        const preset = getSettings()?.presets.find((p) => p.id === j.presetId);
-        if (preset && outB > preset.targetMb * 1_000_000) {
-          html += `<span class="above-target">above target</span>`;
+        let html = `<span class="done-stat">${formatBytes(j.inputBytes)} → ${formatBytes(outB)}</span>`;
+        if (j.reused) {
+          html += `<span class="done-smaller">Already compressed — reused</span>`;
+        } else {
+          html += `<span class="done-smaller">${formatPercentSmaller(j.inputBytes, outB)}</span>`;
+          const preset = getSettings()?.presets.find((p) => p.id === j.presetId);
+          if (preset && outB > preset.targetMb * 1_000_000) {
+            html += `<span class="above-target">above target</span>`;
+          }
         }
         if (j.postError) html += `<span class="post-warn"></span>`;
         status.innerHTML = html;

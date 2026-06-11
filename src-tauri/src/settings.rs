@@ -29,6 +29,8 @@ pub struct Settings {
     pub copy_to_clipboard: bool,
     #[serde(default)]
     pub trash_original: bool,
+    #[serde(default = "default_true")]
+    pub use_hardware_encoder: bool,
     #[serde(default)]
     pub presets: Vec<Preset>,
     #[serde(default)]
@@ -58,6 +60,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         watched_folders,
         copy_to_clipboard: true,
         trash_original: false,
+        use_hardware_encoder: true,
         presets: vec![Preset {
             id: "discord-10mb".into(),
             name: "Discord (10MB)".into(),

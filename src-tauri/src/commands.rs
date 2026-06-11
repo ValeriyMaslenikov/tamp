@@ -1,7 +1,7 @@
 use crate::encoder::{Encoder, JobState, PostActions};
 use crate::scanner::{self, RecentVideo};
 use crate::settings::{self, Settings, SettingsState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{MutexGuard, PoisonError};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -27,6 +27,18 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
         tauri::async_runtime::spawn_blocking(move || scanner::scan(&folders, RECENTS_LIMIT))
             .await
             .map_err(|e| format!("recents scan failed: {e}"))?;
+    // Orphaned outputs only know their on-disk size; the journal remembers
+    // what they were compressed from and with which preset.
+    if let Some(journal) = app.try_state::<crate::journal::Journal>() {
+        for video in videos.iter_mut().filter(|v| v.is_output) {
+            if let Some(record) = journal.find_by_output(&video.path) {
+                if let Some(meta) = video.conversion.as_mut() {
+                    meta.original_bytes = Some(record.input_bytes);
+                    meta.preset_name = Some(record.preset_name);
+                }
+            }
+        }
+    }
     crate::thumbs::ensure_thumbs(&app, &mut videos).await;
     Ok(videos)
 }
@@ -154,7 +166,7 @@ pub fn enqueue(
     path: String,
     preset_id: String,
 ) -> Result<String, String> {
-    let (preset, post) = {
+    let (preset, post, use_hardware) = {
         let guard = lock_settings(&state);
         let preset = guard
             .presets
@@ -166,10 +178,10 @@ pub fn enqueue(
             copy_to_clipboard: guard.copy_to_clipboard,
             trash_original: guard.trash_original,
         };
-        (preset, post)
+        (preset, post, guard.use_hardware_encoder)
     };
     app.state::<Encoder>()
-        .enqueue(PathBuf::from(path), preset, post)
+        .enqueue(PathBuf::from(path), preset, post, use_hardware)
 }
 
 #[tauri::command]
@@ -180,6 +192,22 @@ pub fn cancel_job(app: AppHandle, id: String) {
 #[tauri::command]
 pub fn queue_state(app: AppHandle) -> Vec<JobState> {
     app.state::<Encoder>().snapshot()
+}
+
+#[tauri::command]
+pub async fn ensure_preview(app: AppHandle, path: String) -> Result<String, String> {
+    crate::previews::ensure_preview(&app, &path).await
+}
+
+#[tauri::command]
+pub async fn copy_file(app: AppHandle, path: String) -> Result<(), String> {
+    // The clipboard write round-trips through the main thread and blocks on
+    // the reply, so keep it off the async runtime's worker threads.
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::platform::copy_file_to_clipboard(&app, Path::new(&path))
+    })
+    .await
+    .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
 #[tauri::command]

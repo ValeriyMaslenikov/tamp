@@ -5,7 +5,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tamp_lib::encoder::{bin, plan::build_plan, probe::probe, run_passes, ChildSlot, Preset};
+use tamp_lib::encoder::{
+    bin,
+    plan::{build_plan, preset_hash},
+    probe::probe,
+    run_hardware_pass, run_passes, ChildSlot, Preset,
+};
 
 fn make_test_clip(dir: &Path) -> PathBuf {
     let input = dir.join("clip.mp4");
@@ -127,7 +132,11 @@ async fn two_pass_encode_hits_target_size() {
         Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
     );
     assert!(plan.video_kbit >= 100);
-    assert_eq!(plan.output, dir.path().join("clip (tamped).mp4"));
+    assert_eq!(
+        plan.output,
+        dir.path()
+            .join(format!("clip (tamped {}).mp4", preset_hash(&preset)))
+    );
 
     let passlog = tempfile::tempdir().unwrap();
     let slot = ChildSlot::default();
@@ -202,5 +211,107 @@ async fn two_pass_encode_hits_target_size() {
         String::from_utf8_lossy(&out.stdout).trim(),
         "yuv420p",
         "output must be 4:2:0"
+    );
+}
+
+#[tokio::test]
+async fn hardware_single_pass_spans_full_progress_range() {
+    // Skip when the bundled ffmpeg has no h264_videotoolbox encoder at all.
+    let out = Command::new(bin::ffmpeg_path())
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .expect("failed to run bundled ffmpeg — did scripts/fetch-ffmpeg.sh run?");
+    if !String::from_utf8_lossy(&out.stdout).contains("h264_videotoolbox") {
+        eprintln!("skipping hardware encode test: h264_videotoolbox is not in this ffmpeg build");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_test_clip(dir.path());
+    let info = probe(&input).await.expect("probe failed");
+
+    let preset = Preset {
+        id: "test-1mb-hw".to_string(),
+        name: "Test HW (1MB)".to_string(),
+        target_mb: 1.0,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+    };
+    let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
+
+    let slot = ChildSlot::default();
+    let mut seen: Vec<(u8, f64)> = Vec::new();
+    if let Err(e) = run_hardware_pass(
+        &plan,
+        &info,
+        &input,
+        &slot,
+        &|| false,
+        &mut |pass, overall| seen.push((pass, overall)),
+    )
+    .await
+    {
+        // Listed but unusable (e.g. no VideoToolbox session in CI sandboxes);
+        // the app falls back to libx264 in this case, so skip rather than fail.
+        eprintln!("skipping hardware encode test: h264_videotoolbox unavailable here: {e}");
+        return;
+    }
+
+    // The single pass must map onto the FULL 0..1 range, reported as pass 1.
+    assert!(!seen.is_empty(), "no progress reported");
+    assert!(seen.iter().all(|(pass, _)| *pass == 1), "{seen:?}");
+    assert!(
+        seen.iter().all(|(_, o)| (0.0..=1.0).contains(o)),
+        "{seen:?}"
+    );
+    assert_eq!(seen.first().map(|(_, o)| *o), Some(0.0));
+    assert_eq!(seen.last().map(|(_, o)| *o), Some(1.0));
+    assert!(
+        seen.iter().any(|(_, o)| *o > 0.5),
+        "progress never crossed the two-pass halfway mark: {seen:?}"
+    );
+
+    let bytes = std::fs::read(&plan.output).expect("output file missing");
+    assert!(
+        bytes.len() > 10_000,
+        "output suspiciously small: {} bytes",
+        bytes.len()
+    );
+
+    // +faststart relocates the moov atom ahead of mdat.
+    let moov = find(&bytes, b"moov").expect("no moov atom in output");
+    let mdat = find(&bytes, b"mdat").expect("no mdat atom in output");
+    assert!(
+        moov < mdat,
+        "moov ({moov}) should precede mdat ({mdat}) with +faststart"
+    );
+
+    // The 4:4:4 source must come out as 4:2:0 with audio preserved.
+    let out = Command::new(bin::ffprobe_path())
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,pix_fmt",
+            "-of",
+            "json",
+        ])
+        .arg(&plan.output)
+        .output()
+        .expect("failed to run bundled ffprobe");
+    assert!(out.status.success(), "ffprobe on output failed");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let streams = json["streams"].as_array().unwrap();
+    let video = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .expect("no video stream in output");
+    assert_eq!(video["codec_name"], "h264");
+    assert_eq!(video["pix_fmt"], "yuv420p", "output must be 4:2:0");
+    assert!(
+        streams.iter().any(|s| s["codec_type"] == "audio"),
+        "audio stream must be preserved"
     );
 }

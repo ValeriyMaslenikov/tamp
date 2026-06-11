@@ -8,6 +8,8 @@ const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
   sizeBytes: 1000,
   createdMs: 1700000000000,
   thumbPath: null,
+  isOutput: false,
+  conversion: null,
   ...overrides,
 });
 
@@ -48,6 +50,24 @@ describe("videoListSignature", () => {
     expect(videoListSignature([video({ thumbPath: "/tmp/t.jpg" })])).not.toBe(
       base,
     );
+  });
+
+  it("changes when output state or conversion meta changes", () => {
+    const base = videoListSignature([video()]);
+    const orphan = videoListSignature([video({ isOutput: true })]);
+    expect(orphan).not.toBe(base);
+    expect(
+      videoListSignature([
+        video({
+          isOutput: true,
+          conversion: {
+            originalBytes: 5000,
+            outputBytes: 1000,
+            presetName: "Slack",
+          },
+        }),
+      ]),
+    ).not.toBe(orphan);
   });
 
   it("is order-sensitive", () => {

@@ -354,6 +354,14 @@ export function createPreferencesView(opts: {
           d.trashOriginal = v;
         }),
       ),
+      toggleRow(
+        "Use GPU encoder (faster, slightly lower quality)",
+        s.useHardwareEncoder,
+        (v) =>
+          void persist((d) => {
+            d.useHardwareEncoder = v;
+          }),
+      ),
       toggleRow("Launch at login", s.launchAtLogin, (v) =>
         void persist((d) => {
           d.launchAtLogin = v;

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -34,6 +34,9 @@ pub struct JobState {
     /// Set when a post-action (clipboard copy / trash original) fails after a
     /// successful encode; `phase` stays `Done`.
     pub post_error: Option<String>,
+    /// True when the encode was skipped because an output for this exact
+    /// input + preset configuration already existed and was reused.
+    pub reused: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize)]
@@ -71,6 +74,7 @@ struct QueuedJob {
     input: PathBuf,
     preset: Preset,
     post: PostActions,
+    use_hardware: bool,
 }
 
 struct Inner {
@@ -117,6 +121,7 @@ impl Encoder {
         input: PathBuf,
         preset: Preset,
         post: PostActions,
+        use_hardware: bool,
     ) -> Result<String, String> {
         let meta = std::fs::metadata(&input).map_err(|e| format!("cannot read input file: {e}"))?;
         if !meta.is_file() {
@@ -138,6 +143,7 @@ impl Encoder {
             output_bytes: None,
             error: None,
             post_error: None,
+            reused: false,
         };
         {
             let mut jobs = self.inner.jobs.lock().unwrap();
@@ -165,6 +171,7 @@ impl Encoder {
                 input,
                 preset,
                 post,
+                use_hardware,
             })
             .is_err()
         {
@@ -290,6 +297,33 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
 }
 
 async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
+    let preset_hash = plan::preset_hash(&job.preset);
+
+    // A previous run with this exact preset configuration already produced
+    // an output next to the input: reuse it instead of re-encoding.
+    let expected = plan::expected_output(&job.input, &preset_hash);
+    if expected.exists() {
+        let output_bytes = std::fs::metadata(&expected)
+            .map_err(|e| format!("cannot read existing output: {e}"))?
+            .len();
+        // Post-actions still run so the reuse behaves like a fresh encode
+        // from the user's perspective (clipboard copy / trash original).
+        let post_error = run_post_actions(inner, &job.post, &job.input, &expected);
+        if let Some(state) = update_job(inner, &job.id, |j| {
+            j.phase = Phase::Done;
+            j.progress = 1.0;
+            j.reused = true;
+            j.output_path = Some(expected.to_string_lossy().into_owned());
+            j.output_bytes = Some(output_bytes);
+            j.post_error = post_error;
+        }) {
+            emit_state(inner, &state, true);
+        }
+        // Deliberately no journal append: the original encode already
+        // recorded this output.
+        return Ok(());
+    }
+
     let info = probe::probe(&job.input).await?;
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
@@ -327,18 +361,48 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     let c_id = job.id.clone();
     let is_cancelled = move || c_inner.cancelled.lock().unwrap().contains(&c_id);
 
+    // The hardware path can drop to software mid-job; the oversize retry
+    // then re-runs whichever path actually produced the output.
+    let mut use_hardware = job.use_hardware;
+
     // One bitrate-adjustment retry if the first attempt overshoots the target.
     for attempt in 0..2u8 {
-        run_passes(
-            &plan,
-            &info,
-            &job.input,
-            tmp.path(),
-            &inner.child_slot,
-            &is_cancelled,
-            &mut on_progress,
-        )
-        .await?;
+        if use_hardware {
+            let hw = run_hardware_pass(
+                &plan,
+                &info,
+                &job.input,
+                &inner.child_slot,
+                &is_cancelled,
+                &mut on_progress,
+            )
+            .await;
+            let fallback_reason = match hw {
+                Ok(()) => match std::fs::metadata(&plan.output) {
+                    Ok(meta) if meta.len() > 0 => None,
+                    _ => Some("hardware encode produced no output".to_string()),
+                },
+                Err(e) if is_cancelled() => return Err(e),
+                Err(e) => Some(e),
+            };
+            if let Some(reason) = fallback_reason {
+                eprintln!("tamp: {reason}; falling back to two-pass libx264");
+                use_hardware = false; // sticks for the oversize retry too
+            }
+        }
+        if !use_hardware {
+            // run_passes restarts progress from 0 on its own first callback.
+            run_passes(
+                &plan,
+                &info,
+                &job.input,
+                tmp.path(),
+                &inner.child_slot,
+                &is_cancelled,
+                &mut on_progress,
+            )
+            .await?;
+        }
 
         if let Some(state) = update_job(inner, &job.id, |j| {
             j.phase = Phase::Verifying;
@@ -354,23 +418,8 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
         if actual as f64 <= target_bytes || attempt == 1 {
             // Run post-actions first so their failures ride along on the
             // final Done state instead of vanishing into stderr.
-            let mut post_failures: Vec<String> = Vec::new();
-            if job.post.copy_to_clipboard {
-                if let Err(e) = crate::platform::copy_file_to_clipboard(&inner.app, &plan.output) {
-                    eprintln!("tamp: copy to clipboard failed: {e}");
-                    post_failures.push(format!(
-                        "Couldn't copy to clipboard (the file is at {}): {e}",
-                        plan.output.to_string_lossy()
-                    ));
-                }
-            }
-            if job.post.trash_original {
-                if let Err(e) = trash::delete(&job.input) {
-                    eprintln!("tamp: failed to move original to Trash: {e}");
-                    post_failures.push(format!("Couldn't move the original to Trash: {e}"));
-                }
-            }
-            let post_error = (!post_failures.is_empty()).then(|| post_failures.join("; "));
+            let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
+            append_journal(inner, job, &plan.output, &preset_hash, actual);
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Done;
                 j.progress = 1.0;
@@ -393,6 +442,68 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
         }
     }
     unreachable!("retry loop always returns on the second attempt")
+}
+
+/// Runs the post-encode actions per the user's toggles, returning a combined
+/// error string for the Done state's `post_error` when any of them fail.
+fn run_post_actions(
+    inner: &Inner,
+    post: &PostActions,
+    input: &Path,
+    output: &Path,
+) -> Option<String> {
+    let mut failures: Vec<String> = Vec::new();
+    if post.copy_to_clipboard {
+        if let Err(e) = crate::platform::copy_file_to_clipboard(&inner.app, output) {
+            eprintln!("tamp: copy to clipboard failed: {e}");
+            failures.push(format!(
+                "Couldn't copy to clipboard (the file is at {}): {e}",
+                output.to_string_lossy()
+            ));
+        }
+    }
+    if post.trash_original {
+        if let Err(e) = trash::delete(input) {
+            eprintln!("tamp: failed to move original to Trash: {e}");
+            failures.push(format!("Couldn't move the original to Trash: {e}"));
+        }
+    }
+    (!failures.is_empty()).then(|| failures.join("; "))
+}
+
+/// Records a successful (non-reused) encode in the conversion journal.
+/// Best-effort: skipped silently when the journal isn't managed (tests).
+fn append_journal(
+    inner: &Inner,
+    job: &QueuedJob,
+    output: &Path,
+    preset_hash: &str,
+    output_bytes: u64,
+) {
+    let Some(journal) = inner.app.try_state::<crate::journal::Journal>() else {
+        return;
+    };
+    let input_bytes = inner
+        .jobs
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|j| j.id == job.id)
+        .map(|j| j.input_bytes)
+        .unwrap_or(0);
+    let completed_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    journal.append(crate::journal::ConversionRecord {
+        input_path: job.input.to_string_lossy().into_owned(),
+        input_bytes,
+        output_path: output.to_string_lossy().into_owned(),
+        output_bytes,
+        preset_hash: preset_hash.to_string(),
+        preset_name: job.preset.name.clone(),
+        completed_at_ms,
+    });
 }
 
 /// Runs both libx264 passes for `plan`. Public so the integration test can
@@ -434,6 +545,56 @@ pub async fn run_passes(
     .await
 }
 
+/// Runs the single-pass h264_videotoolbox encode for `plan`, reporting
+/// progress as pass 1 mapped to the FULL 0..1 range. `-allow_sw 1` lets
+/// VideoToolbox use Apple's software encoder when no hardware session is
+/// available; the worker falls back to the two-pass libx264 path when this
+/// errors or leaves a missing/empty output. Public for the integration test.
+pub async fn run_hardware_pass(
+    plan: &plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    cmd.args([
+        "-y",
+        "-hide_banner",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-i",
+    ])
+    .arg(input);
+    if let Some(vf) = &plan.vf {
+        cmd.arg("-vf").arg(vf);
+    }
+    cmd.args(["-c:v", "h264_videotoolbox"])
+        .arg("-b:v")
+        .arg(format!("{}k", plan.video_kbit))
+        .args(["-allow_sw", "1"]);
+    if plan.audio_kbit > 0 {
+        cmd.args(["-c:a", "aac"])
+            .arg("-b:a")
+            .arg(format!("{}k", plan.audio_kbit));
+    } else {
+        cmd.arg("-an");
+    }
+    cmd.args(["-movflags", "+faststart"]).arg(&plan.output);
+
+    run_ffmpeg_with_progress(
+        "hardware pass",
+        cmd,
+        info,
+        child_slot,
+        is_cancelled,
+        &mut |frac| on_progress(1, frac.clamp(0.0, 1.0)),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_pass(
     pass: u8,
@@ -445,10 +606,6 @@ async fn run_pass(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    if is_cancelled() {
-        return Err("cancelled".to_string());
-    }
-
     let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
     cmd.args([
         "-y",
@@ -481,6 +638,33 @@ async fn run_pass(
         }
         cmd.args(["-movflags", "+faststart"]).arg(&plan.output);
     }
+
+    run_ffmpeg_with_progress(
+        &format!("pass {pass}"),
+        cmd,
+        info,
+        child_slot,
+        is_cancelled,
+        &mut |frac| on_progress(pass, progress::overall(pass, frac)),
+    )
+    .await
+}
+
+/// Spawns `cmd`, streams `-progress pipe:1` fractions of the input duration
+/// to `on_frac` (always called with 0.0 first and 1.0 on success), and parks
+/// the child in `child_slot` so cancel()/shutdown() can kill it.
+async fn run_ffmpeg_with_progress(
+    label: &str,
+    mut cmd: tokio::process::Command,
+    info: &probe::ProbeInfo,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_frac: &mut (dyn FnMut(f64) + Send),
+) -> Result<(), String> {
+    if is_cancelled() {
+        return Err("cancelled".to_string());
+    }
+
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -511,7 +695,7 @@ async fn run_pass(
         tail.into_iter().collect::<Vec<_>>().join("\n")
     });
 
-    on_progress(pass, progress::overall(pass, 0.0));
+    on_frac(0.0);
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         if let Some(secs) = progress::parse_progress_line(&line) {
@@ -520,7 +704,7 @@ async fn run_pass(
             } else {
                 0.0
             };
-            on_progress(pass, progress::overall(pass, frac));
+            on_frac(frac);
         }
     }
 
@@ -535,8 +719,8 @@ async fn run_pass(
     let tail = stderr_tail.await.unwrap_or_default();
 
     if !status.success() {
-        return Err(format!("ffmpeg pass {pass} failed ({status})\n{tail}"));
+        return Err(format!("ffmpeg {label} failed ({status})\n{tail}"));
     }
-    on_progress(pass, progress::overall(pass, 1.0));
+    on_frac(1.0);
     Ok(())
 }

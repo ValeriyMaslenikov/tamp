@@ -20,6 +20,14 @@ export interface Settings {
   presets: Preset[];
   defaultPresetId: string;
   launchAtLogin: boolean;
+  useHardwareEncoder: boolean;
+}
+
+/** Conversion details for an orphaned output row (original gone). */
+export interface ConversionMeta {
+  originalBytes: number | null;
+  outputBytes: number;
+  presetName: string | null;
 }
 
 export interface RecentVideo {
@@ -28,6 +36,9 @@ export interface RecentVideo {
   sizeBytes: number;
   createdMs: number;
   thumbPath: string | null;
+  /** True for "(tamped …)" outputs whose original no longer exists. */
+  isOutput: boolean;
+  conversion: ConversionMeta | null;
 }
 
 export type Phase =
@@ -49,6 +60,8 @@ export interface JobState {
   progress: number; // 0..1 overall
   inputBytes: number;
   outputBytes: number | null;
+  /** Done without encoding: an identical earlier output already existed. */
+  reused: boolean;
   error: string | null;
   /** Set when a post-action (clipboard copy / trash original) failed after a successful encode. */
   postError: string | null;
@@ -77,6 +90,13 @@ export const queueState = (): Promise<JobState[]> =>
 
 export const reveal = (path: string): Promise<void> =>
   invoke<void>("reveal", { path });
+
+/** Resolve (generating on miss) a lightweight montage proxy for hover previews. */
+export const ensurePreview = (path: string): Promise<string> =>
+  invoke<string>("ensure_preview", { path });
+
+export const copyFile = (path: string): Promise<void> =>
+  invoke<void>("copy_file", { path });
 
 export const onPanelShown = (cb: () => void): Promise<UnlistenFn> =>
   listen("panel:shown", () => cb());
