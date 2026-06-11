@@ -1,5 +1,15 @@
 # tamp
 
+## 0.3.0
+
+### Minor Changes
+
+- [`ac01a4c`](https://github.com/ValeriyMaslenikov/tamp/commit/ac01a4cea09fc222075d253a66dbb601d598ebd7) Thanks [@ValeriyMaslenikov](https://github.com/ValeriyMaslenikov)! - Debuggability and quality-of-life: tamp now writes rotating logs
+  (~/Library/Logs, 10MB cap) with full ffmpeg command lines and errors —
+  right-click the menu bar icon → "Open Logs"; encode failures show the real
+  error instead of metadata noise; and every row gains a reveal-in-Finder
+  button next to the file name.
+
 ## 0.2.1
 
 ### Patch Changes
