@@ -156,6 +156,15 @@ impl Encoder {
             post_error: None,
             reused: false,
         };
+        crate::log_info!(
+            "job {id}: enqueued {} ({} bytes) with preset \"{}\" (hash {}, format {:?}, target {} MB)",
+            state.input_path,
+            state.input_bytes,
+            preset.name,
+            state.preset_hash,
+            preset.format,
+            preset.target_mb
+        );
         {
             let mut jobs = self.inner.jobs.lock().unwrap();
             // Evict terminal jobs only: dropping a running/queued job would
@@ -193,6 +202,7 @@ impl Encoder {
     }
 
     pub fn cancel(&self, id: &str) {
+        crate::log_info!("job {id}: cancel requested");
         self.inner.cancelled.lock().unwrap().insert(id.to_string());
         let is_current = self.inner.current_id.lock().unwrap().as_deref() == Some(id);
         if is_current {
@@ -242,7 +252,7 @@ fn emit_state(inner: &Inner, state: &JobState, force: bool) {
         *last = Some(Instant::now());
     }
     if let Err(e) = inner.app.emit("encode:state", state) {
-        eprintln!("tamp: failed to emit encode:state: {e}");
+        crate::log_warn!("failed to emit encode:state: {e}");
     }
 }
 
@@ -261,6 +271,7 @@ fn update_tray(inner: &Inner, progress: Option<f64>) {
 
 async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
     if inner.cancelled.lock().unwrap().contains(&job.id) {
+        crate::log_info!("job {}: cancelled while queued", job.id);
         if let Some(state) = update_job(inner, &job.id, |j| j.phase = Phase::Cancelled) {
             emit_state(inner, &state, true);
         }
@@ -270,6 +281,7 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
         return;
     }
 
+    crate::log_info!("job {}: starting", job.id);
     *inner.current_id.lock().unwrap() = Some(job.id.clone());
     let outcome = run_job(inner, &job).await;
     *inner.current_id.lock().unwrap() = None;
@@ -295,8 +307,10 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
                 let _ = std::fs::remove_file(&part);
             }
         }
-        if !was_cancelled {
-            eprintln!("tamp: job {} failed: {err}", job.id);
+        if was_cancelled {
+            crate::log_info!("job {}: cancelled", job.id);
+        } else {
+            crate::log_error!("job {} failed: {err}", job.id);
         }
         if let Some(state) = update_job(inner, &job.id, |j| {
             if was_cancelled {
@@ -333,11 +347,17 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     let expected = plan::expected_output(&job.input, &preset_hash, job.preset.format);
     if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
         if reuse_is_stale(&inner.app, &job.input, &expected) {
-            eprintln!(
-                "tamp: not reusing {} — the journal records different content; re-encoding",
+            crate::log_info!(
+                "job {}: not reusing {} — the journal records different content; re-encoding",
+                job.id,
                 expected.display()
             );
         } else {
+            crate::log_info!(
+                "job {}: reusing existing output {} ({output_bytes} bytes)",
+                job.id,
+                expected.display()
+            );
             // Post-actions still run so the reuse behaves like a fresh encode
             // from the user's perspective (clipboard copy / trash original).
             let post_error = run_post_actions(inner, &job.post, &job.input, &expected);
@@ -446,6 +466,13 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     // last time and fail (removing it) on any violation.
     let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
 
+    crate::log_info!(
+        "job {}: done — {} -> {} ({actual} bytes, target {} MB)",
+        job.id,
+        job.input.display(),
+        plan.output.display(),
+        job.preset.target_mb
+    );
     // Run post-actions first so their failures ride along on the final Done
     // state instead of vanishing into stderr.
     let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
@@ -476,8 +503,8 @@ pub fn check_reuse(expected: &Path, target_bytes: f64) -> Option<u64> {
         return None; // nothing there (or unreadable): encode fresh
     };
     if !meta.is_file() {
-        eprintln!(
-            "tamp: expected output {} is not a regular file; leaving it and encoding to a sibling",
+        crate::log_warn!(
+            "expected output {} is not a regular file; leaving it and encoding to a sibling",
             expected.display()
         );
         sweep_stale_siblings(expected, target_bytes);
@@ -488,8 +515,8 @@ pub fn check_reuse(expected: &Path, target_bytes: f64) -> Option<u64> {
         return Some(len);
     }
     if let Err(e) = std::fs::remove_file(expected) {
-        eprintln!(
-            "tamp: cannot remove stale output {}: {e}; encoding to a sibling",
+        crate::log_warn!(
+            "cannot remove stale output {}: {e}; encoding to a sibling",
             expected.display()
         );
     }
@@ -515,10 +542,7 @@ fn sweep_stale_siblings(expected: &Path, target_bytes: f64) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!(
-                "tamp: cannot scan {} for stale siblings: {e}",
-                dir.display()
-            );
+            crate::log_warn!("cannot scan {} for stale siblings: {e}", dir.display());
             return;
         }
     };
@@ -535,8 +559,8 @@ fn sweep_stale_siblings(expected: &Path, target_bytes: f64) {
             continue;
         }
         if let Err(e) = std::fs::remove_file(entry.path()) {
-            eprintln!(
-                "tamp: cannot remove stale over-target sibling {}: {e}",
+            crate::log_warn!(
+                "cannot remove stale over-target sibling {}: {e}",
                 entry.path().display()
             );
         }
@@ -690,7 +714,7 @@ async fn convergence_attempts(
                 Err(e) => Some(e),
             };
             if let Some(reason) = fallback_reason {
-                eprintln!("tamp: {reason}; falling back to two-pass libx264");
+                crate::log_warn!("{reason}; falling back to two-pass libx264");
                 use_hardware = false; // sticks for every later attempt too
             }
         }
@@ -717,15 +741,29 @@ async fn convergence_attempts(
             retry::EncoderKind::Software
         };
         match retry::next_action(plan.video_kbit, actual, target_bytes, attempt, encoder) {
-            retry::NextAction::Done => return Ok(actual),
+            retry::NextAction::Done => {
+                crate::log_info!(
+                    "attempt {attempt} ({encoder:?} at {} kbit) fits: {actual} bytes <= {target_bytes} byte target",
+                    plan.video_kbit
+                );
+                return Ok(actual);
+            }
             retry::NextAction::Retry {
                 video_kbit,
-                encoder,
+                encoder: next_encoder,
             } => {
+                crate::log_info!(
+                    "attempt {attempt} ({encoder:?} at {} kbit) overshot: {actual} bytes > {target_bytes} byte target; retrying at {video_kbit} kbit on {next_encoder:?}",
+                    plan.video_kbit
+                );
                 plan.video_kbit = video_kbit;
-                use_hardware = encoder == retry::EncoderKind::Hardware;
+                use_hardware = next_encoder == retry::EncoderKind::Hardware;
             }
             retry::NextAction::GiveUp => {
+                crate::log_warn!(
+                    "attempt {attempt} ({encoder:?} at {} kbit) overshot: {actual} bytes > {target_bytes} byte target; giving up",
+                    plan.video_kbit
+                );
                 return Err(retry::give_up_error(target_bytes / 1_000_000.0));
             }
         }
@@ -743,18 +781,24 @@ fn run_post_actions(
 ) -> Option<String> {
     let mut failures: Vec<String> = Vec::new();
     if post.copy_to_clipboard {
-        if let Err(e) = crate::platform::copy_file_to_clipboard(&inner.app, output) {
-            eprintln!("tamp: copy to clipboard failed: {e}");
-            failures.push(format!(
-                "Couldn't copy to clipboard (the file is at {}): {e}",
-                output.to_string_lossy()
-            ));
+        match crate::platform::copy_file_to_clipboard(&inner.app, output) {
+            Ok(()) => crate::log_info!("copied {} to clipboard", output.display()),
+            Err(e) => {
+                crate::log_error!("copy to clipboard failed for {}: {e}", output.display());
+                failures.push(format!(
+                    "Couldn't copy to clipboard (the file is at {}): {e}",
+                    output.to_string_lossy()
+                ));
+            }
         }
     }
     if post.trash_original {
-        if let Err(e) = trash::delete(input) {
-            eprintln!("tamp: failed to move original to Trash: {e}");
-            failures.push(format!("Couldn't move the original to Trash: {e}"));
+        match trash::delete(input) {
+            Ok(()) => crate::log_info!("moved original {} to Trash", input.display()),
+            Err(e) => {
+                crate::log_error!("failed to move original {} to Trash: {e}", input.display());
+                failures.push(format!("Couldn't move the original to Trash: {e}"));
+            }
         }
     }
     (!failures.is_empty()).then(|| failures.join("; "))
@@ -853,8 +897,13 @@ pub async fn run_hardware_pass(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    // `-v error` keeps stderr to actual error lines: without it ffmpeg's
+    // input-metadata dump (com.apple.quicktime…) drowns the real failure in
+    // the captured tail. `-progress pipe:1` still reports on stdout.
     cmd.args([
         "-y",
+        "-v",
+        "error",
         "-hide_banner",
         "-nostats",
         "-progress",
@@ -884,6 +933,7 @@ pub async fn run_hardware_pass(
         "hardware pass",
         cmd,
         info,
+        &plan.output,
         child_slot,
         is_cancelled,
         &mut |frac| on_progress(1, frac.clamp(0.0, 1.0)),
@@ -971,6 +1021,11 @@ async fn gif_attempts(
             .map_err(|e| format!("encoded output missing: {e}"))?
             .len();
         if actual as f64 <= target_bytes {
+            crate::log_info!(
+                "gif attempt {attempt} ({} fps, {} px) fits: {actual} bytes <= {target_bytes} byte target",
+                current.fps,
+                current.max_width
+            );
             return Ok(actual);
         }
         let give_up = if attempt == GIF_MAX_RETRIES {
@@ -981,10 +1036,24 @@ async fn gif_attempts(
             // its floor — re-encoding the exact same settings can't help, so
             // fail early (checked from the FIRST retry on).
             let stuck = next.fps == current.fps && next.max_width == current.max_width;
+            if !stuck {
+                crate::log_info!(
+                    "gif attempt {attempt} ({} fps, {} px) overshot: {actual} bytes > {target_bytes} byte target; retrying at {} fps, {} px",
+                    current.fps,
+                    current.max_width,
+                    next.fps,
+                    next.max_width
+                );
+            }
             current = next;
             stuck
         };
         if give_up {
+            crate::log_warn!(
+                "gif attempt {attempt} ({} fps, {} px) overshot: {actual} bytes > {target_bytes} byte target; giving up",
+                current.fps,
+                current.max_width
+            );
             return Err(retry::give_up_error(target_bytes / 1_000_000.0));
         }
     }
@@ -1003,8 +1072,13 @@ async fn run_gif_attempt(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    // `-v error` keeps stderr to actual error lines: without it ffmpeg's
+    // input-metadata dump (com.apple.quicktime…) drowns the real failure in
+    // the captured tail. `-progress pipe:1` still reports on stdout.
     cmd.args([
         "-y",
+        "-v",
+        "error",
         "-hide_banner",
         "-nostats",
         "-progress",
@@ -1022,6 +1096,7 @@ async fn run_gif_attempt(
         "gif encode",
         cmd,
         info,
+        &plan.output,
         child_slot,
         is_cancelled,
         &mut |frac| on_progress(1, frac.clamp(0.0, 1.0)),
@@ -1041,8 +1116,13 @@ async fn run_pass(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    // `-v error` keeps stderr to actual error lines: without it ffmpeg's
+    // input-metadata dump (com.apple.quicktime…) drowns the real failure in
+    // the captured tail. `-progress pipe:1` still reports on stdout.
     cmd.args([
         "-y",
+        "-v",
+        "error",
         "-hide_banner",
         "-nostats",
         "-progress",
@@ -1101,6 +1181,7 @@ async fn run_pass(
         &format!("pass {pass}"),
         cmd,
         info,
+        &plan.output,
         child_slot,
         is_cancelled,
         &mut |frac| on_progress(pass, progress::overall(pass, frac)),
@@ -1108,13 +1189,97 @@ async fn run_pass(
     .await
 }
 
+/// Lines of the stderr capture surfaced in the job row; the full capture
+/// goes to the log file.
+const ERROR_TAIL_LINES: usize = 3;
+/// Upper bound on the captured stderr lines. With `-v error` the capture is
+/// only actual error lines, so this is a safety net against a pathological
+/// flood, not a working limit.
+const STDERR_CAPTURE_LINES: usize = 500;
+
+/// The last `max_lines` non-empty lines of an ffmpeg stderr capture: the
+/// row-visible part of an encode error. Blank lines (and lines of pure
+/// whitespace) never count against the budget, so the meaningful error lines
+/// at the end of the capture are what the user sees.
+pub fn error_tail(stderr: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
+}
+
+/// The full ffmpeg argv as a shell-pasteable string, for the attempt-start
+/// log line (arguments containing spaces are quoted).
+fn format_argv(cmd: &tokio::process::Command) -> String {
+    let std_cmd = cmd.as_std();
+    std::iter::once(std_cmd.get_program())
+        .chain(std_cmd.get_args())
+        .map(|arg| {
+            let arg = arg.to_string_lossy();
+            if arg.contains(' ') {
+                format!("\"{arg}\"")
+            } else {
+                arg.into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Free bytes on the volume holding `path` (POSIX statvfs) — logged when an
+/// encode attempt fails, since a full output volume is the classic transient
+/// cause that a re-run hours later doesn't reproduce.
+#[cfg(target_os = "macos")]
+fn free_disk_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: cpath is a valid NUL-terminated path and stat points at
+    // properly sized writable memory; statvfs only writes into it.
+    if unsafe { libc::statvfs(cpath.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    Some(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn free_disk_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// Best-effort log of the output volume's free space after a failed attempt.
+fn log_output_volume_free_space(output: &Path) {
+    // The output itself may not exist (or have been cleaned up); its parent
+    // directory is on the same volume and always exists.
+    let probe_path = output.parent().filter(|p| !p.as_os_str().is_empty());
+    let Some(probe_path) = probe_path else { return };
+    match free_disk_bytes(probe_path) {
+        Some(free) => crate::log_info!(
+            "free space on the output volume ({}): {:.1} MB",
+            probe_path.display(),
+            free as f64 / 1_000_000.0
+        ),
+        None => crate::log_info!(
+            "free space on the output volume ({}) could not be determined",
+            probe_path.display()
+        ),
+    }
+}
+
 /// Spawns `cmd`, streams `-progress pipe:1` fractions of the input duration
 /// to `on_frac` (always called with 0.0 first and 1.0 on success), and parks
-/// the child in `child_slot` so cancel()/shutdown() can kill it.
+/// the child in `child_slot` so cancel()/shutdown() can kill it. `output` is
+/// the attempt's destination, used only for logging (result size on success,
+/// the volume's free space on failure).
 async fn run_ffmpeg_with_progress(
     label: &str,
     mut cmd: tokio::process::Command,
     info: &probe::ProbeInfo,
+    output: &Path,
     child_slot: &ChildSlot,
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_frac: &mut (dyn FnMut(f64) + Send),
@@ -1122,6 +1287,8 @@ async fn run_ffmpeg_with_progress(
     if is_cancelled() {
         return Err("cancelled".to_string());
     }
+
+    crate::log_info!("ffmpeg {label} starting: {}", format_argv(&cmd));
 
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1145,7 +1312,7 @@ async fn run_ffmpeg_with_progress(
         let mut lines = BufReader::new(stderr).lines();
         let mut tail: VecDeque<String> = VecDeque::new();
         while let Ok(Some(line)) = lines.next_line().await {
-            if tail.len() >= 30 {
+            if tail.len() >= STDERR_CAPTURE_LINES {
                 tail.pop_front();
             }
             tail.push_back(line);
@@ -1177,8 +1344,27 @@ async fn run_ffmpeg_with_progress(
     let tail = stderr_tail.await.unwrap_or_default();
 
     if !status.success() {
-        return Err(format!("ffmpeg {label} failed ({status})\n{tail}"));
+        // The FULL capture goes to the log; the row gets only the meaningful
+        // last lines, with the "ffmpeg {label} failed (...)" prefix intact.
+        if tail.trim().is_empty() {
+            crate::log_error!("ffmpeg {label} failed ({status}); no stderr output captured");
+        } else {
+            crate::log_error!("ffmpeg {label} failed ({status}); full stderr:\n{tail}");
+        }
+        log_output_volume_free_space(output);
+        let row_tail = error_tail(&tail, ERROR_TAIL_LINES);
+        return Err(if row_tail.is_empty() {
+            format!("ffmpeg {label} failed ({status})")
+        } else {
+            format!("ffmpeg {label} failed ({status})\n{row_tail}")
+        });
     }
+    let out_bytes = std::fs::metadata(output).map(|m| m.len()).ok();
+    crate::log_info!(
+        "ffmpeg {label} finished ({status}); output size: {}",
+        // Pass 1 writes to /dev/null, so there is nothing to stat.
+        out_bytes.map_or_else(|| "n/a".to_string(), |b| format!("{b} bytes"))
+    );
     on_frac(1.0);
     Ok(())
 }
@@ -1278,6 +1464,47 @@ mod tests {
         assert!(under.exists(), "an under-target sibling must survive");
         assert!(other_hash.exists(), "other configurations must survive");
         assert!(part.exists(), "in-flight part files must survive the sweep");
+    }
+
+    #[test]
+    fn error_tail_surfaces_the_error_lines_after_metadata_noise() {
+        // The user-reported failure shape: ffmpeg dumps the input metadata
+        // (com.apple.quicktime…) before the actual error lines; the row must
+        // show the errors, not the noise.
+        let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'rec.mov':\n\
+                      \x20 Metadata:\n\
+                      \x20   com.apple.quicktime.make: Apple\n\
+                      \x20   com.apple.quicktime.model: MacBookPro18,3\n\
+                      \x20   com.apple.quicktime.software: macOS 15.1\n\
+                      \n\
+                      [libx264 @ 0x7f8] could not open the encoder\n\
+                      Error while opening encoder for output stream #0:0\n\
+                      Conversion failed!";
+        assert_eq!(
+            error_tail(stderr, 3),
+            "[libx264 @ 0x7f8] could not open the encoder\n\
+             Error while opening encoder for output stream #0:0\n\
+             Conversion failed!"
+        );
+    }
+
+    #[test]
+    fn error_tail_skips_blank_and_whitespace_only_lines() {
+        let stderr = "first real line\n\n   \n\t\nlast real line\n\n";
+        assert_eq!(error_tail(stderr, 3), "first real line\nlast real line");
+    }
+
+    #[test]
+    fn error_tail_returns_everything_when_shorter_than_the_cap() {
+        assert_eq!(error_tail("only line", 3), "only line");
+        assert_eq!(error_tail("", 3), "");
+        assert_eq!(error_tail("\n \n", 3), "");
+    }
+
+    #[test]
+    fn error_tail_trims_trailing_whitespace_per_line() {
+        let stderr = "a   \nb\t\nc";
+        assert_eq!(error_tail(stderr, 2), "b\nc");
     }
 
     #[test]

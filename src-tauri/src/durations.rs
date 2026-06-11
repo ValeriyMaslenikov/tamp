@@ -29,7 +29,7 @@ impl Durations {
         match app.path().app_cache_dir() {
             Ok(dir) => Durations::load_from_path(dir.join(CACHE_FILE)),
             Err(e) => {
-                eprintln!("tamp: cannot resolve app cache dir for the duration cache: {e}");
+                crate::log_warn!("cannot resolve app cache dir for the duration cache: {e}");
                 Durations {
                     map: Mutex::new(HashMap::new()),
                     path: None,
@@ -45,13 +45,13 @@ impl Durations {
             Ok(bytes) => match serde_json::from_slice::<HashMap<String, f64>>(&bytes) {
                 Ok(map) => map,
                 Err(e) => {
-                    eprintln!("tamp: duration cache is unreadable, starting fresh: {e}");
+                    crate::log_warn!("duration cache is unreadable, starting fresh: {e}");
                     HashMap::new()
                 }
             },
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("tamp: cannot read duration cache: {e}");
+                    crate::log_warn!("cannot read duration cache: {e}");
                 }
                 HashMap::new()
             }
@@ -79,18 +79,18 @@ impl Durations {
         let json = match serde_json::to_vec(&*map) {
             Ok(json) => json,
             Err(e) => {
-                eprintln!("tamp: failed to serialize duration cache: {e}");
+                crate::log_warn!("failed to serialize duration cache: {e}");
                 return;
             }
         };
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("tamp: failed to create duration cache dir: {e}");
+                crate::log_warn!("failed to create duration cache dir: {e}");
                 return;
             }
         }
         if let Err(e) = std::fs::write(path, json) {
-            eprintln!("tamp: failed to persist duration cache: {e}");
+            crate::log_warn!("failed to persist duration cache: {e}");
         }
     }
 }
@@ -156,22 +156,27 @@ pub async fn fill(app: &AppHandle, videos: &mut [RecentVideo]) {
         while tasks.len() >= MAX_CONCURRENT {
             match tasks.join_next().await {
                 Some(Ok(done)) => apply(videos, &mut probed, done),
-                Some(Err(e)) => eprintln!("tamp: duration probe task failed: {e}"),
+                Some(Err(e)) => crate::log_warn!("duration probe task failed: {e}"),
                 None => break,
             }
         }
         tasks.spawn(async move {
-            let secs = crate::encoder::probe::probe(&input)
-                .await
-                .ok()
-                .map(|info| info.duration_secs);
+            let secs = match crate::encoder::probe::probe(&input).await {
+                Ok(info) => Some(info.duration_secs),
+                Err(e) => {
+                    // Tolerated (retried on the next listing) but logged: a
+                    // video that never gets a duration is worth noticing.
+                    crate::log_warn!("duration probe failed for {}: {e}", input.display());
+                    None
+                }
+            };
             (idx, key, secs)
         });
     }
     while let Some(joined) = tasks.join_next().await {
         match joined {
             Ok(done) => apply(videos, &mut probed, done),
-            Err(e) => eprintln!("tamp: duration probe task failed: {e}"),
+            Err(e) => crate::log_warn!("duration probe task failed: {e}"),
         }
     }
 

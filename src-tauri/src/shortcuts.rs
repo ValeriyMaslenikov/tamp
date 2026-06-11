@@ -38,6 +38,9 @@ pub fn apply(app: &AppHandle, settings: &Settings) -> Result<(), String> {
                 }
             })
             .map_err(|e| format!("Invalid \"compress latest\" shortcut \"{accel}\": {e}"))?;
+        crate::log_info!("registered compress-latest global shortcut \"{accel}\"");
+    } else {
+        crate::log_info!("compress-latest global shortcut is disabled");
     }
     if let Some(accel) = enabled(&settings.shortcut_toggle_panel) {
         let handler_app = app.clone();
@@ -48,6 +51,9 @@ pub fn apply(app: &AppHandle, settings: &Settings) -> Result<(), String> {
                 }
             })
             .map_err(|e| format!("Invalid \"toggle panel\" shortcut \"{accel}\": {e}"))?;
+        crate::log_info!("registered toggle-panel global shortcut \"{accel}\"");
+    } else {
+        crate::log_info!("toggle-panel global shortcut is disabled");
     }
     Ok(())
 }
@@ -70,16 +76,16 @@ pub fn notify(app: &AppHandle, body: String) {
             Ok(PermissionState::Granted)
         ),
         Err(e) => {
-            eprintln!("tamp: cannot read notification permission: {e}");
+            crate::log_warn!("cannot read notification permission: {e}");
             false
         }
     };
     if !granted {
-        eprintln!("tamp: notifications not permitted; wanted to say: {body}");
+        crate::log_warn!("notifications not permitted; wanted to say: {body}");
         return;
     }
     if let Err(e) = notifications.builder().title("tamp").body(&body).show() {
-        eprintln!("tamp: failed to show notification: {e}");
+        crate::log_warn!("failed to show notification: {e}");
     }
 }
 
@@ -106,7 +112,7 @@ fn compress_latest(app: &AppHandle) {
         })
         .await
         .unwrap_or_else(|e| {
-            eprintln!("tamp: compress-latest scan failed: {e}");
+            crate::log_error!("compress-latest scan failed: {e}");
             Vec::new()
         });
         let Some(latest) = scanned.into_iter().find(|v| !v.is_output) else {

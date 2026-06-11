@@ -41,7 +41,7 @@ impl Journal {
         match app.path().app_data_dir() {
             Ok(dir) => Journal::load_from_path(dir.join(JOURNAL_FILE)),
             Err(e) => {
-                eprintln!("tamp: cannot resolve app data dir for the conversion journal: {e}");
+                crate::log_warn!("cannot resolve app data dir for the conversion journal: {e}");
                 Journal {
                     records: Mutex::new(Vec::new()),
                     path: None,
@@ -58,14 +58,14 @@ impl Journal {
             Ok(bytes) => match serde_json::from_slice::<Vec<ConversionRecord>>(&bytes) {
                 Ok(records) => records,
                 Err(e) => {
-                    eprintln!("tamp: conversion journal is unreadable, starting fresh: {e}");
+                    crate::log_warn!("conversion journal is unreadable, starting fresh: {e}");
                     backup_corrupt(&path);
                     Vec::new()
                 }
             },
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("tamp: cannot read conversion journal: {e}");
+                    crate::log_warn!("cannot read conversion journal: {e}");
                 }
                 Vec::new()
             }
@@ -101,18 +101,18 @@ impl Journal {
         let json = match serde_json::to_vec(records) {
             Ok(json) => json,
             Err(e) => {
-                eprintln!("tamp: failed to serialize conversion journal: {e}");
+                crate::log_warn!("failed to serialize conversion journal: {e}");
                 return;
             }
         };
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("tamp: failed to create conversion journal dir: {e}");
+                crate::log_warn!("failed to create conversion journal dir: {e}");
                 return;
             }
         }
         if let Err(e) = std::fs::write(path, json) {
-            eprintln!("tamp: failed to persist conversion journal: {e}");
+            crate::log_warn!("failed to persist conversion journal: {e}");
         }
     }
 }
@@ -122,8 +122,8 @@ impl Journal {
 fn backup_corrupt(path: &Path) {
     let backup = path.with_extension("json.bak");
     if let Err(e) = std::fs::copy(path, &backup) {
-        eprintln!(
-            "tamp: failed to back up corrupt conversion journal to {}: {e}",
+        crate::log_warn!(
+            "failed to back up corrupt conversion journal to {}: {e}",
             backup.display()
         );
     }

@@ -2,6 +2,7 @@ mod commands;
 mod durations;
 pub mod encoder;
 pub mod journal;
+pub mod logging;
 pub mod platform;
 mod previews;
 mod scanner;
@@ -30,7 +31,7 @@ fn migrate_legacy_data(app: &AppHandle) {
     let data_dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("tamp: cannot resolve app data dir for legacy migration: {e}");
+            log_error!("cannot resolve app data dir for legacy migration: {e}");
             return;
         }
     };
@@ -44,7 +45,7 @@ fn migrate_legacy_data(app: &AppHandle) {
         return;
     }
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        eprintln!("tamp: cannot create app data dir for legacy migration: {e}");
+        log_error!("cannot create app data dir for legacy migration: {e}");
         return;
     }
     for file in ["settings.json", "conversions.json"] {
@@ -53,8 +54,8 @@ fn migrate_legacy_data(app: &AppHandle) {
             continue;
         }
         match std::fs::copy(&src, data_dir.join(file)) {
-            Ok(_) => eprintln!("tamp: migrated {file} from {}", legacy_dir.display()),
-            Err(e) => eprintln!("tamp: failed to migrate legacy {file}: {e}"),
+            Ok(_) => log_info!("migrated {file} from {}", legacy_dir.display()),
+            Err(e) => log_error!("failed to migrate legacy {file}: {e}"),
         }
     }
 }
@@ -92,7 +93,7 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         if panel.is_visible().unwrap_or(false) {
             if let Err(e) = panel.hide() {
-                eprintln!("tamp: failed to hide panel: {e}");
+                log_warn!("failed to hide panel: {e}");
             }
             return;
         }
@@ -119,6 +120,23 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // File logging first so everything below (including migration and
+            // settings load) is captured. Failure is non-fatal: debug builds
+            // still mirror to stderr.
+            match app.path().app_log_dir() {
+                Ok(dir) => {
+                    if let Err(e) = logging::init(dir) {
+                        eprintln!("tamp: cannot initialize file logging: {e}");
+                    }
+                }
+                Err(e) => eprintln!("tamp: cannot resolve app log dir: {e}"),
+            }
+            log_info!(
+                "tamp {} ({}) starting",
+                app.package_info().version,
+                app.config().identifier
+            );
+
             migrate_legacy_data(app.handle());
             let loaded = settings::load(app.handle());
 
@@ -126,14 +144,14 @@ pub fn run() {
             // identifier; re-enabling rewrites it against the current app.
             if loaded.launch_at_login {
                 if let Err(e) = app.autolaunch().enable() {
-                    eprintln!("tamp: failed to refresh launch-at-login agent: {e}");
+                    log_warn!("failed to refresh launch-at-login agent: {e}");
                 }
             }
 
             let scope = app.asset_protocol_scope();
             for folder in &loaded.watched_folders {
                 if let Err(e) = scope.allow_directory(folder, false) {
-                    eprintln!("tamp: failed to allow asset access to {folder}: {e}");
+                    log_warn!("failed to allow asset access to {folder}: {e}");
                 }
             }
             match app.path().app_cache_dir() {
@@ -141,14 +159,14 @@ pub fn run() {
                     for (subdir, what) in [("thumbs", "thumbnail"), ("previews", "preview")] {
                         let dir = cache_dir.join(subdir);
                         if let Err(e) = std::fs::create_dir_all(&dir) {
-                            eprintln!("tamp: failed to create {what} cache dir: {e}");
+                            log_warn!("failed to create {what} cache dir: {e}");
                         }
                         if let Err(e) = scope.allow_directory(&dir, false) {
-                            eprintln!("tamp: failed to allow asset access to {what} cache: {e}");
+                            log_warn!("failed to allow asset access to {what} cache: {e}");
                         }
                     }
                 }
-                Err(e) => eprintln!("tamp: cannot resolve app cache dir: {e}"),
+                Err(e) => log_warn!("cannot resolve app cache dir: {e}"),
             }
 
             app.manage(settings::SettingsState(std::sync::Mutex::new(
@@ -166,17 +184,17 @@ pub fn run() {
             // grabbed since must not prevent launching (the next
             // save_settings surfaces the error to the user).
             if let Err(e) = shortcuts::apply(app.handle(), &loaded) {
-                eprintln!("tamp: failed to register global shortcuts: {e}");
+                log_warn!("failed to register global shortcuts: {e}");
             }
 
             // Tray panels must follow the user across Spaces/displays; without
             // this the panel opens on the Space the app launched on.
             if let Some(panel) = app.get_webview_window("panel") {
                 if let Err(e) = panel.set_visible_on_all_workspaces(true) {
-                    eprintln!("tamp: failed to set panel visible on all workspaces: {e}");
+                    log_warn!("failed to set panel visible on all workspaces: {e}");
                 }
                 if let Err(e) = platform::configure_panel(&panel) {
-                    eprintln!("tamp: failed to configure panel for full-screen overlay: {e}");
+                    log_warn!("failed to configure panel for full-screen overlay: {e}");
                 }
             }
             Ok(())
@@ -197,7 +215,7 @@ pub fn run() {
                         return;
                     }
                     if let Err(e) = _window.hide() {
-                        eprintln!("tamp: failed to hide panel on focus loss: {e}");
+                        log_warn!("failed to hide panel on focus loss: {e}");
                     }
                 }
             }

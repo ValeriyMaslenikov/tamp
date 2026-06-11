@@ -93,7 +93,7 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
         let entries = match std::fs::read_dir(folder) {
             Ok(entries) => entries,
             Err(e) => {
-                eprintln!("tamp: cannot read watched folder {}: {e}", folder.display());
+                crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
                 continue;
             }
         };

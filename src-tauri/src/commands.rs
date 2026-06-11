@@ -70,7 +70,7 @@ pub fn save_settings(
         if crate::shortcuts::changed(&previous, &settings) {
             if let Err(err) = crate::shortcuts::apply(&app, &settings) {
                 if let Err(rollback) = crate::shortcuts::apply(&app, &previous) {
-                    eprintln!("tamp: failed to restore previous global shortcuts: {rollback}");
+                    crate::log_error!("failed to restore previous global shortcuts: {rollback}");
                 }
                 return Err(err);
             }
@@ -91,7 +91,7 @@ pub fn save_settings(
             autolaunch.disable()
         };
         if let Err(e) = result {
-            eprintln!("tamp: failed to update launch-at-login: {e}");
+            crate::log_error!("failed to update launch-at-login: {e}");
             autostart_error = Some(e.to_string());
         }
     }
@@ -112,7 +112,7 @@ pub fn save_settings(
     for folder in &canonical.watched_folders {
         if !previous_folders.contains(folder) {
             if let Err(e) = app.asset_protocol_scope().allow_directory(folder, false) {
-                eprintln!("tamp: failed to extend asset scope for {folder}: {e}");
+                crate::log_warn!("failed to extend asset scope for {folder}: {e}");
             }
         }
     }
@@ -120,7 +120,7 @@ pub fn save_settings(
     *lock_settings(&state) = canonical.clone();
 
     if let Err(e) = app.emit("settings:changed", &canonical) {
-        eprintln!("tamp: failed to emit settings:changed: {e}");
+        crate::log_warn!("failed to emit settings:changed: {e}");
     }
     if let Some(reason) = autostart_error {
         return Err(format!("Couldn't update Launch at login: {reason}"));
@@ -164,13 +164,13 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
         Ok(Some(file_path)) => match file_path.into_path() {
             Ok(path) => Some(path.to_string_lossy().into_owned()),
             Err(e) => {
-                eprintln!("tamp: folder picker returned a non-path location: {e}");
+                crate::log_warn!("folder picker returned a non-path location: {e}");
                 None
             }
         },
         Ok(None) => None,
         Err(e) => {
-            eprintln!("tamp: folder picker task failed: {e}");
+            crate::log_error!("folder picker task failed: {e}");
             None
         }
     }
@@ -325,7 +325,7 @@ pub fn reveal(path: String) {
             .args(["-R", &path])
             .spawn()
         {
-            eprintln!("tamp: failed to reveal {path}: {e}");
+            crate::log_error!("failed to reveal {path}: {e}");
         }
     }
     #[cfg(not(target_os = "macos"))]

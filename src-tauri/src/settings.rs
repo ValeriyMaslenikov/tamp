@@ -90,7 +90,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         .home_dir()
         .map(|home| vec![home.join("Desktop").to_string_lossy().into_owned()])
         .unwrap_or_else(|e| {
-            eprintln!("tamp: cannot resolve home dir for default watched folder: {e}");
+            crate::log_warn!("cannot resolve home dir for default watched folder: {e}");
             Vec::new()
         });
     Settings {
@@ -120,7 +120,7 @@ pub fn load(app: &AppHandle) -> Settings {
     let store = match app.store(STORE_FILE) {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("tamp: failed to open settings store, using defaults: {e}");
+            crate::log_error!("failed to open settings store, using defaults: {e}");
             return default_settings(app);
         }
     };
@@ -130,19 +130,29 @@ pub fn load(app: &AppHandle) -> Settings {
                 // Field-level serde defaults can leave presets empty for old
                 // stores; re-seed so the app always has a usable preset.
                 if settings.presets.is_empty() {
+                    crate::log_info!("stored settings carry no presets; re-seeding the defaults");
                     let defaults = default_settings(app);
                     settings.presets = defaults.presets;
                     settings.default_preset_id = defaults.default_preset_id;
                 }
+                crate::log_info!(
+                    "settings loaded: {} watched folder(s), {} preset(s), default preset \"{}\"",
+                    settings.watched_folders.len(),
+                    settings.presets.len(),
+                    settings.default_preset_id
+                );
                 settings
             }
             Err(e) => {
-                eprintln!("tamp: stored settings are unreadable, falling back to defaults: {e}");
+                crate::log_error!("stored settings are unreadable, falling back to defaults: {e}");
                 backup_store_file(app);
                 default_settings(app)
             }
         },
-        None => default_settings(app),
+        None => {
+            crate::log_info!("no stored settings; using defaults");
+            default_settings(app)
+        }
     }
 }
 
@@ -152,14 +162,14 @@ fn backup_store_file(app: &AppHandle) {
     let path = match tauri_plugin_store::resolve_store_path(app, STORE_FILE) {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("tamp: cannot resolve settings store path for backup: {e}");
+            crate::log_warn!("cannot resolve settings store path for backup: {e}");
             return;
         }
     };
     let backup = path.with_extension("json.bak");
     if let Err(e) = std::fs::copy(&path, &backup) {
-        eprintln!(
-            "tamp: failed to back up unreadable settings to {}: {e}",
+        crate::log_warn!(
+            "failed to back up unreadable settings to {}: {e}",
             backup.display()
         );
     }
@@ -174,7 +184,14 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     store.set(STORE_KEY, value);
     store
         .save()
-        .map_err(|e| format!("failed to persist settings: {e}"))
+        .map_err(|e| format!("failed to persist settings: {e}"))?;
+    crate::log_info!(
+        "settings saved: {} watched folder(s), {} preset(s), default preset \"{}\"",
+        settings.watched_folders.len(),
+        settings.presets.len(),
+        settings.default_preset_id
+    );
+    Ok(())
 }
 
 pub fn validate(settings: &Settings) -> Result<(), String> {

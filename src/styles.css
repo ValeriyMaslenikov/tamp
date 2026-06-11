@@ -292,6 +292,34 @@ textarea {
   overflow: hidden;
 }
 
+/* Magnifier next to the file name; reveals the file in Finder. */
+.row-reveal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -3px;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: 5px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.row-reveal:hover {
+  color: var(--text);
+}
+
+.row-reveal svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
 .row-meta {
   display: flex;
   gap: 16px;
@@ -352,11 +380,17 @@ textarea {
 }
 
 .row-error {
+  flex-basis: 100%;
   color: var(--danger);
   font-weight: 500;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Backend errors carry up to ~3 lines; clamp there, full text in title. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .row-cancel {

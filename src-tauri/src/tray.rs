@@ -4,8 +4,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    let open_logs = MenuItemBuilder::with_id("open-logs", "Open Logs").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit tamp").build(app)?;
-    let menu = MenuBuilder::new(app).item(&quit).build()?;
+    let menu = MenuBuilder::new(app).item(&open_logs).item(&quit).build()?;
 
     TrayIconBuilder::with_id("main")
         .icon(tauri::include_image!("icons/trayicon.png"))
@@ -13,10 +14,10 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("tamp")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() == "quit" {
-                app.exit(0);
-            }
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open-logs" => open_logs_dir(app),
+            "quit" => app.exit(0),
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             // The positioner caches the tray rect from these events;
@@ -35,25 +36,48 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Opens the app's log directory in Finder. The dir is created first so a
+/// fresh install (or a failed logger init) still has something to open.
+fn open_logs_dir(app: &AppHandle) {
+    let dir = match app.path().app_log_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            crate::log_error!("cannot resolve app log dir: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        crate::log_error!("cannot create log dir {}: {e}", dir.display());
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(e) = std::process::Command::new("/usr/bin/open")
+        .arg(&dir)
+        .spawn()
+    {
+        crate::log_error!("failed to open log dir {}: {e}", dir.display());
+    }
+}
+
 fn toggle_panel(app: &AppHandle) {
     let Some(panel) = app.get_webview_window("panel") else {
-        eprintln!("tamp: panel window not found");
+        crate::log_error!("panel window not found");
         return;
     };
     if panel.is_visible().unwrap_or(false) {
         if let Err(e) = panel.hide() {
-            eprintln!("tamp: failed to hide panel: {e}");
+            crate::log_warn!("failed to hide panel: {e}");
         }
     } else {
         if let Err(e) = panel.move_window(Position::TrayBottomCenter) {
-            eprintln!("tamp: failed to position panel under tray icon: {e}");
+            crate::log_warn!("failed to position panel under tray icon: {e}");
         }
         if let Err(e) = panel.show() {
-            eprintln!("tamp: failed to show panel: {e}");
+            crate::log_warn!("failed to show panel: {e}");
         }
         let _ = panel.set_focus();
         if let Err(e) = app.emit("panel:shown", ()) {
-            eprintln!("tamp: failed to emit panel:shown: {e}");
+            crate::log_warn!("failed to emit panel:shown: {e}");
         }
     }
 }
@@ -63,6 +87,6 @@ pub fn set_progress(app: &AppHandle, text: Option<String>) {
         return;
     };
     if let Err(e) = tray.set_title(text.as_deref()) {
-        eprintln!("tamp: failed to set tray title: {e}");
+        crate::log_warn!("failed to set tray title: {e}");
     }
 }

@@ -7,6 +7,7 @@ import {
   ensurePreview,
   listRecents,
   queueState,
+  reveal,
   type JobState,
   type Phase,
   type RecentVideo,
@@ -620,6 +621,24 @@ export function createListView(getSettings: () => Settings | null): ListView {
     row.classList.remove("is-expanded");
   }
 
+  /** Small magnifier button that reveals the file in Finder. */
+  function buildRevealButton(path: string): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "row-reveal";
+    btn.title = "Reveal in Finder";
+    btn.tabIndex = -1; // arrow-key selection owns keyboard focus
+    btn.innerHTML =
+      `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ` +
+      `stroke-width="1.5" stroke-linecap="round" aria-hidden="true">` +
+      `<circle cx="7" cy="7" r="4.25"/><path d="M10.3 10.3 13.5 13.5"/></svg>`;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      reveal(path).catch((err) => showToast(String(err)));
+    });
+    return btn;
+  }
+
   function buildRow(v: RecentVideo): HTMLElement {
     const row = document.createElement("div");
     row.className = "row";
@@ -657,8 +676,11 @@ export function createListView(getSettings: () => Settings | null): ListView {
       if (v.conversion?.presetName) badge.title = v.conversion.presetName;
       name.append(text, badge);
     } else {
-      name.textContent = truncateMiddle(v.name, 36);
+      const text = document.createElement("span");
+      text.textContent = truncateMiddle(v.name, 36);
+      name.appendChild(text);
     }
+    name.appendChild(buildRevealButton(v.path));
 
     const sizeText =
       v.isOutput && v.conversion?.originalBytes != null
@@ -789,7 +811,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
       case "failed": {
         status.innerHTML = `<span class="row-error"></span>`;
         const errEl = status.querySelector<HTMLElement>(".row-error");
-        if (errEl) errEl.textContent = j.error ?? "Encoding failed";
+        if (errEl) {
+          // The clamp hides anything past three lines; hover shows it all.
+          const msg = j.error ?? "Encoding failed";
+          errEl.textContent = msg;
+          errEl.title = msg;
+        }
         bar.style.width = "0%";
         break;
       }

@@ -33,10 +33,14 @@ fn is_valid_thumb(path: &Path) -> bool {
 
 async fn generate(ffmpeg: &Path, input: &Path, output: &Path) -> bool {
     // Try grabbing a frame at 1s for a representative image; very short clips
-    // produce nothing there, so retry from the start.
+    // produce nothing there, so retry from the start. Only the second
+    // attempt's failure is logged — the first failing is the expected
+    // short-clip case, not a problem.
+    let mut last_failure: Option<String> = None;
     for seek in [Some("1"), None] {
         let mut cmd = tokio::process::Command::new(ffmpeg);
-        cmd.arg("-y");
+        // `-v error` keeps the captured stderr to actual error lines.
+        cmd.args(["-y", "-v", "error"]);
         if let Some(seek) = seek {
             cmd.args(["-ss", seek]);
         }
@@ -46,15 +50,28 @@ async fn generate(ffmpeg: &Path, input: &Path, output: &Path) -> bool {
             .arg(output)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        match cmd.status().await {
-            Ok(status) if status.success() && is_valid_thumb(output) => return true,
-            Ok(_) => continue,
+            .stderr(std::process::Stdio::piped());
+        match cmd.output().await {
+            Ok(out) if out.status.success() && is_valid_thumb(output) => return true,
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                last_failure = Some(format!("({}) {}", out.status, stderr.trim()));
+                continue;
+            }
             Err(e) => {
-                eprintln!("tamp: failed to spawn ffmpeg for thumbnail: {e}");
+                crate::log_warn!(
+                    "failed to spawn ffmpeg for thumbnail of {}: {e}",
+                    input.display()
+                );
                 return false;
             }
         }
+    }
+    if let Some(failure) = last_failure {
+        crate::log_warn!(
+            "thumbnail generation failed for {}: {failure}",
+            input.display()
+        );
     }
     // Don't leave a 0-byte file behind: the cache check would treat it as done.
     let _ = std::fs::remove_file(output);
@@ -71,12 +88,12 @@ pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
     let thumbs_dir = match app.path().app_cache_dir() {
         Ok(dir) => dir.join("thumbs"),
         Err(e) => {
-            eprintln!("tamp: cannot resolve cache dir for thumbnails: {e}");
+            crate::log_warn!("cannot resolve cache dir for thumbnails: {e}");
             return;
         }
     };
     if let Err(e) = std::fs::create_dir_all(&thumbs_dir) {
-        eprintln!("tamp: cannot create thumbnail cache dir: {e}");
+        crate::log_warn!("cannot create thumbnail cache dir: {e}");
         return;
     }
     let ffmpeg = crate::encoder::bin::ffmpeg_path();
@@ -96,7 +113,7 @@ pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
         while tasks.len() >= MAX_CONCURRENT {
             match tasks.join_next().await {
                 Some(Ok((done_idx, thumb))) => apply(videos, done_idx, thumb),
-                Some(Err(e)) => eprintln!("tamp: thumbnail task failed: {e}"),
+                Some(Err(e)) => crate::log_warn!("thumbnail task failed: {e}"),
                 None => break,
             }
         }
@@ -109,7 +126,7 @@ pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
     while let Some(joined) = tasks.join_next().await {
         match joined {
             Ok((idx, thumb)) => apply(videos, idx, thumb),
-            Err(e) => eprintln!("tamp: thumbnail task failed: {e}"),
+            Err(e) => crate::log_warn!("thumbnail task failed: {e}"),
         }
     }
 }

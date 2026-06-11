@@ -100,7 +100,10 @@ pub async fn ensure_preview(app: &AppHandle, path: &str) -> Result<String, Strin
         }
     };
     state.in_flight.lock().unwrap().remove(&key);
-    result?;
+    if let Err(e) = result {
+        crate::log_warn!("preview generation failed for {path}: {e}");
+        return Err(e);
+    }
 
     prune(&previews_dir);
     Ok(cached.to_string_lossy().into_owned())
@@ -131,10 +134,13 @@ async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
         let seg_name = format!("seg{i}.mp4");
         let seg = tmp.path().join(&seg_name);
         // Input-side -ss for fast seeking; ultrafast/CRF 30 because this is a
-        // throwaway proxy, not a deliverable.
-        let status = tokio::process::Command::new(&ffmpeg)
+        // throwaway proxy, not a deliverable. `-v error` keeps the captured
+        // stderr to actual error lines.
+        let out = tokio::process::Command::new(&ffmpeg)
             .args([
                 "-y",
+                "-v",
+                "error",
                 "-ss",
                 &format!("{start:.3}"),
                 "-t",
@@ -158,12 +164,17 @@ async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
             .arg(&seg)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::piped())
+            .output()
             .await
             .map_err(|e| format!("failed to run ffmpeg for preview segment: {e}"))?;
-        if !status.success() || !is_valid(&seg) {
-            return Err(format!("preview segment {i} failed ({status})"));
+        if !out.status.success() || !is_valid(&seg) {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "preview segment {i} failed ({}): {}",
+                out.status,
+                stderr.trim()
+            ));
         }
         concat_list.push_str(&format!("file '{seg_name}'\n"));
     }
@@ -174,19 +185,24 @@ async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
     std::fs::write(&list_path, concat_list)
         .map_err(|e| format!("cannot write concat list: {e}"))?;
     let joined = tmp.path().join("preview.mp4");
-    let status = tokio::process::Command::new(&ffmpeg)
-        .args(["-y", "-f", "concat", "-safe", "0", "-i"])
+    let out = tokio::process::Command::new(&ffmpeg)
+        .args(["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
         .args(["-c", "copy", "-movflags", "+faststart"])
         .arg(&joined)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .await
         .map_err(|e| format!("failed to run ffmpeg concat for preview: {e}"))?;
-    if !status.success() || !is_valid(&joined) {
-        return Err(format!("preview concat failed ({status})"));
+    if !out.status.success() || !is_valid(&joined) {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "preview concat failed ({}): {}",
+            out.status,
+            stderr.trim()
+        ));
     }
 
     // Land in the cache atomically: copy into a sibling .part first (the
@@ -202,7 +218,7 @@ fn prune(dir: &Path) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("tamp: cannot read preview cache dir for pruning: {e}");
+            crate::log_warn!("cannot read preview cache dir for pruning: {e}");
             return;
         }
     };
@@ -222,7 +238,7 @@ fn prune(dir: &Path) {
     files.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
     for (path, _) in files.drain(MAX_CACHED..) {
         if let Err(e) = std::fs::remove_file(&path) {
-            eprintln!("tamp: failed to prune preview {}: {e}", path.display());
+            crate::log_warn!("failed to prune preview {}: {e}", path.display());
         }
     }
 }
