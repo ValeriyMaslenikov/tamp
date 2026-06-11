@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the tray panel window",
+  "windows": ["panel"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide"
+  ]
+}

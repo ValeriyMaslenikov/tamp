@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>tamp reads your screen recordings from the Desktop to compress them.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>tamp reads videos from folders you add to compress them.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>tamp reads videos from folders you add to compress them.</string>
+</dict>
+</plist>

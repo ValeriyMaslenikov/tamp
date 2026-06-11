@@ -1,0 +1,49 @@
+[package]
+name = "tamp"
+version = "0.1.0"
+description = "Shrink screen recordings to a target size, right from your menu bar."
+authors = ["Valerii Maslenykov"]
+license = "MIT"
+repository = "https://github.com/ValeriyMaslenikov/tamp"
+edition = "2021"
+# MSRV-aware dependency resolution: the local toolchain is rustc 1.85, but
+# several transitive deps' latest releases require 1.86+.
+rust-version = "1.85"
+resolver = "3"
+
+[lib]
+name = "tamp_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "protocol-asset"] }
+tauri-plugin-store = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "time"] }
+thiserror = "2"
+trash = "5"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree transitively; a direct dep only for statvfs (logging
+# the output volume's free space when an encode attempt fails).
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSResponder", "NSWindow"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSEnumerator"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
