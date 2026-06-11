@@ -80,7 +80,7 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
             });
         }
     }
-    videos.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    videos.sort_by_key(|v| std::cmp::Reverse(v.created_ms));
     videos.truncate(limit);
     videos
 }
