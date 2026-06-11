@@ -2,9 +2,17 @@ import {
   getSettings,
   pickFolder,
   saveSettings,
+  type OutputFormat,
   type Preset,
   type Settings,
 } from "../lib/ipc";
+import {
+  field,
+  formatSelect,
+  numberInput,
+  parseOptionalPositiveInt,
+  switchRow,
+} from "../lib/forms";
 import { showToast } from "../lib/toast";
 
 export interface PreferencesView {
@@ -107,6 +115,7 @@ export function createPreferencesView(opts: {
       el.append(add);
     }
     el.append(sectionLabel("Behavior"), behaviorCard());
+    el.append(sectionLabel("Shortcuts"), shortcutsCard());
     el.append(sectionLabel("Watched folders"), foldersCard());
   }
 
@@ -127,6 +136,7 @@ export function createPreferencesView(opts: {
 
   function presetSummary(p: Preset): string {
     const parts = [`≤ ${p.targetMb} MB`];
+    if (p.format && p.format !== "mp4") parts.push(p.format);
     if (p.maxFps != null) parts.push(`${p.maxFps} fps`);
     if (p.maxWidth != null) parts.push(`${p.maxWidth}px`);
     else if (p.scalePercent != null) parts.push(`${p.scalePercent}%`);
@@ -188,28 +198,6 @@ export function createPreferencesView(opts: {
     return card;
   }
 
-  function field(labelText: string, input: HTMLElement): HTMLElement {
-    const wrap = document.createElement("div");
-    wrap.className = "field";
-    const label = document.createElement("span");
-    label.className = "field-label";
-    label.textContent = labelText;
-    wrap.append(label, input);
-    return wrap;
-  }
-
-  function numberInput(
-    value: number | null,
-    placeholder: string,
-  ): HTMLInputElement {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.className = "input";
-    input.placeholder = placeholder;
-    if (value != null) input.value = String(value);
-    return input;
-  }
-
   function editorCard(p: Preset | null): HTMLElement {
     const card = document.createElement("div");
     card.className = "card preset-editor";
@@ -236,13 +224,9 @@ export function createPreferencesView(opts: {
       if (scaleInput.value.trim() !== "") widthInput.value = "";
     });
 
-    const audioRow = document.createElement("label");
-    audioRow.className = "toggle-row toggle-row-flat";
-    audioRow.innerHTML =
-      `<span class="toggle-label">Strip audio</span>` +
-      `<span class="switch"><input type="checkbox"><span class="track"></span></span>`;
-    const audioInput = audioRow.querySelector("input") as HTMLInputElement;
-    audioInput.checked = p?.stripAudio ?? false;
+    const formatInput = formatSelect(p?.format ?? "mp4");
+
+    const audio = switchRow("Strip audio", p?.stripAudio ?? false);
 
     const grid1 = document.createElement("div");
     grid1.className = "field-grid";
@@ -259,6 +243,10 @@ export function createPreferencesView(opts: {
     const hint = document.createElement("div");
     hint.className = "field-hint";
     hint.textContent = "Max width and scale % are mutually exclusive.";
+
+    const grid3 = document.createElement("div");
+    grid3.className = "field-grid";
+    grid3.append(field("Format", formatInput));
 
     const actions = document.createElement("div");
     actions.className = "editor-actions";
@@ -293,7 +281,8 @@ export function createPreferencesView(opts: {
         maxFps: fps,
         maxWidth: width,
         scalePercent: width != null ? null : scale,
-        stripAudio: audioInput.checked,
+        stripAudio: audio.input.checked,
+        format: formatInput.value as OutputFormat,
       };
       void persist((d) => {
         const idx = d.presets.findIndex((x) => x.id === preset.id);
@@ -308,17 +297,8 @@ export function createPreferencesView(opts: {
     });
     actions.append(save, cancel);
 
-    card.append(grid1, grid2, hint, audioRow, actions);
+    card.append(grid1, grid2, hint, grid3, audio.row, actions);
     return card;
-  }
-
-  /** "" -> null; positive integer -> number; anything else -> undefined (invalid). */
-  function parseOptionalPositiveInt(raw: string): number | null | undefined {
-    const t = raw.trim();
-    if (!t) return null;
-    const n = Number(t);
-    if (!Number.isInteger(n) || n <= 0) return undefined;
-    return n;
   }
 
   function toggleRow(
@@ -368,6 +348,79 @@ export function createPreferencesView(opts: {
         }),
       ),
     );
+    return card;
+  }
+
+  /** Accelerator text input; empty disables. Persists on change (blur/Enter). */
+  function shortcutField(
+    labelText: string,
+    value: string | null,
+    placeholder: string,
+    apply: (d: Settings, v: string | null) => void,
+  ): HTMLElement {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "input";
+    input.placeholder = placeholder;
+    input.value = value ?? "";
+    input.addEventListener("change", () => {
+      const v = input.value.trim();
+      // The backend validates by attempting registration and rejects bad
+      // accelerators; persist() then snaps back to the canonical settings.
+      void persist((d) => apply(d, v === "" ? null : v));
+    });
+    return field(labelText, input);
+  }
+
+  function shortcutsCard(): HTMLElement {
+    const s = current as Settings;
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const stack = document.createElement("div");
+    stack.className = "field-stack";
+    stack.append(
+      shortcutField(
+        "Compress latest recording",
+        s.shortcutCompressLatest,
+        "CmdOrCtrl+Alt+T",
+        (d, v) => {
+          d.shortcutCompressLatest = v;
+        },
+      ),
+      shortcutField(
+        "Show / hide panel",
+        s.shortcutTogglePanel,
+        "CmdOrCtrl+Alt+O",
+        (d, v) => {
+          d.shortcutTogglePanel = v;
+        },
+      ),
+    );
+
+    const staleInput = numberInput(s.staleWarnMinutes, "10");
+    staleInput.min = "0";
+    staleInput.step = "1";
+    staleInput.addEventListener("change", () => {
+      const n = Number(staleInput.value);
+      if (!Number.isInteger(n) || n < 0) {
+        showToast("Minutes must be a whole number (0 or more)");
+        staleInput.value = String((current as Settings).staleWarnMinutes);
+        return;
+      }
+      void persist((d) => {
+        d.staleWarnMinutes = n;
+      });
+    });
+    stack.append(
+      field("Warn when the latest video is older than N minutes", staleInput),
+    );
+
+    const hint = document.createElement("div");
+    hint.className = "field-hint";
+    hint.textContent = "Leave a shortcut empty to disable it.";
+
+    card.append(stack, hint);
     return card;
   }
 

@@ -4,6 +4,7 @@
   "description": "Capability for the tray panel window",
   "windows": ["panel"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-hide"
   ]
 }

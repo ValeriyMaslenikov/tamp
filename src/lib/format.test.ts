@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   formatClock,
+  formatDuration,
   formatPercentSmaller,
   formatRelativeTime,
   truncateMiddle,
@@ -102,6 +103,38 @@ describe("formatPercentSmaller", () => {
 
   it("handles zero input bytes", () => {
     expect(formatPercentSmaller(0, 100)).toBe("0% smaller");
+  });
+});
+
+describe("formatDuration", () => {
+  it("formats zero", () => {
+    expect(formatDuration(0)).toBe("0:00");
+  });
+
+  it("treats negative and non-finite as zero", () => {
+    expect(formatDuration(-5)).toBe("0:00");
+    expect(formatDuration(NaN)).toBe("0:00");
+    expect(formatDuration(Infinity)).toBe("0:00");
+  });
+
+  it("formats sub-minute durations", () => {
+    expect(formatDuration(42)).toBe("0:42");
+  });
+
+  it("pads seconds under ten", () => {
+    expect(formatDuration(65)).toBe("1:05");
+    expect(formatDuration(725)).toBe("12:05");
+  });
+
+  it("rounds fractional seconds", () => {
+    expect(formatDuration(41.6)).toBe("0:42");
+    expect(formatDuration(59.7)).toBe("1:00");
+  });
+
+  it("formats hour-long durations with padded minutes", () => {
+    expect(formatDuration(3600)).toBe("1:00:00");
+    expect(formatDuration(3903)).toBe("1:05:03");
+    expect(formatDuration(10 * 3600 + 2)).toBe("10:00:02");
   });
 });
 

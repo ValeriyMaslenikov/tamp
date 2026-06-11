@@ -9,7 +9,7 @@ use tamp_lib::encoder::{
     bin,
     plan::{build_plan, preset_hash},
     probe::probe,
-    run_hardware_pass, run_passes, ChildSlot, Preset,
+    run_gif, run_hardware_pass, run_passes, ChildSlot, OutputFormat, Preset,
 };
 
 fn make_test_clip(dir: &Path) -> PathBuf {
@@ -124,6 +124,7 @@ async fn two_pass_encode_hits_target_size() {
         max_width: None,
         scale_percent: None,
         strip_audio: false,
+        format: OutputFormat::Mp4,
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     assert_eq!(plan.audio_kbit, 96);
@@ -238,6 +239,7 @@ async fn hardware_single_pass_spans_full_progress_range() {
         max_width: None,
         scale_percent: None,
         strip_audio: false,
+        format: OutputFormat::Mp4,
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
 
@@ -313,5 +315,173 @@ async fn hardware_single_pass_spans_full_progress_range() {
     assert!(
         streams.iter().any(|s| s["codec_type"] == "audio"),
         "audio stream must be preserved"
+    );
+}
+
+#[tokio::test]
+async fn webm_two_pass_vp9_hits_target_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_test_clip(dir.path());
+    let info = probe(&input).await.expect("probe failed");
+
+    let preset = Preset {
+        id: "test-1mb-webm".to_string(),
+        name: "Test WebM (1MB)".to_string(),
+        target_mb: 1.0,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+        format: OutputFormat::Webm,
+    };
+    let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
+    assert_eq!(plan.audio_kbit, 64); // opus budget, not the 96k aac one
+    assert!(plan.video_kbit >= 100);
+    assert_eq!(
+        plan.output,
+        dir.path()
+            .join(format!("clip (tamped {}).webm", preset_hash(&preset)))
+    );
+
+    let passlog = tempfile::tempdir().unwrap();
+    let slot = ChildSlot::default();
+    let mut seen: Vec<(u8, f64)> = Vec::new();
+    run_passes(
+        &plan,
+        &info,
+        &input,
+        passlog.path(),
+        &slot,
+        &|| false,
+        &mut |pass, overall| seen.push((pass, overall)),
+    )
+    .await
+    .expect("run_passes failed");
+
+    // Same two-pass progress mapping as mp4: pass 1 in 0..0.5, pass 2 in 0.5..1.0.
+    assert!(
+        seen.iter().any(|(pass, _)| *pass == 1),
+        "no pass 1 progress"
+    );
+    assert!(
+        seen.iter().any(|(pass, _)| *pass == 2),
+        "no pass 2 progress"
+    );
+    assert_eq!(seen.last().map(|(_, overall)| *overall), Some(1.0));
+    assert!(seen.iter().all(|(pass, overall)| if *pass == 1 {
+        *overall <= 0.5
+    } else {
+        *overall >= 0.5
+    }));
+
+    let bytes = std::fs::metadata(&plan.output).expect("output file missing");
+    let target_bytes = preset.target_mb * 1_000_000.0;
+    assert!(
+        (bytes.len() as f64) <= target_bytes,
+        "output {} bytes exceeds {} byte target",
+        bytes.len(),
+        target_bytes
+    );
+    assert!(
+        bytes.len() > 10_000,
+        "output suspiciously small: {} bytes",
+        bytes.len()
+    );
+
+    // The video must really be VP9 with the audio transcoded to Opus.
+    let out = Command::new(bin::ffprobe_path())
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_type,codec_name",
+            "-of",
+            "json",
+        ])
+        .arg(&plan.output)
+        .output()
+        .expect("failed to run bundled ffprobe");
+    assert!(out.status.success(), "ffprobe on output failed");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let streams = json["streams"].as_array().unwrap();
+    let video = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .expect("no video stream in output");
+    assert_eq!(video["codec_name"], "vp9");
+    let audio = streams
+        .iter()
+        .find(|s| s["codec_type"] == "audio")
+        .expect("audio stream must be preserved");
+    assert_eq!(audio["codec_name"], "opus");
+}
+
+#[tokio::test]
+async fn gif_palette_encode_stays_under_generous_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_test_clip(dir.path());
+    let info = probe(&input).await.expect("probe failed");
+
+    let preset = Preset {
+        id: "test-2mb-gif".to_string(),
+        name: "Test GIF (2MB)".to_string(),
+        target_mb: 2.0,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+        format: OutputFormat::Gif,
+    };
+    let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
+    assert_eq!(plan.video_kbit, 0); // bitrate math doesn't apply to GIF
+    assert_eq!(plan.audio_kbit, 0); // GIF never carries audio
+    assert_eq!(
+        plan.output,
+        dir.path()
+            .join(format!("clip (tamped {}).gif", preset_hash(&preset)))
+    );
+
+    let target_bytes = preset.target_mb * 1_000_000.0;
+    let slot = ChildSlot::default();
+    let mut seen: Vec<(u8, f64)> = Vec::new();
+    run_gif(
+        &plan,
+        &info,
+        &input,
+        target_bytes,
+        &slot,
+        &|| false,
+        &mut |pass, overall| seen.push((pass, overall)),
+    )
+    .await
+    .expect("run_gif failed");
+
+    // Every attempt maps onto the FULL 0..1 range, reported as pass 1.
+    assert!(!seen.is_empty(), "no progress reported");
+    assert!(seen.iter().all(|(pass, _)| *pass == 1), "{seen:?}");
+    assert!(
+        seen.iter().all(|(_, o)| (0.0..=1.0).contains(o)),
+        "{seen:?}"
+    );
+    assert_eq!(seen.last().map(|(_, o)| *o), Some(1.0));
+
+    let bytes = std::fs::read(&plan.output).expect("output file missing");
+    assert!(
+        bytes.len() > 1_000,
+        "output suspiciously small: {} bytes",
+        bytes.len()
+    );
+    assert!(
+        bytes.starts_with(b"GIF89a") || bytes.starts_with(b"GIF87a"),
+        "output is not a GIF"
+    );
+    // The retry loop must land a 3s 480px clip comfortably under this
+    // generous target (and keeps the last file even when it can't — which
+    // would fail this assertion and flag a regression).
+    assert!(
+        (bytes.len() as f64) <= target_bytes,
+        "gif {} bytes exceeds {} byte target",
+        bytes.len(),
+        target_bytes
     );
 }

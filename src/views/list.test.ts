@@ -10,6 +10,7 @@ const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
   thumbPath: null,
   isOutput: false,
   conversion: null,
+  durationSecs: null,
   ...overrides,
 });
 
@@ -50,6 +51,11 @@ describe("videoListSignature", () => {
     expect(videoListSignature([video({ thumbPath: "/tmp/t.jpg" })])).not.toBe(
       base,
     );
+  });
+
+  it("changes when a probed duration lands", () => {
+    const base = videoListSignature([video()]);
+    expect(videoListSignature([video({ durationSecs: 42.5 })])).not.toBe(base);
   });
 
   it("changes when output state or conversion meta changes", () => {

@@ -25,6 +25,7 @@ function main(): void {
         </div>
       </header>
       <main class="content" id="content"></main>
+      <footer class="panel-footer">↑↓ select · ⏎/d default · e expand · esc back</footer>
       <div class="toast" id="toast" hidden></div>
     </div>`;
 
@@ -53,7 +54,10 @@ function main(): void {
     for (const b of segButtons) {
       b.classList.toggle("is-active", b.dataset.tab === tab);
     }
-    if (tab === "videos") void listView.refresh();
+    if (tab === "videos") {
+      void listView.refresh();
+      listView.focusFilter();
+    }
   }
 
   for (const b of segButtons) {
@@ -63,6 +67,7 @@ function main(): void {
 
   void onPanelShown(() => {
     void listView.refresh();
+    listView.focusFilter();
   });
   void onEncodeState((state) => {
     listView.updateJob(state);
@@ -82,6 +87,7 @@ function main(): void {
       showToast(String(e));
     }
     await listView.refresh();
+    listView.focusFilter();
   })();
 }
 

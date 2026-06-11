@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export { convertFileSrc } from "@tauri-apps/api/core";
 
+export type OutputFormat = "mp4" | "webm" | "gif";
+
 export interface Preset {
   id: string;
   name: string;
@@ -11,6 +13,7 @@ export interface Preset {
   maxWidth: number | null;
   scalePercent: number | null;
   stripAudio: boolean;
+  format: OutputFormat;
 }
 
 export interface Settings {
@@ -21,6 +24,21 @@ export interface Settings {
   defaultPresetId: string;
   launchAtLogin: boolean;
   useHardwareEncoder: boolean;
+  /** Global shortcut accelerators; null/empty disables the shortcut. */
+  shortcutCompressLatest: string | null;
+  shortcutTogglePanel: string | null;
+  /** Notify when the compress-latest shortcut picks a video older than this. */
+  staleWarnMinutes: number;
+}
+
+/** One-off conversion settings for custom_convert. */
+export interface CustomConfig {
+  targetMb: number;
+  maxFps: number | null;
+  maxWidth: number | null;
+  scalePercent: number | null;
+  stripAudio: boolean;
+  format: OutputFormat;
 }
 
 /** Conversion details for an orphaned output row (original gone). */
@@ -39,6 +57,8 @@ export interface RecentVideo {
   /** True for "(tamped …)" outputs whose original no longer exists. */
   isOutput: boolean;
   conversion: ConversionMeta | null;
+  /** Probed video duration; null until probed (or when probing failed). */
+  durationSecs: number | null;
 }
 
 export type Phase =
@@ -56,6 +76,8 @@ export interface JobState {
   inputName: string;
   outputPath: string | null;
   presetId: string;
+  /** Config hash of the job's preset; equal hashes mean identical output. */
+  presetHash: string;
   phase: Phase;
   progress: number; // 0..1 overall
   inputBytes: number;
@@ -81,6 +103,12 @@ export const pickFolder = (): Promise<string | null> =>
 
 export const enqueue = (path: string, presetId: string): Promise<string> =>
   invoke<string>("enqueue", { path, presetId });
+
+/** One-off conversion with ad-hoc settings; returns the job id. */
+export const customConvert = (
+  path: string,
+  config: CustomConfig,
+): Promise<string> => invoke<string>("custom_convert", { path, config });
 
 export const cancelJob = (id: string): Promise<void> =>
   invoke<void>("cancel_job", { id });

@@ -15,6 +15,11 @@ describe("stripOutputSuffix", () => {
     expect(stripOutputSuffix("clip (tamped).mp4")).toBe("clip");
   });
 
+  it("is extension-agnostic (webm / gif outputs)", () => {
+    expect(stripOutputSuffix("clip (tamped a3f2).webm")).toBe("clip");
+    expect(stripOutputSuffix("clip (tamped a3f2 2).gif")).toBe("clip");
+  });
+
   it("strips the legacy numbered suffix", () => {
     expect(stripOutputSuffix("clip (tamped 2).mp4")).toBe("clip");
   });

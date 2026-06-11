@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::settings::Preset;
+use crate::settings::{OutputFormat, Preset};
 
 use super::probe::ProbeInfo;
 
@@ -10,6 +10,18 @@ pub struct EncodePlan {
     pub audio_kbit: u32,
     pub vf: Option<String>,
     pub output: PathBuf,
+    pub format: OutputFormat,
+    /// Palette-encode parameters; `Some` exactly when `format` is `Gif`.
+    pub gif: Option<GifParams>,
+}
+
+/// GIF encodes are palette-based, not bitrate-targeted: size is steered by
+/// frame rate and width, which the worker shrinks iteratively when an
+/// attempt overshoots the byte target.
+#[derive(Clone, Copy, Debug)]
+pub struct GifParams {
+    pub fps: u32,
+    pub max_width: u32,
 }
 
 pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<EncodePlan, String> {
@@ -17,12 +29,34 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         return Err("Video has no measurable duration".to_string());
     }
 
+    let output = unique_output(input, &preset_hash(preset), preset.format);
+
+    // GIF skips the bitrate math entirely (so a small target on a long clip
+    // is not an error here) and never carries audio; fps/width live in the
+    // palette filter graph instead of a -vf chain.
+    if preset.format == OutputFormat::Gif {
+        return Ok(EncodePlan {
+            video_kbit: 0,
+            audio_kbit: 0,
+            vf: None,
+            output,
+            format: OutputFormat::Gif,
+            gif: Some(GifParams {
+                fps: preset.max_fps.unwrap_or(12),
+                max_width: preset.max_width.unwrap_or(480),
+            }),
+        });
+    }
+
     let target_bytes = preset.target_mb * 1_000_000.0;
     let budget_kbit = target_bytes * 8.0 / 1000.0 * 0.95; // 5% container margin
     let audio_kbit: u32 = if preset.strip_audio || !info.has_audio {
         0
     } else {
-        96
+        match preset.format {
+            OutputFormat::Webm => 64, // libopus
+            _ => 96,                  // aac
+        }
     };
     // Saturates to 0 when the budget can't even cover audio.
     let mut video_kbit = (budget_kbit / info.duration_secs - audio_kbit as f64) as u32;
@@ -67,8 +101,41 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         video_kbit,
         audio_kbit,
         vf,
-        output: unique_output(input, &preset_hash(preset)),
+        output,
+        format: preset.format,
+        gif: None,
     })
+}
+
+/// The output file extension per format. Naming, reuse probing and the
+/// frontend all derive the extension from here via the plan's output path.
+fn extension(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Mp4 => "mp4",
+        OutputFormat::Webm => "webm",
+        OutputFormat::Gif => "gif",
+    }
+}
+
+/// The palettegen/paletteuse filter graph for one GIF attempt: cap the frame
+/// rate, scale down to at most `max_width` (kept even, never upscaling),
+/// then build a per-clip palette and dither against it.
+pub fn gif_filter(fps: u32, max_width: u32) -> String {
+    format!(
+        "[0:v]fps={fps},scale='trunc(min(iw,{max_width})/2)*2':-2[s];\
+         [s]split[a][b];\
+         [a]palettegen=stats_mode=diff[p];\
+         [b][p]paletteuse=dither=bayer:bayer_scale=4"
+    )
+}
+
+/// Next GIF width to try when an attempt overshoots the byte target: GIF
+/// bytes scale roughly with pixel area, so scale the width by the square
+/// root of the size ratio with a 5% safety margin, truncated to even and
+/// floored at 160 so retries can't degenerate into unreadable thumbnails.
+pub fn gif_retry_width(width: u32, target_bytes: f64, actual_bytes: u64) -> u32 {
+    let scaled = (width as f64 * (target_bytes / actual_bytes as f64).sqrt() * 0.95) as u32;
+    (scaled & !1).max(160)
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -88,6 +155,8 @@ fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
 /// (std's `DefaultHasher` makes no stability guarantee) over the fields in a
 /// fixed order: `target_mb` bits (u64 LE), then `max_fps` / `max_width` /
 /// `scale_percent` (u32 LE, `u32::MAX` for `None`), then `strip_audio` (0/1).
+/// Non-mp4 formats fold their name in as a FINAL step so every mp4 preset —
+/// including all pre-format outputs in the wild — hashes exactly as before.
 /// Cosmetic fields (id, name) are deliberately excluded.
 pub fn preset_hash(p: &crate::settings::Preset) -> String {
     let mut h = fnv1a(FNV_OFFSET, &p.target_mb.to_bits().to_le_bytes());
@@ -95,6 +164,11 @@ pub fn preset_hash(p: &crate::settings::Preset) -> String {
     h = fnv1a(h, &p.max_width.unwrap_or(u32::MAX).to_le_bytes());
     h = fnv1a(h, &p.scale_percent.unwrap_or(u32::MAX).to_le_bytes());
     h = fnv1a(h, &[u8::from(p.strip_audio)]);
+    match p.format {
+        OutputFormat::Mp4 => {}
+        OutputFormat::Webm => h = fnv1a(h, b"webm"),
+        OutputFormat::Gif => h = fnv1a(h, b"gif"),
+    }
     format!("{:04x}", h & 0xffff)
 }
 
@@ -106,23 +180,25 @@ fn input_stem(input: &Path) -> String {
 }
 
 /// The collision-free base output path for `input` under a preset `hash`:
-/// "{stem} (tamped {hash}).mp4" next to the input. The worker probes this
-/// exact path before encoding — when it already exists the previous output
-/// is reused instead of re-encoding.
-pub fn expected_output(input: &Path, hash: &str) -> PathBuf {
+/// "{stem} (tamped {hash}).mp4|.webm|.gif" next to the input. The worker
+/// probes this exact path before encoding — when it already exists the
+/// previous output is reused instead of re-encoding.
+pub fn expected_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
     let dir = input.parent().unwrap_or_else(|| Path::new("."));
-    dir.join(format!("{} (tamped {hash}).mp4", input_stem(input)))
+    let ext = extension(format);
+    dir.join(format!("{} (tamped {hash}).{ext}", input_stem(input)))
 }
 
-fn unique_output(input: &Path, hash: &str) -> PathBuf {
-    let candidate = expected_output(input, hash);
+fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
+    let candidate = expected_output(input, hash, format);
     if !candidate.exists() {
         return candidate;
     }
     let dir = input.parent().unwrap_or_else(|| Path::new("."));
     let stem = input_stem(input);
+    let ext = extension(format);
     for n in 2u32.. {
-        let candidate = dir.join(format!("{stem} (tamped {hash} {n}).mp4"));
+        let candidate = dir.join(format!("{stem} (tamped {hash} {n}).{ext}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -177,6 +253,7 @@ mod tests {
             max_width: None,
             scale_percent: None,
             strip_audio: false,
+            format: OutputFormat::Mp4,
         }
     }
 
@@ -435,9 +512,111 @@ mod tests {
     #[test]
     fn expected_output_is_the_base_hashed_name() {
         assert_eq!(
-            expected_output(Path::new(INPUT), "823f"),
+            expected_output(Path::new(INPUT), "823f", OutputFormat::Mp4),
             PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f).mp4")
         );
+    }
+
+    #[test]
+    fn output_extension_follows_format() {
+        assert_eq!(
+            expected_output(Path::new(INPUT), "8dd6", OutputFormat::Webm),
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped 8dd6).webm")
+        );
+        assert_eq!(
+            expected_output(Path::new(INPUT), "270f", OutputFormat::Gif),
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f).gif")
+        );
+
+        let mut webm = preset(10.0);
+        webm.format = OutputFormat::Webm;
+        let plan = build_plan(&info(), &webm, Path::new(INPUT)).unwrap();
+        assert_eq!(
+            plan.output,
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped 8dd6).webm")
+        );
+
+        let mut gif = preset(10.0);
+        gif.format = OutputFormat::Gif;
+        let plan = build_plan(&info(), &gif, Path::new(INPUT)).unwrap();
+        assert_eq!(
+            plan.output,
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f).gif")
+        );
+    }
+
+    #[test]
+    fn webm_audio_budget_is_64k() {
+        let info = ProbeInfo {
+            has_audio: true,
+            ..info()
+        };
+        let mut p = preset(10.0);
+        p.format = OutputFormat::Webm;
+        let plan = build_plan(&info, &p, Path::new(INPUT)).unwrap();
+        assert_eq!(plan.audio_kbit, 64);
+        assert_eq!(plan.video_kbit, 1202); // 1266.66 - 64
+        assert_eq!(plan.format, OutputFormat::Webm);
+        assert!(plan.gif.is_none());
+        // vf chain is unchanged for vp9
+        assert_eq!(
+            plan.vf.as_deref(),
+            Some("scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p")
+        );
+    }
+
+    #[test]
+    fn gif_plan_skips_bitrate_math_and_audio() {
+        // A target far too small for the bitrate math: must NOT error for GIF.
+        let info = ProbeInfo {
+            duration_secs: 600.0,
+            has_audio: true,
+            ..info()
+        };
+        let mut p = preset(0.1);
+        p.format = OutputFormat::Gif;
+        let plan = build_plan(&info, &p, Path::new(INPUT)).unwrap();
+        assert_eq!(plan.video_kbit, 0);
+        assert_eq!(plan.audio_kbit, 0); // GIF never carries audio
+        assert!(plan.vf.is_none()); // fps/width live in the palette graph
+        let gif = plan.gif.expect("gif plan must carry palette params");
+        assert_eq!(gif.fps, 12); // defaults
+        assert_eq!(gif.max_width, 480);
+    }
+
+    #[test]
+    fn gif_params_honour_preset_caps() {
+        let mut p = preset(10.0);
+        p.format = OutputFormat::Gif;
+        p.max_fps = Some(15);
+        p.max_width = Some(640);
+        let plan = build_plan(&info(), &p, Path::new(INPUT)).unwrap();
+        let gif = plan.gif.unwrap();
+        assert_eq!(gif.fps, 15);
+        assert_eq!(gif.max_width, 640);
+    }
+
+    #[test]
+    fn gif_filter_caps_fps_and_width() {
+        assert_eq!(
+            gif_filter(12, 480),
+            "[0:v]fps=12,scale='trunc(min(iw,480)/2)*2':-2[s];\
+             [s]split[a][b];\
+             [a]palettegen=stats_mode=diff[p];\
+             [b][p]paletteuse=dither=bayer:bayer_scale=4"
+        );
+    }
+
+    #[test]
+    fn gif_retry_width_shrinks_by_sqrt_size_ratio() {
+        // 4x over target: sqrt(1/4) * 0.95 = 0.475 -> 480 * 0.475 = 228
+        assert_eq!(gif_retry_width(480, 1_000_000.0, 4_000_000), 228);
+        // Slightly over: 480 * sqrt(1/1.1) * 0.95 = 434.8 -> 434 (even)
+        assert_eq!(gif_retry_width(480, 1_000_000.0, 1_100_000), 434);
+        // Odd results truncate to even: 300 * sqrt(0.5) * 0.95 = 201.5 -> 200
+        assert_eq!(gif_retry_width(300, 1_000_000.0, 2_000_000), 200);
+        // Never below the 160px floor.
+        assert_eq!(gif_retry_width(200, 100.0, 1_000_000_000), 160);
     }
 
     // The pinned values below were computed independently (reference FNV-1a
@@ -456,8 +635,25 @@ mod tests {
             max_width: Some(1280),
             scale_percent: Some(50),
             strip_audio: true,
+            format: OutputFormat::Mp4,
         };
         assert_eq!(preset_hash(&full), "eb3d");
+    }
+
+    // Pinned like the mp4 hashes above: computed with a reference FNV-1a
+    // implementation, must never change across releases.
+    #[test]
+    fn preset_hash_folds_non_mp4_formats_as_final_step() {
+        let mut webm = preset(10.0);
+        webm.format = OutputFormat::Webm;
+        assert_eq!(preset_hash(&webm), "8dd6");
+
+        let mut gif = preset(10.0);
+        gif.format = OutputFormat::Gif;
+        assert_eq!(preset_hash(&gif), "270f");
+
+        // mp4 must hash exactly as before formats existed.
+        assert_eq!(preset_hash(&preset(10.0)), "823f");
     }
 
     #[test]

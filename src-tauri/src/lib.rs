@@ -1,20 +1,63 @@
 mod commands;
+mod durations;
 pub mod encoder;
 pub mod journal;
 pub mod platform;
 mod previews;
 mod scanner;
 pub mod settings;
+mod shortcuts;
 mod thumbs;
 mod tray;
 
 use std::sync::atomic::AtomicBool;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+
+/// The bundle identifier before the io.github rebrand; referenced only to
+/// migrate user data left behind under the old app-data directory.
+const LEGACY_IDENTIFIER: &str = "com.joystudios.tamp";
 
 /// True while a native dialog (folder picker) is open; the release-only
 /// hide-on-blur handler must not close the panel when the dialog takes focus.
 pub struct DialogOpen(pub AtomicBool);
+
+/// One-time, best-effort migration of settings and the conversion journal
+/// from the pre-rebrand app-data dir. Must run before `settings::load`: a
+/// rebranded install starts with an empty app-data dir and would otherwise
+/// fall back to defaults even though the user's data sits right next door.
+fn migrate_legacy_data(app: &AppHandle) {
+    let data_dir = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("tamp: cannot resolve app data dir for legacy migration: {e}");
+            return;
+        }
+    };
+    if data_dir.join("settings.json").exists() {
+        return; // already migrated, or an install that has saved settings
+    }
+    let Some(legacy_dir) = data_dir.parent().map(|p| p.join(LEGACY_IDENTIFIER)) else {
+        return;
+    };
+    if !legacy_dir.join("settings.json").exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("tamp: cannot create app data dir for legacy migration: {e}");
+        return;
+    }
+    for file in ["settings.json", "conversions.json"] {
+        let src = legacy_dir.join(file);
+        if !src.exists() {
+            continue;
+        }
+        match std::fs::copy(&src, data_dir.join(file)) {
+            Ok(_) => eprintln!("tamp: migrated {file} from {}", legacy_dir.display()),
+            Err(e) => eprintln!("tamp: failed to migrate legacy {file}: {e}"),
+        }
+    }
+}
 
 /// Shows the panel when there is no tray-click rect to position against
 /// (app relaunch, Dock/Finder reopen).
@@ -42,6 +85,21 @@ fn show_panel_fallback(app: &AppHandle) {
     }
 }
 
+/// Keyboard-driven panel toggle (global shortcut): hide when visible,
+/// otherwise show via the tray-less fallback positioning — a shortcut press
+/// has no tray rect for the positioner to use.
+pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        if panel.is_visible().unwrap_or(false) {
+            if let Err(e) = panel.hide() {
+                eprintln!("tamp: failed to hide panel: {e}");
+            }
+            return;
+        }
+    }
+    show_panel_fallback(app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -55,11 +113,22 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            migrate_legacy_data(app.handle());
             let loaded = settings::load(app.handle());
+
+            // The pre-rebrand LaunchAgent pointed at the old bundle
+            // identifier; re-enabling rewrites it against the current app.
+            if loaded.launch_at_login {
+                if let Err(e) = app.autolaunch().enable() {
+                    eprintln!("tamp: failed to refresh launch-at-login agent: {e}");
+                }
+            }
 
             let scope = app.asset_protocol_scope();
             for folder in &loaded.watched_folders {
@@ -82,12 +151,23 @@ pub fn run() {
                 Err(e) => eprintln!("tamp: cannot resolve app cache dir: {e}"),
             }
 
-            app.manage(settings::SettingsState(std::sync::Mutex::new(loaded)));
+            app.manage(settings::SettingsState(std::sync::Mutex::new(
+                loaded.clone(),
+            )));
             app.manage(DialogOpen(AtomicBool::new(false)));
             app.manage(journal::Journal::load(app.handle()));
+            app.manage(durations::Durations::load(app.handle()));
             app.manage(previews::Previews::default());
             app.manage(encoder::Encoder::start(app.handle().clone()));
             tray::create(app.handle())?;
+
+            // After the managed state the handlers rely on. Startup
+            // registration is best-effort: a stored accelerator another app
+            // grabbed since must not prevent launching (the next
+            // save_settings surfaces the error to the user).
+            if let Err(e) = shortcuts::apply(app.handle(), &loaded) {
+                eprintln!("tamp: failed to register global shortcuts: {e}");
+            }
 
             // Tray panels must follow the user across Spaces/displays; without
             // this the panel opens on the Space the app launched on.
@@ -128,6 +208,7 @@ pub fn run() {
             commands::save_settings,
             commands::pick_folder,
             commands::enqueue,
+            commands::custom_convert,
             commands::cancel_job,
             commands::queue_state,
             commands::ensure_preview,

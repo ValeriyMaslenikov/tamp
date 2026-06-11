@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   cancelJob,
   convertFileSrc,
@@ -13,12 +14,14 @@ import {
 } from "../lib/ipc";
 import {
   formatBytes,
+  formatDuration,
   formatPercentSmaller,
   formatRelativeTime,
   truncateMiddle,
 } from "../lib/format";
 import { stripOutputSuffix } from "../lib/naming";
 import { showToast } from "../lib/toast";
+import { openCustomModal, type CustomModal } from "./custom";
 
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
 const TERMINAL = new Set<Phase>(["done", "failed", "cancelled"]);
@@ -28,6 +31,11 @@ const PHASE_LABELS: Partial<Record<Phase, string>> = {
   pass2: "Pass 2",
   verifying: "Verifying",
 };
+
+const TRASH_GUARD_HINT =
+  "'Move original to Trash' is on, so the original disappears after the " +
+  "first conversion — only one preset per video. Turn the toggle off in " +
+  "Preferences to export several formats.";
 
 function isBusy(j: JobState | undefined): boolean {
   return !!j && (j.phase === "queued" || RUNNING.has(j.phase));
@@ -47,6 +55,7 @@ export function videoListSignature(videos: RecentVideo[]): string {
       v.thumbPath,
       v.isOutput,
       v.conversion,
+      v.durationSecs,
     ]),
   );
 }
@@ -56,11 +65,25 @@ export interface ListView {
   refresh(): Promise<void>;
   updateJob(state: JobState): void;
   onSettingsChanged(): void;
+  /** Put the cursor in the filter input (panel shown / tab switched). */
+  focusFilter(): void;
 }
 
 export function createListView(getSettings: () => Settings | null): ListView {
   const el = document.createElement("div");
   el.className = "view view-videos";
+
+  const filterRow = document.createElement("div");
+  filterRow.className = "filter-row";
+  const filterInput = document.createElement("input");
+  filterInput.type = "text";
+  filterInput.className = "input filter-input";
+  filterInput.placeholder = "Filter recordings…";
+  filterRow.appendChild(filterInput);
+
+  const listScroll = document.createElement("div");
+  listScroll.className = "list-scroll";
+  el.append(filterRow, listScroll);
 
   let videos: RecentVideo[] = [];
   const jobs = new Map<string, JobState>(); // job id -> latest state
@@ -68,15 +91,34 @@ export function createListView(getSettings: () => Settings | null): ListView {
   const dismissed = new Set<string>(); // job ids no longer shown on rows
   const dismissTimers = new Map<string, number>();
   const rowByPath = new Map<string, HTMLElement>();
-  const rowCleanups = new Map<string, () => void>(); // path -> hover/preview teardown
+  const rowCleanups = new Map<string, () => void>(); // path -> preview teardown
   const postErrorToasted = new Set<string>(); // job ids whose postError was toasted
   const previewPaths = new Map<string, string>(); // video path -> resolved proxy path
   let previewSeq = 0; // staleness token for in-flight proxy resolutions
   let lastSignature: string | null = null;
+  let noMatch: HTMLElement | null = null; // "no filter matches" note
+  let selectedPath: string | null = null; // keyboard selection (violet ring)
+  let expandedPath: string | null = null; // at most one row is expanded
+  let modal: CustomModal | null = null; // open custom-conversion page
 
   function jobForPath(path: string): JobState | undefined {
     const id = jobByPath.get(path);
     return id ? jobs.get(id) : undefined;
+  }
+
+  /** Jobs that already produced (or will produce) an output for this input. */
+  function survivingJobs(path: string): JobState[] {
+    const out: JobState[] = [];
+    for (const j of jobs.values()) {
+      if (
+        j.inputPath === path &&
+        j.phase !== "failed" &&
+        j.phase !== "cancelled"
+      ) {
+        out.push(j);
+      }
+    }
+    return out;
   }
 
   function dismiss(job: JobState): void {
@@ -145,8 +187,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
       applySnapshot(queue);
       const sig = videoListSignature(vids);
       if (sig === lastSignature) {
-        // Same videos: repaint statuses in place so an open hover preview
-        // (and its playing <video>) survives routine panel:shown refreshes.
+        // Same videos: repaint statuses in place so an open preview (and its
+        // playing <video>) survives routine panel:shown refreshes.
         for (const v of videos) {
           const row = rowByPath.get(v.path);
           if (row) renderStatusIn(row, v);
@@ -160,22 +202,187 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
+  // ----- filtering & selection ------------------------------------------
+
+  function matchesFilter(v: RecentVideo): boolean {
+    const q = filterInput.value.trim().toLowerCase();
+    return !q || v.name.toLowerCase().includes(q);
+  }
+
+  function visibleVideos(): RecentVideo[] {
+    return videos.filter(matchesFilter);
+  }
+
+  function setSelected(path: string | null): void {
+    if (selectedPath && selectedPath !== path) {
+      rowByPath.get(selectedPath)?.classList.remove("is-selected");
+    }
+    selectedPath = path;
+    if (!path) return;
+    const row = rowByPath.get(path);
+    if (!row) {
+      selectedPath = null;
+      return;
+    }
+    row.classList.add("is-selected");
+    row.scrollIntoView({ block: "nearest" });
+  }
+
+  function applyFilter(resetSelection: boolean): void {
+    if (resetSelection) setSelected(null);
+    let any = false;
+    for (const v of videos) {
+      const row = rowByPath.get(v.path);
+      if (!row) continue;
+      const show = matchesFilter(v);
+      row.hidden = !show;
+      if (show) any = true;
+      if (!show && expandedPath === v.path) collapseExpanded();
+    }
+    if (noMatch) noMatch.hidden = any || videos.length === 0;
+    if (selectedPath) setSelected(selectedPath); // re-ring after a rebuild
+  }
+
+  function focusFilter(): void {
+    filterInput.focus();
+    filterInput.select();
+  }
+
+  filterInput.addEventListener("input", () => applyFilter(true));
+
+  function moveSelection(dir: 1 | -1, fromFilter: boolean): void {
+    const vis = visibleVideos();
+    if (vis.length === 0) return;
+    if (fromFilter) {
+      if (dir !== 1) return;
+      filterInput.blur(); // moving into the list takes focus off the filter
+      setSelected(vis[0].path);
+      return;
+    }
+    const idx = selectedPath ? vis.findIndex((v) => v.path === selectedPath) : -1;
+    if (idx < 0) {
+      if (dir === 1) setSelected(vis[0].path);
+      return;
+    }
+    if (dir === -1 && idx === 0) {
+      // Off the top of the list: hand focus back to the filter.
+      setSelected(null);
+      focusFilter();
+      return;
+    }
+    const next = Math.min(vis.length - 1, Math.max(0, idx + dir));
+    setSelected(vis[next].path);
+  }
+
+  function onEscape(): void {
+    if (modal) {
+      modal.close();
+      return;
+    }
+    if (expandedPath) {
+      collapseExpanded();
+      return;
+    }
+    if (filterInput.value !== "") {
+      filterInput.value = "";
+      applyFilter(true);
+      focusFilter();
+      return;
+    }
+    getCurrentWindow()
+      .hide()
+      .catch((e) => showToast(String(e)));
+  }
+
+  function isEditable(t: EventTarget | null): boolean {
+    return (
+      t instanceof HTMLElement &&
+      (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")
+    );
+  }
+
+  function onKeyDown(e: KeyboardEvent): void {
+    if (modal) {
+      // The custom page handles its own form; only Esc-to-go-back is global.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        modal.close();
+      }
+      return;
+    }
+    if (el.hidden) return; // preferences tab
+    const inFilter = e.target === filterInput;
+    if (!inFilter && isEditable(e.target)) return;
+
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveSelection(1, inFilter);
+        return;
+      case "ArrowUp":
+        e.preventDefault();
+        moveSelection(-1, inFilter);
+        return;
+      case "Escape":
+        e.preventDefault();
+        onEscape();
+        return;
+    }
+    if (inFilter) return; // everything else types into the filter natively
+
+    const selected = selectedPath
+      ? videos.find((v) => v.path === selectedPath)
+      : undefined;
+    if (selected) {
+      if (e.key === "Enter" || e.key === "d") {
+        e.preventDefault();
+        onRowClick(selected);
+        return;
+      }
+      if (e.key === "e") {
+        e.preventDefault();
+        toggleExpand(selected);
+        return;
+      }
+    }
+    // Any other printable character goes to the filter.
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      filterInput.focus();
+      filterInput.value += e.key;
+      applyFilter(true);
+    }
+  }
+
+  document.addEventListener("keydown", onKeyDown);
+
+  // ----- rendering --------------------------------------------------------
+
   function render(): void {
-    // Tear down old rows first: stop preview videos and pending hover timers
-    // before their elements are dropped, so decoders don't leak.
+    // Tear down old rows first: stop preview videos before their elements
+    // are dropped, so decoders don't leak.
     for (const cleanup of rowCleanups.values()) cleanup();
     rowCleanups.clear();
     rowByPath.clear();
-    el.innerHTML = "";
+    expandedPath = null;
+    noMatch = null;
+    listScroll.innerHTML = "";
     if (videos.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent =
         "No videos in your watched folders yet — record something!";
-      el.appendChild(empty);
+      listScroll.appendChild(empty);
+      setSelected(null);
       return;
     }
-    for (const v of videos) el.appendChild(buildRow(v));
+    for (const v of videos) listScroll.appendChild(buildRow(v));
+    noMatch = document.createElement("div");
+    noMatch.className = "empty";
+    noMatch.textContent = "No recordings match your filter.";
+    noMatch.hidden = true;
+    listScroll.appendChild(noMatch);
+    applyFilter(false);
   }
 
   async function doEnqueue(v: RecentVideo, presetId: string): Promise<void> {
@@ -189,6 +396,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
           inputName: v.name,
           outputPath: null,
           presetId,
+          presetHash: "",
           phase: "queued",
           progress: 0,
           inputBytes: v.sizeBytes,
@@ -225,6 +433,38 @@ export function createListView(getSettings: () => Settings | null): ListView {
     void doEnqueue(v, settings.defaultPresetId);
   }
 
+  function openCustom(v: RecentVideo): void {
+    if (modal) return;
+    const host = document.querySelector<HTMLElement>(".panel") ?? document.body;
+    modal = openCustomModal({
+      host,
+      video: v,
+      onStarted: (id) => {
+        if (!jobs.has(id)) {
+          updateJob({
+            id,
+            inputPath: v.path,
+            inputName: v.name,
+            outputPath: null,
+            presetId: "custom",
+            presetHash: "",
+            phase: "queued",
+            progress: 0,
+            inputBytes: v.sizeBytes,
+            outputBytes: null,
+            reused: false,
+            error: null,
+            postError: null,
+          });
+        }
+      },
+      onClose: () => {
+        modal = null;
+        focusFilter();
+      },
+    });
+  }
+
   function proxyVideo(proxyPath: string): HTMLVideoElement {
     const video = document.createElement("video");
     video.muted = true;
@@ -235,6 +475,45 @@ export function createListView(getSettings: () => Settings | null): ListView {
     // The montage proxy is already condensed; play it at normal speed.
     video.src = convertFileSrc(proxyPath);
     return video;
+  }
+
+  /** Disable preset chips / Custom per the trash-original one-preset guard. */
+  function refreshGuards(row: HTMLElement, v: RecentVideo): void {
+    const buttons = row.querySelectorAll<HTMLButtonElement>(
+      ".row-expand [data-guard-preset]",
+    );
+    if (buttons.length === 0) return;
+    const settings = getSettings();
+    const guardJobs = settings?.trashOriginal ? survivingJobs(v.path) : [];
+    const allowed = new Set(guardJobs.map((j) => j.presetId));
+    for (const btn of buttons) {
+      const blocked =
+        guardJobs.length > 0 && !allowed.has(btn.dataset.guardPreset ?? "");
+      btn.disabled = blocked;
+      btn.title = blocked ? TRASH_GUARD_HINT : btn.dataset.baseTitle ?? "";
+    }
+  }
+
+  function collapseExpanded(): void {
+    if (!expandedPath) return;
+    const row = rowByPath.get(expandedPath);
+    expandedPath = null;
+    if (!row) return;
+    const expand = row.querySelector<HTMLElement>(".row-expand");
+    if (expand) collapseRow(row, expand);
+  }
+
+  function toggleExpand(v: RecentVideo): void {
+    const row = rowByPath.get(v.path);
+    const expand = row?.querySelector<HTMLElement>(".row-expand");
+    if (!row || !expand) return;
+    if (expandedPath === v.path) {
+      collapseExpanded();
+      return;
+    }
+    collapseExpanded();
+    expandRow(row, expand, v);
+    if (row.classList.contains("is-expanded")) expandedPath = v.path;
   }
 
   function expandRow(row: HTMLElement, expand: HTMLElement, v: RecentVideo): void {
@@ -288,27 +567,44 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     expand.appendChild(stage);
 
-    if (!v.isOutput && settings.presets.length >= 2) {
+    if (!v.isOutput) {
       const chips = document.createElement("div");
       chips.className = "chips";
-      for (const p of settings.presets) {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className =
-          "chip" + (p.id === settings.defaultPresetId ? " chip-default" : "");
-        chip.textContent = p.name;
-        chip.title = `Compress with ${p.name}`;
-        chip.addEventListener("click", (e) => {
-          e.stopPropagation();
-          collapseRow(row, expand);
-          void doEnqueue(v, p.id);
-        });
-        chips.appendChild(chip);
+      if (settings.presets.length >= 2) {
+        for (const p of settings.presets) {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className =
+            "chip" + (p.id === settings.defaultPresetId ? " chip-default" : "");
+          chip.textContent = p.name;
+          chip.dataset.guardPreset = p.id;
+          chip.dataset.baseTitle = `Compress with ${p.name}`;
+          chip.title = chip.dataset.baseTitle;
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation();
+            collapseExpanded();
+            void doEnqueue(v, p.id);
+          });
+          chips.appendChild(chip);
+        }
       }
+      const custom = document.createElement("button");
+      custom.type = "button";
+      custom.className = "chip chip-custom";
+      custom.textContent = "Custom…";
+      custom.dataset.guardPreset = "custom";
+      custom.dataset.baseTitle = "One-off conversion with custom settings";
+      custom.title = custom.dataset.baseTitle;
+      custom.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openCustom(v);
+      });
+      chips.appendChild(custom);
       expand.appendChild(chips);
     }
 
     row.classList.add("is-expanded");
+    refreshGuards(row, v);
   }
 
   function collapseRow(row: HTMLElement, expand: HTMLElement): void {
@@ -369,11 +665,16 @@ export function createListView(getSettings: () => Settings | null): ListView {
         ? `${formatBytes(v.conversion.originalBytes)} → ${formatBytes(v.conversion.outputBytes)}`
         : formatBytes(v.sizeBytes);
 
+    const lengthText =
+      v.durationSecs != null ? formatDuration(v.durationSecs) : "—";
+
     const meta = document.createElement("div");
     meta.className = "row-meta";
     meta.innerHTML =
       `<div class="meta"><span class="meta-label">Size</span>` +
       `<span class="meta-value">${sizeText}</span></div>` +
+      `<div class="meta"><span class="meta-label">Length</span>` +
+      `<span class="meta-value">${lengthText}</span></div>` +
       `<div class="meta"><span class="meta-label">Recorded</span>` +
       `<span class="meta-value">${formatRelativeTime(v.createdMs)}</span></div>`;
 
@@ -393,7 +694,17 @@ export function createListView(getSettings: () => Settings | null): ListView {
       if (j && isBusy(j)) cancelJob(j.id).catch((err) => showToast(String(err)));
     });
 
-    main.append(info, cancelBtn);
+    const chevron = document.createElement("button");
+    chevron.type = "button";
+    chevron.className = "row-chevron";
+    chevron.title = "Details (e)";
+    chevron.textContent = "›";
+    chevron.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleExpand(v);
+    });
+
+    main.append(info, cancelBtn, chevron);
     main.addEventListener("click", () => onRowClick(v));
 
     const progress = document.createElement("div");
@@ -405,17 +716,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     row.append(main, progress, expand);
 
-    let hoverTimer: number | undefined;
-    row.addEventListener("mouseenter", () => {
-      if (isBusy(jobForPath(v.path))) return;
-      hoverTimer = window.setTimeout(() => expandRow(row, expand, v), 250);
-    });
-    row.addEventListener("mouseleave", () => {
-      window.clearTimeout(hoverTimer);
-      collapseRow(row, expand);
-    });
     rowCleanups.set(v.path, () => {
-      window.clearTimeout(hoverTimer);
+      if (expandedPath === v.path) expandedPath = null;
       collapseRow(row, expand);
     });
 
@@ -440,6 +742,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
     row.classList.toggle("is-active", !!j && RUNNING.has(j.phase));
     row.classList.toggle("is-done", j?.phase === "done");
     row.classList.toggle("is-failed", j?.phase === "failed");
+
+    // Job phases shift the trash-original guard for an expanded row's chips.
+    refreshGuards(row, v);
 
     if (!j) {
       status.innerHTML = "";
@@ -499,6 +804,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   function onSettingsChanged(): void {
     // Presets drive chips + above-target notes; collapse previews and repaint statuses.
+    collapseExpanded();
     for (const [path, row] of rowByPath) {
       const expand = row.querySelector<HTMLElement>(".row-expand");
       if (expand) collapseRow(row, expand);
@@ -507,5 +813,5 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
-  return { el, refresh, updateJob, onSettingsChanged };
+  return { el, refresh, updateJob, onSettingsChanged, focusFilter };
 }

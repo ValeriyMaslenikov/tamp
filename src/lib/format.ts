@@ -59,6 +59,16 @@ export function formatRelativeTime(ms: number, now: number = Date.now()): string
   return `${datePart}, ${d.getFullYear()}`;
 }
 
+/** Video length: "0:42", "12:05", "1:05:03". Invalid/negative -> "0:00". */
+export function formatDuration(secs: number): string {
+  const total = Number.isFinite(secs) && secs > 0 ? Math.round(secs) : 0;
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const ss = String(total % 60).padStart(2, "0");
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${ss}`;
+  return `${m}:${ss}`;
+}
+
 /** "93.9% smaller" — clamped at 0% when output is not smaller. */
 export function formatPercentSmaller(inB: number, outB: number): string {
   if (!(inB > 0)) return "0% smaller";

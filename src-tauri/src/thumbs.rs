@@ -8,7 +8,10 @@ use tokio::task::JoinSet;
 
 const MAX_CONCURRENT: usize = 4;
 
-fn thumb_key(path: &str, size_bytes: u64) -> String {
+/// Cache key over path|mtime|size, shared by the thumbnail and duration
+/// caches (`durations.rs`). DefaultHasher output may change across releases —
+/// stale entries just age out of the caches.
+pub(crate) fn cache_key(path: &str, size_bytes: u64) -> String {
     let mtime_ms: u128 = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -80,7 +83,7 @@ pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
 
     let mut pending: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
     for (idx, video) in videos.iter_mut().enumerate() {
-        let out = thumbs_dir.join(format!("{}.jpg", thumb_key(&video.path, video.size_bytes)));
+        let out = thumbs_dir.join(format!("{}.jpg", cache_key(&video.path, video.size_bytes)));
         if is_valid_thumb(&out) {
             video.thumb_path = Some(out.to_string_lossy().into_owned());
         } else {

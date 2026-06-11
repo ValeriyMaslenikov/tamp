@@ -22,6 +22,9 @@ pub struct RecentVideo {
     pub size_bytes: u64,
     pub created_ms: u64,
     pub thumb_path: Option<String>,
+    /// Video duration in seconds; filled by the duration cache in
+    /// `commands::list_recents` (not by `scan`), `None` until probed.
+    pub duration_secs: Option<f64>,
     pub is_output: bool,
     pub conversion: Option<ConversionMeta>,
 }
@@ -136,6 +139,7 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
                 size_bytes: meta.len(),
                 created_ms: created_unix_ms(&meta),
                 thumb_path: None,
+                duration_secs: None,
                 is_output: conversion.is_some(),
                 conversion,
             });

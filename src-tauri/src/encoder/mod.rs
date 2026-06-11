@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 
 // Re-exported so integration tests can build presets even though the
 // `settings` module itself is private to the crate.
-pub use crate::settings::Preset;
+pub use crate::settings::{OutputFormat, Preset};
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +26,10 @@ pub struct JobState {
     pub input_name: String,
     pub output_path: Option<String>,
     pub preset_id: String,
+    /// `plan::preset_hash` of the job's preset configuration, so the
+    /// trash-original guard and the frontend can tell whether two jobs for
+    /// the same input actually share an encode configuration.
+    pub preset_hash: String,
     pub phase: Phase,
     pub progress: f64, // 0..1 overall
     pub input_bytes: u64,
@@ -137,6 +141,7 @@ impl Encoder {
                 .unwrap_or_default(),
             output_path: None,
             preset_id: preset.id.clone(),
+            preset_hash: plan::preset_hash(&preset),
             phase: Phase::Queued,
             progress: 0.0,
             input_bytes: meta.len(),
@@ -301,7 +306,7 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
 
     // A previous run with this exact preset configuration already produced
     // an output next to the input: reuse it instead of re-encoding.
-    let expected = plan::expected_output(&job.input, &preset_hash);
+    let expected = plan::expected_output(&job.input, &preset_hash, job.preset.format);
     if expected.exists() {
         let output_bytes = std::fs::metadata(&expected)
             .map_err(|e| format!("cannot read existing output: {e}"))?
@@ -361,9 +366,46 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     let c_id = job.id.clone();
     let is_cancelled = move || c_inner.cancelled.lock().unwrap().contains(&c_id);
 
+    // GIF has its own engine: palette-encode attempts that shrink the width
+    // until the target fits (the final attempt is kept even when it's still
+    // over — the UI's above-target note covers that).
+    if job.preset.format == OutputFormat::Gif {
+        run_gif(
+            &plan,
+            &info,
+            &job.input,
+            target_bytes,
+            &inner.child_slot,
+            &is_cancelled,
+            &mut on_progress,
+        )
+        .await?;
+        if let Some(state) = update_job(inner, &job.id, |j| {
+            j.phase = Phase::Verifying;
+            j.progress = 1.0;
+        }) {
+            emit_state(inner, &state, true);
+        }
+        let actual = std::fs::metadata(&plan.output)
+            .map_err(|e| format!("encoded output missing: {e}"))?
+            .len();
+        let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
+        append_journal(inner, job, &plan.output, &preset_hash, actual);
+        if let Some(state) = update_job(inner, &job.id, |j| {
+            j.phase = Phase::Done;
+            j.progress = 1.0;
+            j.output_bytes = Some(actual);
+            j.post_error = post_error;
+        }) {
+            emit_state(inner, &state, true);
+        }
+        return Ok(());
+    }
+
     // The hardware path can drop to software mid-job; the oversize retry
-    // then re-runs whichever path actually produced the output.
-    let mut use_hardware = job.use_hardware;
+    // then re-runs whichever path actually produced the output. WebM is
+    // always software two-pass VP9 — VideoToolbox has no VP9 encoder.
+    let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
 
     // One bitrate-adjustment retry if the first attempt overshoots the target.
     for attempt in 0..2u8 {
@@ -506,8 +548,9 @@ fn append_journal(
     });
 }
 
-/// Runs both libx264 passes for `plan`. Public so the integration test can
-/// exercise the exact pipeline the worker uses (tests can't build an AppHandle).
+/// Runs both software encode passes for `plan` — libx264 for mp4, libvpx-vp9
+/// for webm. Public so the integration test can exercise the exact pipeline
+/// the worker uses (tests can't build an AppHandle).
 ///
 /// `on_progress` receives (pass, overall) with pass 1 mapped to 0..0.5 and
 /// pass 2 to 0.5..1.0. `is_cancelled` is checked before each pass and right
@@ -521,6 +564,9 @@ pub async fn run_passes(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
+    if plan.format == OutputFormat::Gif {
+        return Err("gif plans are palette-encoded; use run_gif".to_string());
+    }
     run_pass(
         1,
         plan,
@@ -595,6 +641,85 @@ pub async fn run_hardware_pass(
     .await
 }
 
+/// Runs the palette-based GIF engine for `plan`: encode at the planned
+/// fps/width, then — bitrate math doesn't exist for GIF — shrink the width by
+/// the square root of the overshoot ratio and retry, up to 2 retries. The
+/// final attempt's file is KEPT even when it's still over the target; the
+/// UI's above-target note covers that case. Each attempt reports progress as
+/// pass 1 over the FULL 0..1 range. Public for the integration test.
+pub async fn run_gif(
+    plan: &plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    target_bytes: f64,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<(), String> {
+    let params = plan
+        .gif
+        .ok_or("gif plan is missing its palette parameters")?;
+    let mut width = params.max_width;
+    for attempt in 0..3u8 {
+        run_gif_attempt(
+            plan,
+            info,
+            input,
+            params.fps,
+            width,
+            child_slot,
+            is_cancelled,
+            on_progress,
+        )
+        .await?;
+        let actual = std::fs::metadata(&plan.output)
+            .map_err(|e| format!("encoded output missing: {e}"))?
+            .len();
+        if actual as f64 <= target_bytes || attempt == 2 {
+            return Ok(());
+        }
+        width = plan::gif_retry_width(width, target_bytes, actual);
+    }
+    unreachable!("retry loop always returns on the third attempt")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_gif_attempt(
+    plan: &plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    fps: u32,
+    max_width: u32,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    cmd.args([
+        "-y",
+        "-hide_banner",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        "-i",
+    ])
+    .arg(input)
+    .arg("-filter_complex")
+    .arg(plan::gif_filter(fps, max_width))
+    .arg("-an") // GIF never carries audio
+    .arg(&plan.output);
+
+    run_ffmpeg_with_progress(
+        "gif encode",
+        cmd,
+        info,
+        child_slot,
+        is_cancelled,
+        &mut |frac| on_progress(1, frac.clamp(0.0, 1.0)),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_pass(
     pass: u8,
@@ -619,24 +744,48 @@ async fn run_pass(
     if let Some(vf) = &plan.vf {
         cmd.arg("-vf").arg(vf);
     }
-    cmd.args(["-c:v", "libx264", "-preset", "medium"])
-        .arg("-b:v")
-        .arg(format!("{}k", plan.video_kbit))
-        .arg("-pass")
-        .arg(pass.to_string())
-        .arg("-passlogfile")
-        .arg(passlog_dir.join("p"));
+    match plan.format {
+        OutputFormat::Webm => {
+            // cpu-used 8 races through the analysis pass; 4 keeps the real
+            // encode at a sane quality/speed trade-off.
+            cmd.args(["-c:v", "libvpx-vp9"])
+                .arg("-b:v")
+                .arg(format!("{}k", plan.video_kbit))
+                .arg("-pass")
+                .arg(pass.to_string())
+                .arg("-passlogfile")
+                .arg(passlog_dir.join("p"))
+                .args(["-row-mt", "1", "-deadline", "good"])
+                .args(["-cpu-used", if pass == 1 { "8" } else { "4" }]);
+        }
+        _ => {
+            cmd.args(["-c:v", "libx264", "-preset", "medium"])
+                .arg("-b:v")
+                .arg(format!("{}k", plan.video_kbit))
+                .arg("-pass")
+                .arg(pass.to_string())
+                .arg("-passlogfile")
+                .arg(passlog_dir.join("p"));
+        }
+    }
     if pass == 1 {
         cmd.args(["-an", "-f", "null", "/dev/null"]);
     } else {
         if plan.audio_kbit > 0 {
-            cmd.args(["-c:a", "aac"])
+            let codec = match plan.format {
+                OutputFormat::Webm => "libopus",
+                _ => "aac",
+            };
+            cmd.args(["-c:a", codec])
                 .arg("-b:a")
                 .arg(format!("{}k", plan.audio_kbit));
         } else {
             cmd.arg("-an");
         }
-        cmd.args(["-movflags", "+faststart"]).arg(&plan.output);
+        if plan.format == OutputFormat::Mp4 {
+            cmd.args(["-movflags", "+faststart"]);
+        }
+        cmd.arg(&plan.output);
     }
 
     run_ffmpeg_with_progress(

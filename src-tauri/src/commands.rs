@@ -1,6 +1,6 @@
-use crate::encoder::{Encoder, JobState, PostActions};
+use crate::encoder::{Encoder, JobState, Phase, PostActions};
 use crate::scanner::{self, RecentVideo};
-use crate::settings::{self, Settings, SettingsState};
+use crate::settings::{self, OutputFormat, Preset, Settings, SettingsState};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{MutexGuard, PoisonError};
@@ -9,6 +9,8 @@ use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 
 const RECENTS_LIMIT: usize = 8;
+
+const TRASH_MULTI_PRESET_ERR: &str = "'Move original to Trash' is on, so the original disappears after the first conversion — only one preset per video. Turn the toggle off in Preferences to export several formats.";
 
 fn lock_settings(state: &SettingsState) -> MutexGuard<'_, Settings> {
     // A poisoned lock only means another command panicked mid-write;
@@ -40,6 +42,7 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
         }
     }
     crate::thumbs::ensure_thumbs(&app, &mut videos).await;
+    crate::durations::fill(&app, &mut videos).await;
     Ok(videos)
 }
 
@@ -59,6 +62,20 @@ pub fn save_settings(
     settings: Settings,
 ) -> Result<Settings, String> {
     settings::validate(&settings)?;
+
+    // Validate the global shortcuts by actually registering them; on failure
+    // the previous pair is re-registered and the save is rejected.
+    {
+        let previous = lock_settings(&state).clone();
+        if crate::shortcuts::changed(&previous, &settings) {
+            if let Err(err) = crate::shortcuts::apply(&app, &settings) {
+                if let Err(rollback) = crate::shortcuts::apply(&app, &previous) {
+                    eprintln!("tamp: failed to restore previous global shortcuts: {rollback}");
+                }
+                return Err(err);
+            }
+        }
+    }
 
     let previous_folders: Vec<String> = lock_settings(&state).watched_folders.clone();
 
@@ -159,6 +176,66 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
     }
 }
 
+/// True when "Move original to Trash" would make `input_path` disappear
+/// before a second, differently-configured conversion could run: some job for
+/// the same input with a different preset config hash is neither failed nor
+/// cancelled. Same-hash jobs are fine — a re-click just reuses the output.
+/// Jobs are (input_path, phase, preset_hash).
+fn trash_conflicts<'a>(
+    jobs: impl IntoIterator<Item = (&'a str, Phase, &'a str)>,
+    input_path: &str,
+    requested_hash: &str,
+) -> bool {
+    jobs.into_iter().any(|(path, phase, hash)| {
+        path == input_path
+            && !matches!(phase, Phase::Failed | Phase::Cancelled)
+            && hash != requested_hash
+    })
+}
+
+/// The single enqueue path shared by `enqueue`, `custom_convert` and the
+/// compress-latest global shortcut: applies the trash-original multi-preset
+/// guard and the user's post-action/encoder settings.
+fn enqueue_preset(app: &AppHandle, path: String, preset: Preset) -> Result<String, String> {
+    let (post, use_hardware) = {
+        let state = app.state::<SettingsState>();
+        let guard = lock_settings(&state);
+        let post = PostActions {
+            copy_to_clipboard: guard.copy_to_clipboard,
+            trash_original: guard.trash_original,
+        };
+        (post, guard.use_hardware_encoder)
+    };
+    let encoder = app.state::<Encoder>();
+    if post.trash_original {
+        let requested_hash = crate::encoder::plan::preset_hash(&preset);
+        let snapshot = encoder.snapshot();
+        let jobs = snapshot
+            .iter()
+            .map(|j| (j.input_path.as_str(), j.phase, j.preset_hash.as_str()));
+        if trash_conflicts(jobs, &path, &requested_hash) {
+            return Err(TRASH_MULTI_PRESET_ERR.to_string());
+        }
+    }
+    encoder.enqueue(PathBuf::from(path), preset, post, use_hardware)
+}
+
+/// Enqueues `path` with the default preset; the compress-latest global
+/// shortcut's entry point (`shortcuts.rs`).
+pub(crate) fn enqueue_default(app: &AppHandle, path: String) -> Result<String, String> {
+    let preset = {
+        let state = app.state::<SettingsState>();
+        let guard = lock_settings(&state);
+        guard
+            .presets
+            .iter()
+            .find(|p| p.id == guard.default_preset_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown preset: {}", guard.default_preset_id))?
+    };
+    enqueue_preset(app, path, preset)
+}
+
 #[tauri::command]
 pub fn enqueue(
     app: AppHandle,
@@ -166,22 +243,52 @@ pub fn enqueue(
     path: String,
     preset_id: String,
 ) -> Result<String, String> {
-    let (preset, post, use_hardware) = {
+    let preset = {
         let guard = lock_settings(&state);
-        let preset = guard
+        guard
             .presets
             .iter()
             .find(|p| p.id == preset_id)
             .cloned()
-            .ok_or_else(|| format!("unknown preset: {preset_id}"))?;
-        let post = PostActions {
-            copy_to_clipboard: guard.copy_to_clipboard,
-            trash_original: guard.trash_original,
-        };
-        (preset, post, guard.use_hardware_encoder)
+            .ok_or_else(|| format!("unknown preset: {preset_id}"))?
     };
-    app.state::<Encoder>()
-        .enqueue(PathBuf::from(path), preset, post, use_hardware)
+    enqueue_preset(&app, path, preset)
+}
+
+/// One-off conversion settings from the panel's "Custom…" page; mirrors the
+/// preset's encode-affecting fields.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomConfig {
+    pub target_mb: f64,
+    pub max_fps: Option<u32>,
+    pub max_width: Option<u32>,
+    pub scale_percent: Option<u32>,
+    pub strip_audio: bool,
+    pub format: OutputFormat,
+}
+
+#[tauri::command]
+pub fn custom_convert(
+    app: AppHandle,
+    path: String,
+    config: CustomConfig,
+) -> Result<String, String> {
+    // also rejects NaN, which would otherwise pass a `<= 0.0` check
+    if !config.target_mb.is_finite() || config.target_mb <= 0.0 {
+        return Err("target size must be greater than 0".to_string());
+    }
+    let preset = Preset {
+        id: "custom".into(),
+        name: "Custom".into(),
+        target_mb: config.target_mb,
+        max_fps: config.max_fps,
+        max_width: config.max_width,
+        scale_percent: config.scale_percent,
+        strip_audio: config.strip_audio,
+        format: config.format,
+    };
+    enqueue_preset(&app, path, preset)
 }
 
 #[tauri::command]
@@ -224,5 +331,60 @@ pub fn reveal(path: String) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = path;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INPUT: &str = "/rec/clip.mov";
+
+    #[test]
+    fn no_jobs_never_conflicts() {
+        assert!(!trash_conflicts([], INPUT, "823f"));
+    }
+
+    #[test]
+    fn different_hash_for_same_input_conflicts() {
+        let jobs = [(INPUT, Phase::Done, "823f")];
+        assert!(trash_conflicts(jobs, INPUT, "d6e4"));
+    }
+
+    #[test]
+    fn same_hash_reclick_stays_allowed() {
+        let jobs = [(INPUT, Phase::Done, "823f")];
+        assert!(!trash_conflicts(jobs, INPUT, "823f"));
+    }
+
+    #[test]
+    fn other_inputs_do_not_conflict() {
+        let jobs = [("/rec/other.mov", Phase::Pass2, "823f")];
+        assert!(!trash_conflicts(jobs, INPUT, "d6e4"));
+    }
+
+    #[test]
+    fn failed_and_cancelled_jobs_do_not_conflict() {
+        let jobs = [
+            (INPUT, Phase::Failed, "823f"),
+            (INPUT, Phase::Cancelled, "eb3d"),
+        ];
+        assert!(!trash_conflicts(jobs, INPUT, "d6e4"));
+    }
+
+    #[test]
+    fn active_phases_all_conflict() {
+        for phase in [
+            Phase::Queued,
+            Phase::Pass1,
+            Phase::Pass2,
+            Phase::Verifying,
+            Phase::Done,
+        ] {
+            assert!(
+                trash_conflicts([(INPUT, phase, "823f")], INPUT, "d6e4"),
+                "phase must conflict"
+            );
+        }
     }
 }
