@@ -773,11 +773,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
         if (j.reused) {
           html += `<span class="done-smaller">Already compressed — reused</span>`;
         } else {
+          // No above-target note: the backend guarantees a Done job's output
+          // is at or under its preset's byte target.
           html += `<span class="done-smaller">${formatPercentSmaller(j.inputBytes, outB)}</span>`;
-          const preset = getSettings()?.presets.find((p) => p.id === j.presetId);
-          if (preset && outB > preset.targetMb * 1_000_000) {
-            html += `<span class="above-target">above target</span>`;
-          }
         }
         if (j.postError) html += `<span class="post-warn"></span>`;
         status.innerHTML = html;
@@ -803,7 +801,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
   }
 
   function onSettingsChanged(): void {
-    // Presets drive chips + above-target notes; collapse previews and repaint statuses.
+    // Presets drive the chips; collapse previews and repaint statuses.
     collapseExpanded();
     for (const [path, row] of rowByPath) {
       const expand = row.querySelector<HTMLElement>(".row-expand");

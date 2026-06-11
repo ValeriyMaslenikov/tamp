@@ -133,9 +133,45 @@ pub fn gif_filter(fps: u32, max_width: u32) -> String {
 /// bytes scale roughly with pixel area, so scale the width by the square
 /// root of the size ratio with a 5% safety margin, truncated to even and
 /// floored at 160 so retries can't degenerate into unreadable thumbnails.
-pub fn gif_retry_width(width: u32, target_bytes: f64, actual_bytes: u64) -> u32 {
+/// The floor never RAISES a width above `initial_width` — a preset that
+/// starts narrower than 160 simply holds at its own starting width.
+pub fn gif_retry_width(
+    width: u32,
+    initial_width: u32,
+    target_bytes: f64,
+    actual_bytes: u64,
+) -> u32 {
     let scaled = (width as f64 * (target_bytes / actual_bytes as f64).sqrt() * 0.95) as u32;
-    (scaled & !1).max(160)
+    (scaled & !1).max(160.min(initial_width))
+}
+
+/// Parameters for the GIF retry numbered `retry_index` (1-based: the first
+/// re-encode after the initial attempt is retry 1). Every retry shrinks the
+/// width via [`gif_retry_width`]; from the second retry — the THIRD attempt
+/// overall — the frame rate also drops to 3/4, floored at 8 fps, because
+/// width shrinkage alone has clearly not been enough by then. `initial` is
+/// the plan's STARTING params: both floors clamp to it so a retry can never
+/// raise fps or width above what the user's own preset asked for.
+pub fn gif_retry_params(
+    current: GifParams,
+    initial: GifParams,
+    retry_index: u8,
+    target_bytes: f64,
+    actual_bytes: u64,
+) -> GifParams {
+    GifParams {
+        fps: if retry_index >= 2 {
+            (current.fps * 3 / 4).max(8.min(initial.fps))
+        } else {
+            current.fps
+        },
+        max_width: gif_retry_width(
+            current.max_width,
+            initial.max_width,
+            target_bytes,
+            actual_bytes,
+        ),
+    }
 }
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -187,6 +223,41 @@ pub fn expected_output(input: &Path, hash: &str, format: OutputFormat) -> PathBu
     let dir = input.parent().unwrap_or_else(|| Path::new("."));
     let ext = extension(format);
     dir.join(format!("{} (tamped {hash}).{ext}", input_stem(input)))
+}
+
+/// The crash-safe temp sibling every encode attempt writes to:
+/// "{final_stem}.{ext}.part" in the SAME directory as `output`, so the final
+/// rename never crosses filesystems. Its extension is "part", which the
+/// recents scanner never lists, so a crash can only ever leave a `.part`
+/// file behind — never a partial at the final output path.
+pub fn part_path(output: &Path) -> PathBuf {
+    let mut name = output
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".part");
+    output.with_file_name(name)
+}
+
+/// True when `name` is a numbered sibling of the base output whose stem is
+/// `base_stem` (e.g. "clip (tamped 823f)") with extension `ext`: exactly
+/// "{stem} (tamped {hash} N).{ext}" for some run of digits N. The base
+/// output itself, other hashes/stems/extensions and `.part` files all fail.
+pub fn is_numbered_sibling(name: &str, base_stem: &str, ext: &str) -> bool {
+    let Some(stem) = name.strip_suffix(ext).and_then(|n| n.strip_suffix('.')) else {
+        return false;
+    };
+    let Some(base) = base_stem.strip_suffix(')') else {
+        return false;
+    };
+    let Some(digits) = stem
+        .strip_prefix(base)
+        .and_then(|r| r.strip_prefix(' '))
+        .and_then(|r| r.strip_suffix(')'))
+    else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
@@ -610,13 +681,107 @@ mod tests {
     #[test]
     fn gif_retry_width_shrinks_by_sqrt_size_ratio() {
         // 4x over target: sqrt(1/4) * 0.95 = 0.475 -> 480 * 0.475 = 228
-        assert_eq!(gif_retry_width(480, 1_000_000.0, 4_000_000), 228);
+        assert_eq!(gif_retry_width(480, 480, 1_000_000.0, 4_000_000), 228);
         // Slightly over: 480 * sqrt(1/1.1) * 0.95 = 434.8 -> 434 (even)
-        assert_eq!(gif_retry_width(480, 1_000_000.0, 1_100_000), 434);
+        assert_eq!(gif_retry_width(480, 480, 1_000_000.0, 1_100_000), 434);
         // Odd results truncate to even: 300 * sqrt(0.5) * 0.95 = 201.5 -> 200
-        assert_eq!(gif_retry_width(300, 1_000_000.0, 2_000_000), 200);
+        assert_eq!(gif_retry_width(300, 300, 1_000_000.0, 2_000_000), 200);
         // Never below the 160px floor.
-        assert_eq!(gif_retry_width(200, 100.0, 1_000_000_000), 160);
+        assert_eq!(gif_retry_width(200, 200, 100.0, 1_000_000_000), 160);
+    }
+
+    #[test]
+    fn gif_retry_width_floor_never_raises_a_narrow_start() {
+        // A preset narrower than the 160px floor holds at ITS OWN width — a
+        // retry must never come out wider than the user's starting params.
+        assert_eq!(gif_retry_width(120, 120, 100.0, 1_000_000_000), 120);
+        // Even a mild overshoot holds there: the start is already below the
+        // readability floor, so fps becomes the only remaining knob.
+        assert_eq!(gif_retry_width(120, 120, 1_000_000.0, 1_100_000), 120);
+        // A wide start keeps the standard 160px floor.
+        assert_eq!(gif_retry_width(480, 480, 100.0, 1_000_000_000), 160);
+    }
+
+    const INITIAL: GifParams = GifParams {
+        fps: 12,
+        max_width: 480,
+    };
+
+    #[test]
+    fn gif_retry_params_first_retry_shrinks_width_only() {
+        // 4x over target: width follows gif_retry_width, fps untouched.
+        let next = gif_retry_params(INITIAL, INITIAL, 1, 1_000_000.0, 4_000_000);
+        assert_eq!(
+            next.max_width,
+            gif_retry_width(480, 480, 1_000_000.0, 4_000_000)
+        );
+        assert_eq!(next.fps, 12);
+    }
+
+    #[test]
+    fn gif_retry_params_reduces_fps_from_second_retry() {
+        for retry in [2u8, 3, 4] {
+            let next = gif_retry_params(INITIAL, INITIAL, retry, 1_000_000.0, 4_000_000);
+            assert_eq!(next.fps, 9, "retry {retry}"); // 12 * 3/4
+        }
+        // Compounding across retries: 12 -> 9 -> 8 (6.75 floors to 8) -> 8.
+        let mut p = INITIAL;
+        let mut seen = Vec::new();
+        for retry in 2u8..=4 {
+            p = gif_retry_params(p, INITIAL, retry, 1_000_000.0, 4_000_000);
+            seen.push(p.fps);
+        }
+        assert_eq!(seen, vec![9, 8, 8]);
+    }
+
+    #[test]
+    fn gif_retry_params_respects_both_floors() {
+        let current = GifParams {
+            fps: 8,
+            max_width: 160,
+        };
+        // Hugely over target with both knobs already at their floors: the
+        // schedule must hold at 160px / 8fps, never below.
+        let next = gif_retry_params(current, INITIAL, 4, 100.0, 1_000_000_000);
+        assert_eq!(next.max_width, 160);
+        assert_eq!(next.fps, 8);
+    }
+
+    #[test]
+    fn gif_retry_params_never_raise_a_low_fps_start() {
+        // A max_fps 5 preset starts at 5 fps; the 8 fps floor must clamp to
+        // the user's own start, so every retry stays <= 5 — never raised.
+        let initial = GifParams {
+            fps: 5,
+            max_width: 480,
+        };
+        let mut p = initial;
+        for retry in 1u8..=4 {
+            p = gif_retry_params(p, initial, retry, 1_000_000.0, 4_000_000);
+            assert!(p.fps <= 5, "retry {retry} raised fps to {}", p.fps);
+        }
+        assert_eq!(p.fps, 5); // 5 * 3/4 = 3 floors back up to min(8, 5) = 5
+    }
+
+    #[test]
+    fn gif_retry_params_never_raise_a_narrow_width_start() {
+        // A 120px preset must hold at 120, not get raised to the 160 floor.
+        let initial = GifParams {
+            fps: 12,
+            max_width: 120,
+        };
+        let next = gif_retry_params(initial, initial, 1, 100.0, 1_000_000_000);
+        assert_eq!(next.max_width, 120);
+        // Both knobs at their clamped floors: the params stop changing, which
+        // is exactly what run_gif's stuck check keys on to give up.
+        let stuck = GifParams {
+            fps: 5,
+            max_width: 120,
+        };
+        let initial = stuck;
+        let next = gif_retry_params(stuck, initial, 2, 100.0, 1_000_000_000);
+        assert_eq!(next.fps, stuck.fps);
+        assert_eq!(next.max_width, stuck.max_width);
     }
 
     // The pinned values below were computed independently (reference FNV-1a
@@ -688,6 +853,46 @@ mod tests {
         renamed.id = "other-id".to_string();
         renamed.name = "Other Name".to_string();
         assert_eq!(preset_hash(&preset(10.0)), preset_hash(&renamed));
+    }
+
+    #[test]
+    fn part_path_appends_part_in_the_same_directory() {
+        assert_eq!(
+            part_path(Path::new("/dir/clip (tamped 823f).mp4")),
+            PathBuf::from("/dir/clip (tamped 823f).mp4.part")
+        );
+        assert_eq!(
+            part_path(Path::new("/dir/clip (tamped 270f 2).gif")),
+            PathBuf::from("/dir/clip (tamped 270f 2).gif.part")
+        );
+        // The scanner must never list a part file as a video.
+        assert_eq!(
+            part_path(Path::new("/dir/c.webm")).extension().unwrap(),
+            "part"
+        );
+    }
+
+    #[test]
+    fn matches_numbered_siblings_of_the_exact_base_output() {
+        let base = "clip (tamped 823f)";
+        assert!(is_numbered_sibling("clip (tamped 823f 2).mp4", base, "mp4"));
+        assert!(is_numbered_sibling(
+            "clip (tamped 823f 17).mp4",
+            base,
+            "mp4"
+        ));
+        for name in [
+            "clip (tamped 823f).mp4",        // the base output itself
+            "clip (tamped 823f 2).gif",      // wrong extension
+            "clip (tamped ffff 2).mp4",      // different hash
+            "other (tamped 823f 2).mp4",     // different stem
+            "clip (tamped 823f x).mp4",      // counter must be digits
+            "clip (tamped 823f ).mp4",       // empty counter
+            "clip (tamped 823f 2).mp4.part", // in-flight temp, never swept
+            "clip (tamped 823f 2 3).mp4",    // extra token
+        ] {
+            assert!(!is_numbered_sibling(name, base, "mp4"), "{name}");
+        }
     }
 
     #[test]

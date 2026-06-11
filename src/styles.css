@@ -342,11 +342,6 @@ textarea {
   font-weight: 600;
 }
 
-.above-target {
-  color: var(--amber);
-  font-weight: 500;
-}
-
 .post-warn {
   flex-basis: 100%;
   color: var(--amber);

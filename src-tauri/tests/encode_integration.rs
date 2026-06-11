@@ -9,7 +9,7 @@ use tamp_lib::encoder::{
     bin,
     plan::{build_plan, preset_hash},
     probe::probe,
-    run_gif, run_hardware_pass, run_passes, ChildSlot, OutputFormat, Preset,
+    run_gif, run_hardware_pass, run_passes, run_video_convergence, ChildSlot, OutputFormat, Preset,
 };
 
 fn make_test_clip(dir: &Path) -> PathBuf {
@@ -444,7 +444,7 @@ async fn gif_palette_encode_stays_under_generous_target() {
     let target_bytes = preset.target_mb * 1_000_000.0;
     let slot = ChildSlot::default();
     let mut seen: Vec<(u8, f64)> = Vec::new();
-    run_gif(
+    let actual = run_gif(
         &plan,
         &info,
         &input,
@@ -476,12 +476,150 @@ async fn gif_palette_encode_stays_under_generous_target() {
         "output is not a GIF"
     );
     // The retry loop must land a 3s 480px clip comfortably under this
-    // generous target (and keeps the last file even when it can't — which
-    // would fail this assertion and flag a regression).
+    // generous target; when it can't fit at all it now FAILS (deleting the
+    // file) instead of keeping an oversized gif.
     assert!(
         (bytes.len() as f64) <= target_bytes,
         "gif {} bytes exceeds {} byte target",
         bytes.len(),
         target_bytes
+    );
+    assert_eq!(
+        actual,
+        bytes.len() as u64,
+        "run_gif must report the on-disk size"
+    );
+}
+
+/// High-entropy grayscale noise — nearly incompressible, the hardest case
+/// for rate control and the deterministic way to stress the convergence loop.
+fn make_noise_clip(dir: &Path) -> PathBuf {
+    let input = dir.join("noise.mp4");
+    let status = Command::new(bin::ffmpeg_path())
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=size=640x360:rate=30,geq=random(1)*255:128:128",
+            "-t",
+            "2",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&input)
+        .status()
+        .expect("failed to run bundled ffmpeg — did scripts/fetch-ffmpeg.sh run?");
+    assert!(status.success(), "noise clip generation failed");
+    input
+}
+
+#[tokio::test]
+async fn convergence_loop_enforces_hard_cap_on_high_entropy_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_noise_clip(dir.path());
+    let info = probe(&input).await.expect("probe failed");
+
+    // Tight but achievable: ~1500 kbit/s of pure noise is well within what
+    // two-pass x264 can rate-control, but leaves little slack — exactly the
+    // regime where single attempts historically overshot.
+    let preset = Preset {
+        id: "test-tight".to_string(),
+        name: "Tight (0.4MB)".to_string(),
+        target_mb: 0.4,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+        format: OutputFormat::Mp4,
+    };
+    let mut plan = build_plan(&info, &preset, &input).expect("build_plan failed");
+    let target_bytes = preset.target_mb * 1_000_000.0;
+
+    let passlog = tempfile::tempdir().unwrap();
+    let slot = ChildSlot::default();
+    let actual = run_video_convergence(
+        &mut plan,
+        &info,
+        &input,
+        passlog.path(),
+        target_bytes,
+        false, // software start: the deterministic two-pass path
+        &slot,
+        &|| false,
+        &mut |_, _| {},
+    )
+    .await
+    .expect("convergence loop failed");
+
+    let on_disk = std::fs::metadata(&plan.output)
+        .expect("output file missing")
+        .len();
+    assert_eq!(actual, on_disk, "reported size must match the file");
+    // The HARD guarantee: a delivered output is never over target, not even
+    // by one byte.
+    assert!(
+        (on_disk as f64) <= target_bytes,
+        "output {on_disk} bytes exceeds {target_bytes} byte target"
+    );
+    assert!(
+        on_disk > 10_000,
+        "output suspiciously small: {on_disk} bytes"
+    );
+}
+
+#[tokio::test]
+async fn impossible_gif_target_fails_and_removes_the_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_noise_clip(dir.path());
+    let info = probe(&input).await.expect("probe failed");
+
+    // 50 KB of noise GIF is impossible even at the 160px/8fps floors: the
+    // engine must exhaust its width+fps retries, DELETE the oversized file
+    // and fail with the actionable error — never keep an over-target gif.
+    let preset = Preset {
+        id: "test-tiny-gif".to_string(),
+        name: "Tiny GIF".to_string(),
+        target_mb: 0.05,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+        format: OutputFormat::Gif,
+    };
+    let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
+    let target_bytes = preset.target_mb * 1_000_000.0;
+
+    let slot = ChildSlot::default();
+    let err = run_gif(
+        &plan,
+        &info,
+        &input,
+        target_bytes,
+        &slot,
+        &|| false,
+        &mut |_, _| {},
+    )
+    .await
+    .expect_err("a 50 KB noise gif must fail, not deliver an oversized file");
+    assert!(err.contains("Couldn't fit under 0.05 MB"), "{err}");
+    assert!(
+        err.contains("lower the resolution/FPS in the preset or pick a bigger target"),
+        "{err}"
+    );
+    assert!(
+        !plan.output.exists(),
+        "the oversized gif must be deleted, not kept"
+    );
+    assert!(
+        !tamp_lib::encoder::plan::part_path(&plan.output).exists(),
+        "the in-flight part file must be removed on failure"
     );
 }

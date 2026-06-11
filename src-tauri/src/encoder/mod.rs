@@ -2,11 +2,12 @@ pub mod bin;
 pub mod plan;
 pub mod probe;
 pub mod progress;
+pub mod retry;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -91,6 +92,10 @@ struct Inner {
     /// Jobs waiting in the channel (excludes the one being processed).
     pending: AtomicUsize,
     last_emit: Mutex<Option<Instant>>,
+    /// Set by `shutdown()` BEFORE the child is killed: the worker folds it
+    /// into its is_cancelled checks so the kill reads as a cancel — no
+    /// VT->software fallback and no further convergence retries on exit.
+    shutting_down: AtomicBool,
 }
 
 pub struct Encoder {
@@ -109,6 +114,7 @@ impl Encoder {
             child_slot: ChildSlot::default(),
             pending: AtomicUsize::new(0),
             last_emit: Mutex::new(None),
+            shutting_down: AtomicBool::new(false),
         });
         let worker = inner.clone();
         tauri::async_runtime::spawn(async move {
@@ -210,6 +216,10 @@ impl Encoder {
     }
 
     pub fn shutdown(&self) {
+        // Flag first: the worker must already see the shutdown when the kill
+        // surfaces as an ffmpeg error, or it would fall back to software /
+        // burn convergence retries while the app is exiting.
+        self.inner.shutting_down.store(true, Ordering::SeqCst);
         if let Some(child) = self.inner.child_slot.lock().unwrap().as_mut() {
             let _ = child.start_kill();
         }
@@ -278,6 +288,12 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
             if path.exists() {
                 let _ = std::fs::remove_file(path);
             }
+            // The in-flight attempt writes to the part sibling, so failure
+            // and cancellation must clear that too.
+            let part = plan::part_path(path);
+            if part.exists() {
+                let _ = std::fs::remove_file(&part);
+            }
         }
         if !was_cancelled {
             eprintln!("tamp: job {} failed: {err}", job.id);
@@ -303,36 +319,47 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
 
 async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     let preset_hash = plan::preset_hash(&job.preset);
+    let target_bytes = job.preset.target_mb * 1_000_000.0;
 
     // A previous run with this exact preset configuration already produced
-    // an output next to the input: reuse it instead of re-encoding.
+    // an output next to the input: reuse it instead of re-encoding — but
+    // only when it actually fits the target AND the journal doesn't show it
+    // was made from different content (another input path, or an input
+    // re-recorded since). An over-target file (stale artifact of the old
+    // keep-it policy) is deleted by check_reuse, BEFORE build_plan's
+    // unique_output probe, so the fresh encode targets the now-free base
+    // expected_output path; an under-target file with mismatched provenance
+    // is left alone and the fresh encode lands on a numbered sibling.
     let expected = plan::expected_output(&job.input, &preset_hash, job.preset.format);
-    if expected.exists() {
-        let output_bytes = std::fs::metadata(&expected)
-            .map_err(|e| format!("cannot read existing output: {e}"))?
-            .len();
-        // Post-actions still run so the reuse behaves like a fresh encode
-        // from the user's perspective (clipboard copy / trash original).
-        let post_error = run_post_actions(inner, &job.post, &job.input, &expected);
-        if let Some(state) = update_job(inner, &job.id, |j| {
-            j.phase = Phase::Done;
-            j.progress = 1.0;
-            j.reused = true;
-            j.output_path = Some(expected.to_string_lossy().into_owned());
-            j.output_bytes = Some(output_bytes);
-            j.post_error = post_error;
-        }) {
-            emit_state(inner, &state, true);
+    if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
+        if reuse_is_stale(&inner.app, &job.input, &expected) {
+            eprintln!(
+                "tamp: not reusing {} — the journal records different content; re-encoding",
+                expected.display()
+            );
+        } else {
+            // Post-actions still run so the reuse behaves like a fresh encode
+            // from the user's perspective (clipboard copy / trash original).
+            let post_error = run_post_actions(inner, &job.post, &job.input, &expected);
+            if let Some(state) = update_job(inner, &job.id, |j| {
+                j.phase = Phase::Done;
+                j.progress = 1.0;
+                j.reused = true;
+                j.output_path = Some(expected.to_string_lossy().into_owned());
+                j.output_bytes = Some(output_bytes);
+                j.post_error = post_error;
+            }) {
+                emit_state(inner, &state, true);
+            }
+            // Deliberately no journal append: the original encode already
+            // recorded this output.
+            return Ok(());
         }
-        // Deliberately no journal append: the original encode already
-        // recorded this output.
-        return Ok(());
     }
 
     let info = probe::probe(&job.input).await?;
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
-    let target_bytes = job.preset.target_mb * 1_000_000.0;
 
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Pass1;
@@ -364,12 +391,18 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
 
     let c_inner = inner.clone();
     let c_id = job.id.clone();
-    let is_cancelled = move || c_inner.cancelled.lock().unwrap().contains(&c_id);
+    // shutdown() reads as a cancel at every decision point: no VT->software
+    // fallback and no further retries once the app is exiting.
+    let is_cancelled = move || {
+        c_inner.shutting_down.load(Ordering::SeqCst)
+            || c_inner.cancelled.lock().unwrap().contains(&c_id)
+    };
 
     // GIF has its own engine: palette-encode attempts that shrink the width
-    // until the target fits (the final attempt is kept even when it's still
-    // over — the UI's above-target note covers that).
-    if job.preset.format == OutputFormat::Gif {
+    // (and eventually the frame rate) until the target fits; run_gif FAILS —
+    // deleting its output — when the bounded retries can't get there, so an
+    // oversized gif is never delivered.
+    let actual = if job.preset.format == OutputFormat::Gif {
         run_gif(
             &plan,
             &info,
@@ -379,46 +412,275 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
             &is_cancelled,
             &mut on_progress,
         )
-        .await?;
-        if let Some(state) = update_job(inner, &job.id, |j| {
-            j.phase = Phase::Verifying;
-            j.progress = 1.0;
-        }) {
-            emit_state(inner, &state, true);
-        }
-        let actual = std::fs::metadata(&plan.output)
-            .map_err(|e| format!("encoded output missing: {e}"))?
-            .len();
-        let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
-        append_journal(inner, job, &plan.output, &preset_hash, actual);
-        if let Some(state) = update_job(inner, &job.id, |j| {
-            j.phase = Phase::Done;
-            j.progress = 1.0;
-            j.output_bytes = Some(actual);
-            j.post_error = post_error;
-        }) {
-            emit_state(inner, &state, true);
-        }
-        return Ok(());
+        .await?
+    } else {
+        // WebM is always software two-pass VP9 — VideoToolbox has no VP9
+        // encoder. The convergence loop handles oversize retries and the
+        // hardware -> software switch, and fails rather than ever returning
+        // an over-target output.
+        let use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
+        run_video_convergence(
+            &mut plan,
+            &info,
+            &job.input,
+            tmp.path(),
+            target_bytes,
+            use_hardware,
+            &inner.child_slot,
+            &is_cancelled,
+            &mut on_progress,
+        )
+        .await?
+    };
+
+    if let Some(state) = update_job(inner, &job.id, |j| {
+        j.phase = Phase::Verifying;
+        j.progress = 1.0;
+    }) {
+        emit_state(inner, &state, true);
     }
 
-    // The hardware path can drop to software mid-job; the oversize retry
-    // then re-runs whichever path actually produced the output. WebM is
-    // always software two-pass VP9 — VideoToolbox has no VP9 encoder.
-    let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
+    // Defense in depth: the engines above already enforced the target on the
+    // part file before renaming it onto plan.output, but a Done job must
+    // NEVER carry an over-target output, so re-verify the delivered file one
+    // last time and fail (removing it) on any violation.
+    let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
 
-    // One bitrate-adjustment retry if the first attempt overshoots the target.
-    for attempt in 0..2u8 {
+    // Run post-actions first so their failures ride along on the final Done
+    // state instead of vanishing into stderr.
+    let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
+    append_journal(inner, job, &plan.output, &preset_hash, actual);
+    if let Some(state) = update_job(inner, &job.id, |j| {
+        j.phase = Phase::Done;
+        j.progress = 1.0;
+        j.output_bytes = Some(actual);
+        j.post_error = post_error;
+    }) {
+        emit_state(inner, &state, true);
+    }
+    Ok(())
+}
+
+/// The reuse short-circuit decision for the worker: `Some(bytes)` when an
+/// existing output at `expected` fits `target_bytes` and can be served
+/// as-is; `None` when there is nothing (usable) to reuse. Only a non-empty
+/// REGULAR file is ever served — a directory or symlink squatting on the
+/// expected name is not tamp's to deliver or delete, so it is left alone
+/// (unique_output sends the fresh encode to a numbered sibling). An
+/// over-target file — a stale artifact of the old keep-it policy — or a
+/// zero-byte one IS tamp's own hash-named artifact and is deleted here to
+/// free the base output path; nothing in this probe ever fails the job, a
+/// failed deletion is logged and the encode proceeds to a sibling.
+pub fn check_reuse(expected: &Path, target_bytes: f64) -> Option<u64> {
+    let Ok(meta) = std::fs::symlink_metadata(expected) else {
+        return None; // nothing there (or unreadable): encode fresh
+    };
+    if !meta.is_file() {
+        eprintln!(
+            "tamp: expected output {} is not a regular file; leaving it and encoding to a sibling",
+            expected.display()
+        );
+        sweep_stale_siblings(expected, target_bytes);
+        return None;
+    }
+    let len = meta.len();
+    if len > 0 && len as f64 <= target_bytes {
+        return Some(len);
+    }
+    if let Err(e) = std::fs::remove_file(expected) {
+        eprintln!(
+            "tamp: cannot remove stale output {}: {e}; encoding to a sibling",
+            expected.display()
+        );
+    }
+    if len as f64 > target_bytes {
+        sweep_stale_siblings(expected, target_bytes);
+    }
+    None
+}
+
+/// Best-effort sweep of stale numbered siblings — "{stem} (tamped {hash} N).{ext}"
+/// outputs of the SAME input + preset configuration as `expected` — deleting
+/// those over `target_bytes`. Runs when check_reuse retires a stale base
+/// output so old over-target artifacts don't live on forever under numbered
+/// names; every failure is logged and skipped, never fatal.
+fn sweep_stale_siblings(expected: &Path, target_bytes: f64) {
+    let (Some(dir), Some(base_stem), Some(ext)) = (
+        expected.parent(),
+        expected.file_stem().and_then(|s| s.to_str()),
+        expected.extension().and_then(|e| e.to_str()),
+    ) else {
+        return;
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!(
+                "tamp: cannot scan {} for stale siblings: {e}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !plan::is_numbered_sibling(name, base_stem, ext) {
+            continue;
+        }
+        // DirEntry::metadata does not traverse symlinks, so only a regular
+        // over-target file is ever swept.
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() || meta.len() as f64 <= target_bytes {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_file(entry.path()) {
+            eprintln!(
+                "tamp: cannot remove stale over-target sibling {}: {e}",
+                entry.path().display()
+            );
+        }
+    }
+}
+
+/// Provenance gate for the reuse short-circuit: true when the journal shows
+/// the file at `expected` was produced from something OTHER than this job's
+/// input — recorded for a different input path, or the input was modified
+/// (re-recorded) after the record was written. No managed journal or no
+/// record keeps the size-only reuse behavior.
+fn reuse_is_stale(app: &AppHandle, input: &Path, expected: &Path) -> bool {
+    let Some(journal) = app.try_state::<crate::journal::Journal>() else {
+        return false;
+    };
+    let Some(record) = journal.find_by_output(&expected.to_string_lossy()) else {
+        return false;
+    };
+    if record.input_path != input.to_string_lossy() {
+        return true;
+    }
+    std::fs::metadata(input)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|d| d.as_millis() as u64 > record.completed_at_ms)
+}
+
+/// Final guarantee before a job goes Done: re-stat the output and confirm it
+/// fits the byte target. On violation the file is removed and the job fails
+/// with the actionable error — an oversized file must never be delivered.
+fn enforce_target(
+    output: &Path,
+    expected_len: u64,
+    target_bytes: f64,
+    target_mb: f64,
+) -> Result<u64, String> {
+    let actual = std::fs::metadata(output)
+        .map_err(|e| format!("encoded output missing: {e}"))?
+        .len();
+    if actual as f64 > target_bytes || expected_len as f64 > target_bytes {
+        let _ = std::fs::remove_file(output);
+        return Err(retry::give_up_error(target_mb));
+    }
+    Ok(actual)
+}
+
+/// The explicit ffmpeg muxer for a plan's container. Encode attempts write
+/// to the ".part" sibling, so ffmpeg can't infer the format from the output
+/// extension and must always be told.
+fn muxer(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Mp4 => "mp4",
+        OutputFormat::Webm => "webm",
+        OutputFormat::Gif => "gif",
+    }
+}
+
+/// Promotes a finished part file onto its final output path: enforce_target
+/// re-stats the part and removes it on any size violation, and only a
+/// fitting file is renamed — same-directory, so the rename is atomic and a
+/// crash can never leave a partial at the final path.
+fn promote_part(
+    part: &Path,
+    output: &Path,
+    expected_len: u64,
+    target_bytes: f64,
+) -> Result<u64, String> {
+    let actual = enforce_target(part, expected_len, target_bytes, target_bytes / 1_000_000.0)?;
+    if let Err(e) = std::fs::rename(part, output) {
+        let _ = std::fs::remove_file(part);
+        return Err(format!("cannot move finished output into place: {e}"));
+    }
+    Ok(actual)
+}
+
+/// Runs the bitrate-convergence loop for mp4/webm plans: encode, measure,
+/// then per `retry::next_action` either deliver, re-encode with a corrected
+/// bitrate (a VideoToolbox job switches to two-pass software on its FIRST
+/// overshoot; software jobs just tighten per the shrink schedule), or fail
+/// with an actionable error after the bounded retries. Every attempt writes
+/// to the crash-safe `plan::part_path` sibling; a fitting output is verified
+/// (enforce_target) and only then renamed onto `plan.output`, while every
+/// failure/cancel/give-up path removes the part file — a partial can never
+/// land at the final path. Returns the final output size, which is always
+/// <= `target_bytes`. Public so the integration test can exercise the exact
+/// loop the worker uses.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_video_convergence(
+    plan: &mut plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    passlog_dir: &Path,
+    target_bytes: f64,
+    use_hardware: bool,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<u64, String> {
+    let mut work = plan.clone();
+    work.output = plan::part_path(&plan.output);
+    let result = convergence_attempts(
+        &mut work,
+        info,
+        input,
+        passlog_dir,
+        target_bytes,
+        use_hardware,
+        child_slot,
+        is_cancelled,
+        on_progress,
+    )
+    .await;
+    plan.video_kbit = work.video_kbit; // expose the corrected bitrate
+    match result {
+        Ok(actual) => promote_part(&work.output, &plan.output, actual, target_bytes),
+        Err(e) => {
+            let _ = std::fs::remove_file(&work.output);
+            Err(e)
+        }
+    }
+}
+
+/// The encode/measure/correct loop behind [`run_video_convergence`];
+/// `plan.output` already points at the part sibling. Returns the fitting
+/// attempt's size, leaving the file at the part path for the caller to
+/// verify and promote.
+#[allow(clippy::too_many_arguments)]
+async fn convergence_attempts(
+    plan: &mut plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    passlog_dir: &Path,
+    target_bytes: f64,
+    use_hardware: bool,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<u64, String> {
+    let mut use_hardware = use_hardware && plan.format == OutputFormat::Mp4;
+    for attempt in 0..=retry::MAX_RE_ENCODES {
         if use_hardware {
-            let hw = run_hardware_pass(
-                &plan,
-                &info,
-                &job.input,
-                &inner.child_slot,
-                &is_cancelled,
-                &mut on_progress,
-            )
-            .await;
+            let hw =
+                run_hardware_pass(plan, info, input, child_slot, is_cancelled, on_progress).await;
             let fallback_reason = match hw {
                 Ok(()) => match std::fs::metadata(&plan.output) {
                     Ok(meta) if meta.len() > 0 => None,
@@ -429,61 +691,46 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
             };
             if let Some(reason) = fallback_reason {
                 eprintln!("tamp: {reason}; falling back to two-pass libx264");
-                use_hardware = false; // sticks for the oversize retry too
+                use_hardware = false; // sticks for every later attempt too
             }
         }
         if !use_hardware {
             // run_passes restarts progress from 0 on its own first callback.
             run_passes(
-                &plan,
-                &info,
-                &job.input,
-                tmp.path(),
-                &inner.child_slot,
-                &is_cancelled,
-                &mut on_progress,
+                plan,
+                info,
+                input,
+                passlog_dir,
+                child_slot,
+                is_cancelled,
+                on_progress,
             )
             .await?;
-        }
-
-        if let Some(state) = update_job(inner, &job.id, |j| {
-            j.phase = Phase::Verifying;
-            j.progress = 1.0;
-        }) {
-            emit_state(inner, &state, true);
         }
 
         let actual = std::fs::metadata(&plan.output)
             .map_err(|e| format!("encoded output missing: {e}"))?
             .len();
-
-        if actual as f64 <= target_bytes || attempt == 1 {
-            // Run post-actions first so their failures ride along on the
-            // final Done state instead of vanishing into stderr.
-            let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
-            append_journal(inner, job, &plan.output, &preset_hash, actual);
-            if let Some(state) = update_job(inner, &job.id, |j| {
-                j.phase = Phase::Done;
-                j.progress = 1.0;
-                j.output_bytes = Some(actual);
-                j.post_error = post_error;
-            }) {
-                emit_state(inner, &state, true);
+        let encoder = if use_hardware {
+            retry::EncoderKind::Hardware
+        } else {
+            retry::EncoderKind::Software
+        };
+        match retry::next_action(plan.video_kbit, actual, target_bytes, attempt, encoder) {
+            retry::NextAction::Done => return Ok(actual),
+            retry::NextAction::Retry {
+                video_kbit,
+                encoder,
+            } => {
+                plan.video_kbit = video_kbit;
+                use_hardware = encoder == retry::EncoderKind::Hardware;
             }
-            return Ok(());
-        }
-
-        let adjusted = (plan.video_kbit as f64 * (target_bytes / actual as f64) * 0.97) as u32;
-        plan.video_kbit = adjusted.max(100);
-        if let Some(state) = update_job(inner, &job.id, |j| {
-            j.phase = Phase::Pass1;
-            j.progress = 0.0;
-            j.output_bytes = None;
-        }) {
-            emit_state(inner, &state, true);
+            retry::NextAction::GiveUp => {
+                return Err(retry::give_up_error(target_bytes / 1_000_000.0));
+            }
         }
     }
-    unreachable!("retry loop always returns on the second attempt")
+    unreachable!("next_action never retries past MAX_RE_ENCODES")
 }
 
 /// Runs the post-encode actions per the user's toggles, returning a combined
@@ -544,6 +791,7 @@ fn append_journal(
         output_bytes,
         preset_hash: preset_hash.to_string(),
         preset_name: job.preset.name.clone(),
+        target_mb: job.preset.target_mb,
         completed_at_ms,
     });
 }
@@ -628,7 +876,9 @@ pub async fn run_hardware_pass(
     } else {
         cmd.arg("-an");
     }
-    cmd.args(["-movflags", "+faststart"]).arg(&plan.output);
+    cmd.args(["-movflags", "+faststart"])
+        .args(["-f", muxer(plan.format)])
+        .arg(&plan.output);
 
     run_ffmpeg_with_progress(
         "hardware pass",
@@ -641,12 +891,20 @@ pub async fn run_hardware_pass(
     .await
 }
 
+/// Width/fps retries allowed after the initial GIF attempt.
+const GIF_MAX_RETRIES: u8 = 4;
+
 /// Runs the palette-based GIF engine for `plan`: encode at the planned
-/// fps/width, then — bitrate math doesn't exist for GIF — shrink the width by
-/// the square root of the overshoot ratio and retry, up to 2 retries. The
-/// final attempt's file is KEPT even when it's still over the target; the
-/// UI's above-target note covers that case. Each attempt reports progress as
-/// pass 1 over the FULL 0..1 range. Public for the integration test.
+/// fps/width, then — bitrate math doesn't exist for GIF — shrink per
+/// `plan::gif_retry_params` (width every retry, frame rate too from the
+/// third attempt; neither ever raised above the plan's starting params) and
+/// re-encode, up to 4 retries. Every attempt writes to the crash-safe
+/// `plan::part_path` sibling; a fitting output is verified (enforce_target)
+/// and only then renamed onto `plan.output`, while a failure or give-up
+/// removes the part file — an oversized or partial gif is never delivered.
+/// Returns the final output size, which is always <= `target_bytes`. Each
+/// attempt reports progress as pass 1 over the FULL 0..1 range. Public for
+/// the integration test.
 pub async fn run_gif(
     plan: &plan::EncodePlan,
     info: &probe::ProbeInfo,
@@ -655,18 +913,55 @@ pub async fn run_gif(
     child_slot: &ChildSlot,
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let params = plan
         .gif
         .ok_or("gif plan is missing its palette parameters")?;
-    let mut width = params.max_width;
-    for attempt in 0..3u8 {
+    let mut work = plan.clone();
+    work.output = plan::part_path(&plan.output);
+    let result = gif_attempts(
+        &work,
+        info,
+        input,
+        params,
+        target_bytes,
+        child_slot,
+        is_cancelled,
+        on_progress,
+    )
+    .await;
+    match result {
+        Ok(actual) => promote_part(&work.output, &plan.output, actual, target_bytes),
+        Err(e) => {
+            let _ = std::fs::remove_file(&work.output);
+            Err(e)
+        }
+    }
+}
+
+/// The encode/shrink loop behind [`run_gif`]; `plan.output` already points
+/// at the part sibling and `initial` is the plan's starting params (the
+/// retry floors clamp to it). Returns the fitting attempt's size, leaving
+/// the file at the part path for the caller to verify and promote.
+#[allow(clippy::too_many_arguments)]
+async fn gif_attempts(
+    plan: &plan::EncodePlan,
+    info: &probe::ProbeInfo,
+    input: &Path,
+    initial: plan::GifParams,
+    target_bytes: f64,
+    child_slot: &ChildSlot,
+    is_cancelled: &(dyn Fn() -> bool + Send + Sync),
+    on_progress: &mut (dyn FnMut(u8, f64) + Send),
+) -> Result<u64, String> {
+    let mut current = initial;
+    for attempt in 0..=GIF_MAX_RETRIES {
         run_gif_attempt(
             plan,
             info,
             input,
-            params.fps,
-            width,
+            current.fps,
+            current.max_width,
             child_slot,
             is_cancelled,
             on_progress,
@@ -675,12 +970,25 @@ pub async fn run_gif(
         let actual = std::fs::metadata(&plan.output)
             .map_err(|e| format!("encoded output missing: {e}"))?
             .len();
-        if actual as f64 <= target_bytes || attempt == 2 {
-            return Ok(());
+        if actual as f64 <= target_bytes {
+            return Ok(actual);
         }
-        width = plan::gif_retry_width(width, target_bytes, actual);
+        let give_up = if attempt == GIF_MAX_RETRIES {
+            true // bounded retries exhausted
+        } else {
+            let next = plan::gif_retry_params(current, initial, attempt + 1, target_bytes, actual);
+            // Unchanged parameters mean every available knob already sits at
+            // its floor — re-encoding the exact same settings can't help, so
+            // fail early (checked from the FIRST retry on).
+            let stuck = next.fps == current.fps && next.max_width == current.max_width;
+            current = next;
+            stuck
+        };
+        if give_up {
+            return Err(retry::give_up_error(target_bytes / 1_000_000.0));
+        }
     }
-    unreachable!("retry loop always returns on the third attempt")
+    unreachable!("the loop returns on the final retry")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -707,6 +1015,7 @@ async fn run_gif_attempt(
     .arg("-filter_complex")
     .arg(plan::gif_filter(fps, max_width))
     .arg("-an") // GIF never carries audio
+    .args(["-f", muxer(plan.format)])
     .arg(&plan.output);
 
     run_ffmpeg_with_progress(
@@ -785,7 +1094,7 @@ async fn run_pass(
         if plan.format == OutputFormat::Mp4 {
             cmd.args(["-movflags", "+faststart"]);
         }
-        cmd.arg(&plan.output);
+        cmd.args(["-f", muxer(plan.format)]).arg(&plan.output);
     }
 
     run_ffmpeg_with_progress(
@@ -872,4 +1181,115 @@ async fn run_ffmpeg_with_progress(
     }
     on_frac(1.0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_reuse_serves_an_existing_under_target_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::write(&out, vec![0u8; 900]).unwrap();
+        assert_eq!(check_reuse(&out, 1000.0), Some(900));
+        assert!(out.exists(), "an under-target output must be kept");
+        // Exactly at the target still reuses — the guarantee is <=.
+        std::fs::write(&out, vec![0u8; 1000]).unwrap();
+        assert_eq!(check_reuse(&out, 1000.0), Some(1000));
+    }
+
+    #[test]
+    fn check_reuse_deletes_a_stale_over_target_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::write(&out, vec![0u8; 1001]).unwrap();
+        // Over target: never re-serve it — delete tamp's own stale artifact
+        // so the fresh encode can claim the base output path.
+        assert_eq!(check_reuse(&out, 1000.0), None);
+        assert!(
+            !out.exists(),
+            "the stale over-target output must be deleted"
+        );
+    }
+
+    #[test]
+    fn check_reuse_passes_through_when_nothing_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        assert_eq!(check_reuse(&out, 1000.0), None);
+    }
+
+    #[test]
+    fn check_reuse_deletes_a_zero_byte_output_instead_of_serving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::write(&out, b"").unwrap();
+        // A zero-byte file is a crash leftover, never a deliverable output.
+        assert_eq!(check_reuse(&out, 1000.0), None);
+        assert!(!out.exists(), "the zero-byte leftover must be deleted");
+    }
+
+    #[test]
+    fn check_reuse_leaves_a_directory_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::create_dir(&out).unwrap();
+        // Not a regular file: never reuse, never delete — the fresh encode
+        // goes to a numbered sibling instead.
+        assert_eq!(check_reuse(&out, 1000.0), None);
+        assert!(out.is_dir(), "a squatting directory must be left alone");
+    }
+
+    #[test]
+    fn check_reuse_leaves_a_symlink_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.mp4");
+        std::fs::write(&real, vec![0u8; 900]).unwrap();
+        let out = dir.path().join("clip (tamped 823f).mp4");
+        std::os::unix::fs::symlink(&real, &out).unwrap();
+        // Even when the link target would fit: a symlink is not tamp's own
+        // hash-named artifact, so neither serve nor delete it.
+        assert_eq!(check_reuse(&out, 1000.0), None);
+        assert!(
+            std::fs::symlink_metadata(&out).unwrap().is_symlink(),
+            "the symlink must be left alone"
+        );
+        assert!(real.exists());
+    }
+
+    #[test]
+    fn check_reuse_sweeps_over_target_numbered_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::write(&base, vec![0u8; 1001]).unwrap();
+        let over = dir.path().join("clip (tamped 823f 2).mp4");
+        std::fs::write(&over, vec![0u8; 1500]).unwrap();
+        let under = dir.path().join("clip (tamped 823f 3).mp4");
+        std::fs::write(&under, vec![0u8; 500]).unwrap();
+        let other_hash = dir.path().join("clip (tamped ffff 2).mp4");
+        std::fs::write(&other_hash, vec![0u8; 1500]).unwrap();
+        let part = dir.path().join("clip (tamped 823f 4).mp4.part");
+        std::fs::write(&part, vec![0u8; 1500]).unwrap();
+
+        assert_eq!(check_reuse(&base, 1000.0), None);
+        assert!(!base.exists(), "the over-target base must be deleted");
+        assert!(!over.exists(), "the over-target sibling must be swept");
+        assert!(under.exists(), "an under-target sibling must survive");
+        assert!(other_hash.exists(), "other configurations must survive");
+        assert!(part.exists(), "in-flight part files must survive the sweep");
+    }
+
+    #[test]
+    fn check_reuse_sweep_runs_when_a_non_file_squats_on_the_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::create_dir(&base).unwrap();
+        let over = dir.path().join("clip (tamped 823f 2).mp4");
+        std::fs::write(&over, vec![0u8; 1500]).unwrap();
+
+        assert_eq!(check_reuse(&base, 1000.0), None);
+        assert!(base.is_dir(), "the squatting directory must be left alone");
+        assert!(!over.exists(), "the over-target sibling must be swept");
+    }
 }

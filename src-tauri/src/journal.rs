@@ -22,6 +22,10 @@ pub struct ConversionRecord {
     pub output_bytes: u64,
     pub preset_hash: String,
     pub preset_name: String,
+    /// The preset's byte target in MB when the encode ran; 0.0 = unknown for
+    /// records written before the field existed.
+    #[serde(default)]
+    pub target_mb: f64,
     pub completed_at_ms: u64,
 }
 
@@ -137,6 +141,7 @@ mod tests {
             output_bytes: 100_000,
             preset_hash: "823f".to_string(),
             preset_name: "Discord (10MB)".to_string(),
+            target_mb: 10.0,
             completed_at_ms,
         }
     }
@@ -186,6 +191,7 @@ mod tests {
         assert_eq!(found.output_bytes, 100_000);
         assert_eq!(found.preset_hash, "823f");
         assert_eq!(found.preset_name, "Discord (10MB)");
+        assert_eq!(found.target_mb, 10.0);
         assert_eq!(found.completed_at_ms, 42);
     }
 
@@ -199,10 +205,29 @@ mod tests {
             "outputBytes",
             "presetHash",
             "presetName",
+            "targetMb",
             "completedAtMs",
         ] {
             assert!(json.get(key).is_some(), "missing key {key}");
         }
+    }
+
+    #[test]
+    fn records_without_target_mb_deserialize_as_unknown() {
+        // Journals written before targetMb existed must still load; the
+        // missing field reads back as the 0.0 "unknown" sentinel.
+        let json = r#"{
+            "inputPath": "/in/clip.mov",
+            "inputBytes": 1000000,
+            "outputPath": "/out/clip (tamped 823f).mp4",
+            "outputBytes": 100000,
+            "presetHash": "823f",
+            "presetName": "Discord (10MB)",
+            "completedAtMs": 42
+        }"#;
+        let rec: ConversionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.target_mb, 0.0);
+        assert_eq!(rec.completed_at_ms, 42);
     }
 
     #[test]
