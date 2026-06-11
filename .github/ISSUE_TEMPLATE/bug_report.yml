@@ -1,0 +1,30 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tamp version
+      placeholder: "0.1.0 (panel → Preferences shows it, or the DMG filename)"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version & chip
+      placeholder: "macOS 15.1, M2 Pro"
+    validations:
+      required: true
+  - type: textarea
+    id: video
+    attributes:
+      label: Source video details (if encoding-related)
+      description: Duration, resolution, original size, target preset. `ffprobe <file>` output is ideal.

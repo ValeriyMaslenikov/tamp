@@ -6,6 +6,10 @@ authors = ["Valerii Maslenykov"]
 license = "MIT"
 repository = "https://github.com/ValeriyMaslenikov/tamp"
 edition = "2021"
+# MSRV-aware dependency resolution: the local toolchain is rustc 1.85, but
+# several transitive deps' latest releases require 1.86+.
+rust-version = "1.85"
+resolver = "3"
 
 [lib]
 name = "tamp_lib"
@@ -15,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "protocol-asset"] }
 tauri-plugin-store = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
@@ -27,6 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "proce
 thiserror = "2"
 trash = "5"
 uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
