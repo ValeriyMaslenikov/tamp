@@ -88,6 +88,8 @@ Requires [Bun](https://bun.sh) and [Rust](https://rustup.rs).
   never show up in the recordings list.
 - **Watched folders** — Preferences → Watched folders. Desktop is the default; add
   wherever your recorder saves.
+
+  <img src="docs/screenshot-preferences.png" width="340" alt="tamp preferences" />
 - **"Target too small"** — a long video may not fit the target even at minimum quality;
   tamp tells you instead of producing unwatchable output. Lower the FPS / resolution in
   the preset or pick a larger target.
