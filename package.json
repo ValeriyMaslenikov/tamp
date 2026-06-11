@@ -1,7 +1,13 @@
 {
-  "name": "tauri-app",
+  "name": "tamp",
   "private": true,
   "version": "0.1.0",
+  "description": "Shrink screen recordings to a target size, right from your menu bar.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ValeriyMaslenikov/tamp.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,8 +16,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/api": "^2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
