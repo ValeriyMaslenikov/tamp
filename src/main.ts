@@ -86,3 +86,20 @@ function main(): void {
 }
 
 window.addEventListener("DOMContentLoaded", main);
+
+// Dev-only test hook: drop an autotest.json in public/ ({"path", "presetId"})
+// to trigger an encode through the real IPC path without UI interaction.
+if (import.meta.env.DEV) {
+  window.addEventListener("DOMContentLoaded", async () => {
+    try {
+      const res = await fetch("/autotest.json");
+      if (!res.ok) return;
+      const { path, presetId } = await res.json();
+      const { enqueue } = await import("./lib/ipc");
+      console.log("[autotest] enqueue", path, presetId);
+      await enqueue(path, presetId);
+    } catch {
+      /* no autotest file — normal run */
+    }
+  });
+}

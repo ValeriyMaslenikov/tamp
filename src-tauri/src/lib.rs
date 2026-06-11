@@ -14,6 +14,22 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(panel) = app.get_webview_window("panel") {
+                // No tray click happened, so the positioner has no tray rect;
+                // top-right of the primary monitor approximates the tray area.
+                // (Current-monitor positioning can land on a sleeping display.)
+                if let Ok(Some(monitor)) = panel.primary_monitor() {
+                    let scale = monitor.scale_factor();
+                    let size = monitor.size().to_logical::<f64>(scale);
+                    let pos = monitor.position().to_logical::<f64>(scale);
+                    let width = panel
+                        .outer_size()
+                        .map(|s| s.width as f64 / scale)
+                        .unwrap_or(420.0);
+                    let _ = panel.set_position(tauri::LogicalPosition::new(
+                        pos.x + size.width - width - 8.0,
+                        pos.y + 32.0,
+                    ));
+                }
                 let _ = panel.show();
                 let _ = panel.set_focus();
                 let _ = app.emit("panel:shown", ());
@@ -54,6 +70,14 @@ pub fn run() {
             app.manage(settings::SettingsState(std::sync::Mutex::new(loaded)));
             app.manage(encoder::Encoder::start(app.handle().clone()));
             tray::create(app.handle())?;
+
+            // Tray panels must follow the user across Spaces/displays; without
+            // this the panel opens on the Space the app launched on.
+            if let Some(panel) = app.get_webview_window("panel") {
+                if let Err(e) = panel.set_visible_on_all_workspaces(true) {
+                    eprintln!("tamp: failed to set panel visible on all workspaces: {e}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|_window, _event| {

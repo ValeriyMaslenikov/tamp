@@ -25,3 +25,4 @@ dist-ssr
 
 # FFmpeg sidecars (fetched by scripts/fetch-ffmpeg.sh)
 src-tauri/binaries/
+public/autotest.json
