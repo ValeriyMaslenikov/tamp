@@ -80,7 +80,7 @@ Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that i
 On first use macOS will ask for permission to access your Desktop — that's tamp reading
 your screen recordings.
 
-> **Intel Macs:** not prebuilt yet, but `./scripts/fetch-ffmpeg.sh x86_64` + `bun tauri build`
+> **Intel Macs:** not prebuilt yet, but `bun scripts/fetch-ffmpeg.ts x64` + `bun tauri build`
 > produces a working Intel binary. See [Build from source](#build-from-source).
 
 ### Build from source
@@ -88,7 +88,7 @@ your screen recordings.
 ```bash
 git clone https://github.com/ValeriyMaslenikov/tamp.git && cd tamp
 bun install
-./scripts/fetch-ffmpeg.sh        # fetch static FFmpeg/ffprobe sidecars
+bun scripts/fetch-ffmpeg.ts      # fetch static FFmpeg/ffprobe sidecars
 bun tauri build                  # → src-tauri/target/release/bundle/{macos,dmg}
 ```
 

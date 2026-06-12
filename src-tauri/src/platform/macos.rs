@@ -7,10 +7,68 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSWindow, NSWindowCollectionBehavior};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
+use super::{HwCandidate, Platform, TrayProgress};
+
+pub struct MacOs;
+
+impl Platform for MacOs {
+    fn copy_files_to_clipboard(
+        &self,
+        app: &tauri::AppHandle,
+        paths: &[PathBuf],
+    ) -> Result<(), String> {
+        copy_files_to_clipboard(app, paths)
+    }
+
+    fn configure_panel(&self, window: &tauri::WebviewWindow) -> Result<(), String> {
+        // Tray panels must follow the user across Spaces/displays; without
+        // this the panel opens on the Space the app launched on.
+        window
+            .set_visible_on_all_workspaces(true)
+            .map_err(|e| format!("failed to set panel visible on all workspaces: {e}"))?;
+        configure_panel(window)
+    }
+
+    fn default_watched_folders(&self, app: &tauri::AppHandle) -> Vec<PathBuf> {
+        // ⌘⇧5 saves to the Desktop by default.
+        match tauri::Manager::path(app).desktop_dir() {
+            Ok(desktop) => vec![desktop],
+            Err(e) => {
+                crate::log_warn!("cannot resolve desktop dir for default watched folder: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn prepare_background_command(&self, _cmd: &mut tokio::process::Command) {}
+
+    fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
+        // Tray title text next to the icon is a macOS-only capability.
+        let text = progress.map(|p| {
+            let pct = (p.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+            if p.queued > 0 {
+                format!("{pct}% (+{})", p.queued)
+            } else {
+                format!("{pct}%")
+            }
+        });
+        crate::tray::set_title(app, text);
+    }
+
+    fn hw_candidates(&self) -> &'static [HwCandidate] {
+        // `-allow_sw 1` lets VideoToolbox use Apple's software encoder when
+        // no hardware session is available.
+        &[HwCandidate {
+            name: "h264_videotoolbox",
+            extra_args: &["-allow_sw", "1"],
+        }]
+    }
+}
+
 /// Lets the panel join the Space of a full-screen app; without
 /// `FullScreenAuxiliary` macOS refuses to show it over full-screen windows.
 /// Must run on the main thread (Tauri's setup hook does).
-pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
     let ns_window = window
         .ns_window()
         .map_err(|e| format!("failed to get NSWindow handle: {e}"))?
@@ -27,7 +85,7 @@ pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
 /// Writes ALL `paths` as file URLs onto the general pasteboard in a single
 /// `writeObjects` call — one clearContents, one NSArray — so pasting into
 /// Finder/Discord drops the whole set at once.
-pub fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
+fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
     if paths.is_empty() {
         return Err("no files to copy".to_string());
     }

@@ -35,7 +35,7 @@ jobs:
       - name: Build frontend (tauri's generate_context! embeds ../dist)
         run: bun install --frozen-lockfile && bun run build
       - name: Fetch FFmpeg sidecars (used by integration tests)
-        run: ./scripts/fetch-ffmpeg.sh
+        run: bun scripts/fetch-ffmpeg.ts
       - name: rustfmt
         run: cargo fmt --check
         working-directory: src-tauri

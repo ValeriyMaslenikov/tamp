@@ -52,7 +52,7 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
-      - run: ./scripts/fetch-ffmpeg.sh arm64
+      - run: bun scripts/fetch-ffmpeg.ts arm64
       - name: Build app + DMG
         run: bun tauri build --target aarch64-apple-darwin
       - name: Upload release assets

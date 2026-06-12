@@ -15,7 +15,7 @@ Thanks for your interest in improving tamp!
 git clone https://github.com/ValeriyMaslenikov/tamp.git
 cd tamp
 bun install
-./scripts/fetch-ffmpeg.sh   # downloads the static FFmpeg/ffprobe sidecars
+bun scripts/fetch-ffmpeg.ts # downloads the static FFmpeg/ffprobe sidecars
 bun tauri dev
 ```
 
