@@ -1,7 +1,7 @@
 {
   "name": "tamp",
   "private": true,
-  "version": "0.3.0-beta.1",
+  "version": "0.2.0",
   "description": "Shrink screen recordings to a target size, right from your menu bar.",
   "license": "MIT",
   "repository": {
