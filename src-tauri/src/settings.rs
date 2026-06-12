@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "settings.json";
@@ -157,17 +157,16 @@ fn default_stale_warn_minutes() -> u32 {
 
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// Default settings. Needs the app handle because the default watched folder
-/// is `~/Desktop` and home resolution goes through the Tauri path resolver.
+/// Default settings. Needs the app handle because the default watched
+/// folders come from the platform strategy (wherever this OS's screen
+/// recorders save) via the Tauri path resolver.
 pub fn default_settings(app: &AppHandle) -> Settings {
-    let watched_folders = app
-        .path()
-        .home_dir()
-        .map(|home| vec![home.join("Desktop").to_string_lossy().into_owned()])
-        .unwrap_or_else(|e| {
-            crate::log_warn!("cannot resolve home dir for default watched folder: {e}");
-            Vec::new()
-        });
+    use crate::platform::Platform as _;
+    let watched_folders = crate::platform::native()
+        .default_watched_folders(app)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     Settings {
         watched_folders,
         copy_to_clipboard: true,

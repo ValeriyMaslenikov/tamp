@@ -136,7 +136,7 @@ async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
         // Input-side -ss for fast seeking; ultrafast/CRF 30 because this is a
         // throwaway proxy, not a deliverable. `-v error` keeps the captured
         // stderr to actual error lines.
-        let out = tokio::process::Command::new(&ffmpeg)
+        let out = crate::platform::background_command(&ffmpeg)
             .args([
                 "-y",
                 "-v",
@@ -185,7 +185,7 @@ async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
     std::fs::write(&list_path, concat_list)
         .map_err(|e| format!("cannot write concat list: {e}"))?;
     let joined = tmp.path().join("preview.mp4");
-    let out = tokio::process::Command::new(&ffmpeg)
+    let out = crate::platform::background_command(&ffmpeg)
         .args(["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list_path)
         .args(["-c", "copy", "-movflags", "+faststart"])

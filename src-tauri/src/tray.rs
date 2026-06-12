@@ -36,9 +36,11 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Opens the app's log directory in Finder. The dir is created first so a
-/// fresh install (or a failed logger init) still has something to open.
+/// Opens the app's log directory in the system file manager. The dir is
+/// created first so a fresh install (or a failed logger init) still has
+/// something to open.
 fn open_logs_dir(app: &AppHandle) {
+    use tauri_plugin_opener::OpenerExt as _;
     let dir = match app.path().app_log_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -50,11 +52,7 @@ fn open_logs_dir(app: &AppHandle) {
         crate::log_error!("cannot create log dir {}: {e}", dir.display());
         return;
     }
-    #[cfg(target_os = "macos")]
-    if let Err(e) = std::process::Command::new("/usr/bin/open")
-        .arg(&dir)
-        .spawn()
-    {
+    if let Err(e) = app.opener().open_path(dir.to_string_lossy(), None::<&str>) {
         crate::log_error!("failed to open log dir {}: {e}", dir.display());
     }
 }
@@ -82,7 +80,10 @@ fn toggle_panel(app: &AppHandle) {
     }
 }
 
-pub fn set_progress(app: &AppHandle, text: Option<String>) {
+/// Sets the text shown next to the tray icon (macOS-only capability; the
+/// macOS platform strategy is the only caller).
+#[cfg(target_os = "macos")]
+pub fn set_title(app: &AppHandle, text: Option<String>) {
     let Some(tray) = app.tray_by_id("main") else {
         return;
     };

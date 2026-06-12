@@ -223,13 +223,11 @@ async fn two_pass_encode_hits_target_size() {
 
 #[tokio::test]
 async fn hardware_single_pass_spans_full_progress_range() {
-    // Skip when the bundled ffmpeg has no h264_videotoolbox encoder at all.
-    let out = Command::new(bin::ffmpeg_path())
-        .args(["-hide_banner", "-encoders"])
-        .output()
-        .expect("failed to run bundled ffmpeg — did scripts/fetch-ffmpeg.sh run?");
-    if !String::from_utf8_lossy(&out.stdout).contains("h264_videotoolbox") {
-        eprintln!("skipping hardware encode test: h264_videotoolbox is not in this ffmpeg build");
+    // The probed candidate list (platform preference order ∩ what the
+    // bundled ffmpeg ships). Empty means hardware never runs here.
+    let candidates = tamp_lib::encoder::hw::available_candidates().await;
+    if candidates.is_empty() {
+        eprintln!("skipping hardware encode test: no hardware candidates available");
         return;
     }
 
@@ -252,19 +250,32 @@ async fn hardware_single_pass_spans_full_progress_range() {
 
     let slot = ChildSlot::default();
     let mut seen: Vec<(u8, f64)> = Vec::new();
-    if let Err(e) = run_hardware_pass(
-        &plan,
-        &info,
-        &input,
-        &slot,
-        &|| false,
-        &mut |pass, overall| seen.push((pass, overall)),
-    )
-    .await
-    {
-        // Listed but unusable (e.g. no VideoToolbox session in CI sandboxes);
-        // the app falls back to libx264 in this case, so skip rather than fail.
-        eprintln!("skipping hardware encode test: h264_videotoolbox unavailable here: {e}");
+    // Like the worker: a candidate may be compiled in but unusable on this
+    // machine (no GPU session in CI sandboxes/VMs) — fall through to the
+    // next, and skip the test only when none of them can encode.
+    let mut encoded = false;
+    for cand in candidates {
+        seen.clear();
+        match run_hardware_pass(
+            cand,
+            &plan,
+            &info,
+            &input,
+            &slot,
+            &|| false,
+            &mut |pass, overall| seen.push((pass, overall)),
+        )
+        .await
+        {
+            Ok(()) => {
+                encoded = true;
+                break;
+            }
+            Err(e) => eprintln!("{} unavailable here: {e}", cand.name),
+        }
+    }
+    if !encoded {
+        eprintln!("skipping hardware encode test: no candidate could encode on this machine");
         return;
     }
 

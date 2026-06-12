@@ -11,6 +11,7 @@ mod shortcuts;
 mod thumbs;
 mod tray;
 
+use platform::Platform as _;
 use std::sync::atomic::AtomicBool;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
@@ -116,6 +117,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -187,14 +189,9 @@ pub fn run() {
                 log_warn!("failed to register global shortcuts: {e}");
             }
 
-            // Tray panels must follow the user across Spaces/displays; without
-            // this the panel opens on the Space the app launched on.
             if let Some(panel) = app.get_webview_window("panel") {
-                if let Err(e) = panel.set_visible_on_all_workspaces(true) {
-                    log_warn!("failed to set panel visible on all workspaces: {e}");
-                }
-                if let Err(e) = platform::configure_panel(&panel) {
-                    log_warn!("failed to configure panel for full-screen overlay: {e}");
+                if let Err(e) = platform::native().configure_panel(&panel) {
+                    log_warn!("failed to configure panel: {e}");
                 }
             }
             Ok(())
@@ -231,7 +228,8 @@ pub fn run() {
             commands::queue_state,
             commands::ensure_preview,
             commands::copy_file,
-            commands::reveal
+            commands::reveal,
+            commands::os_info
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
