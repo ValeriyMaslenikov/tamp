@@ -16,10 +16,12 @@
 
 ---
 
-You record your screen with <kbd>⌘⇧5</kbd>, and macOS hands you a 300 MB `.mov` that
-Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that in one click:
+You record your screen with <kbd>⌘⇧5</kbd> (or <kbd>Win⇧R</kbd> on Windows), and your OS
+hands you a 300 MB recording that Discord (10 MB), Slack, or your bug tracker refuses to
+accept. tamp fixes that in one click:
 
-1. **Click the tamp icon** in your menu bar — it lists your latest recordings.
+1. **Click the tamp icon** in your menu bar (system tray on Windows) — it lists your
+   latest recordings.
 2. **Click a video** — tamp computes the exact bitrate to land *just under* your target
    size (say, 10 MB) and encodes on the GPU, no codec knowledge required. It will never
    hand you a file over the target.
@@ -35,15 +37,17 @@ Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that i
 - 🎯 **Size-first presets** — "fit under N MB" is the primary control, with optional FPS caps,
   downscaling, and audio stripping. Ships with a *Discord (10 MB)* preset; add your own for
   Slack, email, etc.
-- 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated via VideoToolbox), WebM
-  (two-pass VP9 + Opus) for the web, and GIF (palette-optimized, size-targeted) for the
-  messengers that still insist on it.
-- ⚡ **One click, zero imports** — tamp watches your recording folders (Desktop by default).
+- 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated — VideoToolbox on macOS;
+  NVENC/QSV/AMF/Media Foundation on Windows), WebM (two-pass VP9 + Opus) for the web, and
+  GIF (palette-optimized, size-targeted) for the messengers that still insist on it.
+- ⚡ **One click, zero imports** — tamp watches your recording folders (Desktop on macOS;
+  Desktop plus `Videos\Screen Recordings` and `Videos\Captures` on Windows).
   Click a row and it's encoding; click again later and tamp *reuses* the existing output
   instantly instead of re-encoding (outputs carry a tiny config fingerprint in the name).
-- ⌨️ **Keyboard-first** — a global shortcut (<kbd>⌘⌥T</kbd>) compresses your latest recording
-  without even opening the panel; <kbd>⌘⌥O</kbd> toggles the panel; inside, type to filter,
-  arrows select, <kbd>⏎</kbd>/<kbd>d</kbd> run the default preset, <kbd>e</kbd> expands,
+- ⌨️ **Keyboard-first** — a global shortcut (<kbd>⌘⌥T</kbd> / <kbd>Ctrl+Alt+T</kbd>)
+  compresses your latest recording without even opening the panel; <kbd>⌘⌥O</kbd> /
+  <kbd>Ctrl+Alt+O</kbd> toggles the panel; inside, type to filter, arrows select,
+  <kbd>⏎</kbd>/<kbd>d</kbd> run the default preset, <kbd>e</kbd> expands,
   <kbd>esc</kbd> backs out.
 - 🔍 **Preview before you commit** — expand any row for a generated mini-montage preview
   (TikTok-style cuts, instant even for gigabyte files), pick a preset, or run a one-off
@@ -57,7 +61,7 @@ Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that i
 - 🗑️ **Reclaim disk space** — optionally move the bulky original to the Trash (recoverable)
   after a successful compress. Deleted the original? The compressed copy stays in the list
   with its before/after sizes.
-- 🧭 **Built to be debugged** — reveal any video in Finder from its row; rotating logs
+- 🧭 **Built to be debugged** — reveal any video in Finder/Explorer from its row; rotating logs
   (10 MB cap) capture every ffmpeg command line and error: right-click the menu bar
   icon → *Open Logs*. The app version sits at the bottom of Preferences.
 - 🔒 **Local and private** — everything runs on your machine with a bundled static FFmpeg.
@@ -65,7 +69,17 @@ Discord (10 MB), Slack, or your bug tracker refuses to accept. tamp fixes that i
 
 ## Install
 
-### Download (Apple Silicon)
+### Download — Windows
+
+1. Grab `tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe` for Windows on ARM)
+   from [**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
+2. Run it — tamp installs per-user, no admin rights needed.
+3. The build is unsigned, so SmartScreen will warn you: click **More info → Run anyway**.
+4. Look for the compress-arrows icon in the system tray (Windows may tuck it behind the
+   `^` overflow — drag it onto the taskbar to keep it visible). tamp watches your Desktop
+   and the `Videos\Screen Recordings` / `Videos\Captures` folders out of the box.
+
+### Download — macOS (Apple Silicon)
 
 1. Grab the latest `.dmg` from [**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
 2. Open it and drag **tamp** into **Applications**.
@@ -128,8 +142,9 @@ target: video bitrate = (target size − audio budget) ÷ duration, minus a ~5% 
 margin, `aac 96k` audio, `+faststart` for instant remote playback. When the target
 would starve that bitrate (think a 4K screen recording into 10 MB), tamp automatically
 caps the frame rate at 30 fps and steps the resolution down just enough to keep the
-result legible — at which point Apple's hardware encoder (VideoToolbox) hits the size
-reliably and fast. If a result ever overshoots, tamp converges with corrected re-encodes
+result legible — at which point the OS's hardware encoder (VideoToolbox on macOS;
+NVENC/QSV/AMF/Media Foundation on Windows) hits the size reliably and fast. If a result
+ever overshoots, tamp converges with corrected re-encodes
 (switching to precise two-pass software x264 when needed) and **never delivers a file
 over the target** — if a target is truly unreachable it tells you instead.
 The panel is a [Tauri 2](https://tauri.app) webview; the engine, folder scanning, and
@@ -148,13 +163,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and release process
 ## Roadmap
 
 - Drag & drop videos onto the panel for quick one-off compression
-- Windows & Linux (the architecture is cross-platform; platform shims are isolated)
-- Notarized builds
+- Linux (the platform layer is ready; needs a clipboard/tray strategy and CI target)
+- Notarized/signed builds
 
 ## License
 
 [MIT](LICENSE) © Valerii Maslenykov.
 
-The DMG bundles GPL-licensed static FFmpeg binaries built by
-[martin-riedl.de](https://ffmpeg.martin-riedl.de/); FFmpeg is a trademark of
-Fabrice Bellard. tamp invokes these binaries as separate processes.
+The installers bundle GPL-licensed static FFmpeg binaries built by
+[martin-riedl.de](https://ffmpeg.martin-riedl.de/) (macOS) and
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows); FFmpeg is a
+trademark of Fabrice Bellard. tamp invokes these binaries as separate processes.

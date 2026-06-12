@@ -4,10 +4,11 @@ Thanks for your interest in improving tamp!
 
 ## Prerequisites
 
-- macOS 12+ (Apple Silicon or Intel)
-- [Rust](https://rustup.rs/) (stable)
-- [Bun](https://bun.sh/)
-- Xcode Command Line Tools (`xcode-select --install`)
+- [Rust](https://rustup.rs/) (stable) and [Bun](https://bun.sh/)
+- **macOS 12+:** Xcode Command Line Tools (`xcode-select --install`)
+- **Windows 10/11:** Visual Studio Build Tools 2022 with the "Desktop development
+  with C++" workload (add the ARM64 component on ARM machines). WebView2 is
+  preinstalled on Windows 11.
 
 ## Getting started
 
@@ -20,7 +21,8 @@ bun tauri dev
 ```
 
 `bun tauri dev` starts the Vite dev server and launches the app — look for the
-compress-arrows icon in your menu bar (there is intentionally no Dock icon).
+compress-arrows icon in your menu bar / system tray (there is intentionally no
+Dock or taskbar icon).
 
 ## Project layout
 
@@ -30,7 +32,8 @@ src/                  # frontend: vanilla TypeScript + Vite
   views/              # list (videos) and preferences views
 src-tauri/src/        # Rust backend
   encoder/            # probe, bitrate planning, two-pass ffmpeg, progress
-  platform/           # macOS-specific shims (clipboard file copy)
+  platform/           # per-OS strategies behind one trait (clipboard, tray
+                      # progress, watched folders, hw encoder candidates)
   scanner.rs          # watched-folder scanning
   thumbs.rs           # thumbnail generation/cache
   tray.rs             # tray icon, panel toggle, title progress
@@ -67,11 +70,6 @@ cd src-tauri && cargo fmt && cargo clippy --all-targets -- -D warnings
 
 ## Release process (maintainers)
 
-Releases are automated with [changesets](https://github.com/changesets/changesets):
-
-1. Merged PRs accumulate changeset files in `.changeset/`.
-2. The release workflow keeps a **"chore: release"** PR up to date, bumping
-   `package.json` (the single source of version truth — `tauri.conf.json`
-   reads it) and writing `CHANGELOG.md`.
-3. Merging that PR tags `vX.Y.Z`, creates the GitHub Release, and a macOS
-   (Apple Silicon) job builds the DMG and attaches it to the release.
+See [docs/releasing.md](docs/releasing.md) — stable releases are automated with
+changesets (macOS DMG + Windows NSIS x64/arm64); beta prereleases are cut by
+pushing a `vX.Y.Z-beta.N` tag from any branch.

@@ -13,7 +13,7 @@ permissions:
 jobs:
   # Maintains the "Version Packages" PR (version bump + CHANGELOG) from pending
   # changesets. When that PR is merged, `changeset tag` creates vX.Y.Z and the
-  # `build` job below publishes the DMG for it.
+  # `build` matrix below publishes the installers for it.
   version:
     name: Version or tag
     runs-on: ubuntu-latest
@@ -40,10 +40,20 @@ jobs:
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build & publish DMG (Apple Silicon)
+    name: Build & publish (${{ matrix.os }})
     needs: version
     if: needs.version.outputs.published == 'true'
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            bundle-glob: src-tauri/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+          - os: windows-11-arm
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -52,14 +62,15 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
-      - run: bun scripts/fetch-ffmpeg.ts arm64
-      - name: Build app + DMG
-        run: bun tauri build --target aarch64-apple-darwin
+        shell: bash
+      - run: bun scripts/fetch-ffmpeg.ts
+        shell: bash
+      - name: Build app bundle
+        run: bun tauri build
+        shell: bash
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          cp "$DMG" "tamp_${VERSION}_aarch64.dmg"
-          gh release upload "v${VERSION}" "tamp_${VERSION}_aarch64.dmg" --clobber
+        shell: bash
+        run: gh release upload "v${VERSION}" ${{ matrix.bundle-glob }} --clobber

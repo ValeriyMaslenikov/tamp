@@ -21,8 +21,12 @@ jobs:
       - run: bun run build
 
   rust:
-    name: Rust (fmt, clippy, tests)
-    runs-on: macos-14
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -34,8 +38,10 @@ jobs:
           workspaces: src-tauri
       - name: Build frontend (tauri's generate_context! embeds ../dist)
         run: bun install --frozen-lockfile && bun run build
+        shell: bash
       - name: Fetch FFmpeg sidecars (used by integration tests)
         run: bun scripts/fetch-ffmpeg.ts
+        shell: bash
       - name: rustfmt
         run: cargo fmt --check
         working-directory: src-tauri
