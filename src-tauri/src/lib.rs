@@ -119,8 +119,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            platform::native().configure_app(app);
 
             // File logging first so everything below (including migration and
             // settings load) is captured. Failure is non-fatal: debug builds

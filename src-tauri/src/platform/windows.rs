@@ -5,6 +5,11 @@ use super::{HwCandidate, Platform, TrayProgress};
 pub struct Windows;
 
 impl Platform for Windows {
+    fn configure_app(&self, _app: &mut tauri::App) {
+        // Tray-only presence needs no app-wide tweaks (the panel window
+        // already skips the taskbar via its window config).
+    }
+
     /// Writes ALL `paths` as a CF_HDROP file list in one clipboard write, so
     /// pasting into Explorer/Discord/Slack drops the whole set at once.
     fn copy_files_to_clipboard(

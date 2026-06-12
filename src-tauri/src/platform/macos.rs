@@ -12,6 +12,11 @@ use super::{HwCandidate, Platform, TrayProgress};
 pub struct MacOs;
 
 impl Platform for MacOs {
+    fn configure_app(&self, app: &mut tauri::App) {
+        // No Dock icon — tamp lives entirely in the menu bar.
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+
     fn copy_files_to_clipboard(
         &self,
         app: &tauri::AppHandle,

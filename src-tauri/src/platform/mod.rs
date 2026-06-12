@@ -44,6 +44,10 @@ pub struct HwCandidate {
 }
 
 pub trait Platform {
+    /// App-wide startup tweaks (e.g. macOS's Accessory activation policy,
+    /// which keeps tamp out of the Dock). Runs first in Tauri's setup hook.
+    fn configure_app(&self, app: &mut tauri::App);
+
     /// Puts files (as file references, not contents) on the system clipboard
     /// in one write, so a multi-file paste lands all of them.
     fn copy_files_to_clipboard(
