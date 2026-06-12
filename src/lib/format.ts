@@ -1,5 +1,7 @@
 // Pure formatting helpers — unit tested in format.test.ts.
 
+import type { SplitConfig } from "./ipc";
+
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
 const MONTHS = [
@@ -74,6 +76,20 @@ export function formatPercentSmaller(inB: number, outB: number): string {
   if (!(inB > 0)) return "0% smaller";
   const pct = Math.max(0, (1 - outB / inB) * 100);
   return `${Math.round(pct * 10) / 10}% smaller`;
+}
+
+/**
+ * Preset-summary fragment for a split config: "smart split" / "4 parts" /
+ * "split ≈30s". Null when splitting is off (or the preset predates splits).
+ */
+export function splitSummaryLabel(
+  split: SplitConfig | undefined,
+): string | null {
+  if (!split || split.mode === "off") return null;
+  if (split.mode === "smart") return "smart split";
+  return split.by === "parts"
+    ? `${split.parts} parts`
+    : `split ≈${split.seconds}s`;
 }
 
 /** Middle-ellipsis truncation, keeps the extension visible. */

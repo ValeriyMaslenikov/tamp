@@ -7,12 +7,13 @@ use std::process::Command;
 
 use tamp_lib::encoder::{
     bin,
-    plan::{build_plan, preset_hash},
+    plan::{build_plan, expected_part_outputs, plan_split, preset_hash},
     probe::probe,
     run_gif, run_hardware_pass, run_passes, run_video_convergence, ChildSlot, OutputFormat, Preset,
+    SplitConfig, SplitMode, StaticSplitBy,
 };
 
-fn make_test_clip(dir: &Path) -> PathBuf {
+fn make_clip(dir: &Path, duration_secs: u32) -> PathBuf {
     let input = dir.join("clip.mp4");
     let status = Command::new(bin::ffmpeg_path())
         .args([
@@ -23,11 +24,11 @@ fn make_test_clip(dir: &Path) -> PathBuf {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=640x360:rate=30:duration=3",
+            &format!("testsrc2=size=640x360:rate=30:duration={duration_secs}"),
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=44100:duration=3",
+            &format!("sine=frequency=440:sample_rate=44100:duration={duration_secs}"),
             "-c:v",
             "libx264",
             "-preset",
@@ -47,6 +48,10 @@ fn make_test_clip(dir: &Path) -> PathBuf {
         .expect("failed to run bundled ffmpeg — did scripts/fetch-ffmpeg.sh run?");
     assert!(status.success(), "test clip generation failed");
     input
+}
+
+fn make_test_clip(dir: &Path) -> PathBuf {
+    make_clip(dir, 3)
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -125,6 +130,7 @@ async fn two_pass_encode_hits_target_size() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Mp4,
+        split: SplitConfig::default(),
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     assert_eq!(plan.audio_kbit, 96);
@@ -240,6 +246,7 @@ async fn hardware_single_pass_spans_full_progress_range() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Mp4,
+        split: SplitConfig::default(),
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
 
@@ -333,6 +340,7 @@ async fn webm_two_pass_vp9_hits_target_size() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Webm,
+        split: SplitConfig::default(),
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     assert_eq!(plan.audio_kbit, 64); // opus budget, not the 96k aac one
@@ -431,6 +439,7 @@ async fn gif_palette_encode_stays_under_generous_target() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Gif,
+        split: SplitConfig::default(),
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     assert_eq!(plan.video_kbit, 0); // bitrate math doesn't apply to GIF
@@ -539,6 +548,7 @@ async fn convergence_loop_enforces_hard_cap_on_high_entropy_source() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Mp4,
+        split: SplitConfig::default(),
     };
     let mut plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     let target_bytes = preset.target_mb * 1_000_000.0;
@@ -593,6 +603,7 @@ async fn impossible_gif_target_fails_and_removes_the_output() {
         scale_percent: None,
         strip_audio: false,
         format: OutputFormat::Gif,
+        split: SplitConfig::default(),
     };
     let plan = build_plan(&info, &preset, &input).expect("build_plan failed");
     let target_bytes = preset.target_mb * 1_000_000.0;
@@ -621,5 +632,140 @@ async fn impossible_gif_target_fails_and_removes_the_output() {
     assert!(
         !tamp_lib::encoder::plan::part_path(&plan.output).exists(),
         "the in-flight part file must be removed on failure"
+    );
+}
+
+/// Duration of a finished file per the bundled ffprobe, for verifying that
+/// split parts really carry their slice of the input.
+fn probed_duration(path: &Path) -> f64 {
+    let out = Command::new(bin::ffprobe_path())
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .expect("failed to run bundled ffprobe");
+    assert!(out.status.success(), "ffprobe on part failed");
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("unparseable duration")
+}
+
+#[tokio::test]
+async fn static_split_encodes_three_parts_each_under_the_full_target() {
+    // A ~25s clip split statically into 3 parts: every part runs through the
+    // exact per-part pipeline the worker uses (build_plan on a part-length
+    // ProbeInfo, -ss/-t trim, convergence + promote) and gets the preset's
+    // FULL byte target to itself.
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_clip(dir.path(), 25);
+    let info = probe(&input).await.expect("probe failed");
+    assert!(
+        (24.0..26.5).contains(&info.duration_secs),
+        "unexpected duration {}",
+        info.duration_secs
+    );
+
+    let preset = Preset {
+        id: "test-split".to_string(),
+        name: "Test Split (1MB x3)".to_string(),
+        target_mb: 1.0,
+        max_fps: None,
+        max_width: None,
+        scale_percent: None,
+        strip_audio: false,
+        format: OutputFormat::Mp4,
+        split: SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Parts,
+            parts: 3,
+            seconds: 30,
+        },
+    };
+    let split = plan_split(&info, &preset);
+    assert_eq!(split.count, 3);
+    assert!((split.part_secs - info.duration_secs / 3.0).abs() < 1e-9);
+
+    let hash = preset_hash(&preset);
+    let parts = expected_part_outputs(&input, &hash, OutputFormat::Mp4, split.count);
+    assert_eq!(parts.len(), 3);
+    for (idx, part) in parts.iter().enumerate() {
+        assert_eq!(
+            part.file_name().unwrap().to_string_lossy(),
+            format!("clip (tamped {hash} p{}of3).mp4", idx + 1),
+            "part output names must follow the p{{i}}of{{n}} grammar"
+        );
+    }
+
+    let target_bytes = preset.target_mb * 1_000_000.0;
+    let mut output_bytes: u64 = 0; // the worker reports the SUM of all parts
+    for (idx, output) in parts.iter().enumerate() {
+        let i = idx as u32 + 1;
+        let start = split.part_secs * f64::from(i - 1);
+        let len = if i == split.count {
+            info.duration_secs - split.part_secs * f64::from(split.count - 1)
+        } else {
+            split.part_secs
+        };
+        let mut part_info = info.clone();
+        part_info.duration_secs = len;
+        let mut plan = build_plan(&part_info, &preset, &input).expect("build_plan failed");
+        plan.output = output.clone();
+        plan.trim = Some((start, len));
+
+        let passlog = tempfile::tempdir().unwrap();
+        let slot = ChildSlot::default();
+        let actual = run_video_convergence(
+            &mut plan,
+            &part_info,
+            &input,
+            passlog.path(),
+            target_bytes,
+            false, // software: the deterministic two-pass path
+            &slot,
+            &|| false,
+            &mut |_, _| {},
+        )
+        .await
+        .unwrap_or_else(|e| panic!("part {i} encode failed: {e}"));
+        output_bytes += actual;
+    }
+
+    let mut on_disk_sum: u64 = 0;
+    for (idx, part) in parts.iter().enumerate() {
+        let len = std::fs::metadata(part)
+            .unwrap_or_else(|_| panic!("part {} missing at {}", idx + 1, part.display()))
+            .len();
+        assert!(
+            (len as f64) <= target_bytes,
+            "part {} is {len} bytes, over the {target_bytes} byte target",
+            idx + 1
+        );
+        assert!(
+            len > 10_000,
+            "part {} suspiciously small: {len} bytes",
+            idx + 1
+        );
+        on_disk_sum += len;
+        // Each part must really carry ~a third of the clip.
+        let duration = probed_duration(part);
+        assert!(
+            (duration - split.part_secs).abs() < 1.0,
+            "part {} runs {duration}s, expected ~{}s",
+            idx + 1,
+            split.part_secs
+        );
+        // No in-flight temp may survive a successful promote.
+        assert!(!tamp_lib::encoder::plan::part_path(part).exists());
+    }
+    assert_eq!(
+        output_bytes, on_disk_sum,
+        "the reported total must be the sum of all part sizes"
     );
 }

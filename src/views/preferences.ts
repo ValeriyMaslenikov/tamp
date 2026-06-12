@@ -12,8 +12,10 @@ import {
   formatSelect,
   numberInput,
   parseOptionalPositiveInt,
+  splitControl,
   switchRow,
 } from "../lib/forms";
+import { splitSummaryLabel } from "../lib/format";
 import { showToast } from "../lib/toast";
 
 export interface PreferencesView {
@@ -153,6 +155,8 @@ export function createPreferencesView(opts: {
     if (p.maxWidth != null) parts.push(`${p.maxWidth}px`);
     else if (p.scalePercent != null) parts.push(`${p.scalePercent}%`);
     if (p.stripAudio) parts.push("no audio");
+    const split = splitSummaryLabel(p.split);
+    if (split) parts.push(split);
     return parts.join(" · ");
   }
 
@@ -238,6 +242,8 @@ export function createPreferencesView(opts: {
 
     const formatInput = formatSelect(p?.format ?? "mp4");
 
+    const split = splitControl(p?.split);
+
     const audio = switchRow("Strip audio", p?.stripAudio ?? false);
 
     const grid1 = document.createElement("div");
@@ -286,6 +292,11 @@ export function createPreferencesView(opts: {
         showToast("FPS, width and scale must be positive whole numbers");
         return;
       }
+      const splitRead = split.read();
+      if ("error" in splitRead) {
+        showToast(splitRead.error);
+        return;
+      }
       const preset: Preset = {
         id: p?.id ?? newPresetId(),
         name,
@@ -295,6 +306,7 @@ export function createPreferencesView(opts: {
         scalePercent: width != null ? null : scale,
         stripAudio: audio.input.checked,
         format: formatInput.value as OutputFormat,
+        split: splitRead.config,
       };
       void persist((d) => {
         const idx = d.presets.findIndex((x) => x.id === preset.id);
@@ -309,7 +321,7 @@ export function createPreferencesView(opts: {
     });
     actions.append(save, cancel);
 
-    card.append(grid1, grid2, hint, grid3, audio.row, actions);
+    card.append(grid1, grid2, hint, grid3, split.el, audio.row, actions);
     return card;
   }
 

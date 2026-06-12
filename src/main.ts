@@ -93,17 +93,24 @@ function main(): void {
 
 window.addEventListener("DOMContentLoaded", main);
 
-// Dev-only test hook: drop an autotest.json in public/ ({"path", "presetId"})
-// to trigger an encode through the real IPC path without UI interaction.
+// Dev-only test hook: drop an autotest.json in public/ to trigger an encode
+// through the real IPC path without UI interaction. Either
+// {"path", "presetId"} (enqueue) or {"path", "custom": CustomConfig}
+// (custom_convert, e.g. for headless split testing).
 if (import.meta.env.DEV) {
   window.addEventListener("DOMContentLoaded", async () => {
     try {
       const res = await fetch("/autotest.json");
       if (!res.ok) return;
-      const { path, presetId } = await res.json();
-      const { enqueue } = await import("./lib/ipc");
-      console.log("[autotest] enqueue", path, presetId);
-      await enqueue(path, presetId);
+      const { path, presetId, custom } = await res.json();
+      const { customConvert, enqueue } = await import("./lib/ipc");
+      if (custom) {
+        console.log("[autotest] customConvert", path, custom);
+        await customConvert(path, custom);
+      } else {
+        console.log("[autotest] enqueue", path, presetId);
+        await enqueue(path, presetId);
+      }
     } catch {
       /* no autotest file — normal run */
     }

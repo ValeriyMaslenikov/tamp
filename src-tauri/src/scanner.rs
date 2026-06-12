@@ -43,9 +43,10 @@ fn has_video_ext(path: &Path) -> bool {
 ///
 /// The suffix grammar (must agree with output naming in `encoder::plan`):
 /// `" (tamped"` + optional `" "` + 4 lowercase hex chars + optional `" "` +
-/// digits + `")"`. That covers hashed names like `clip (tamped a3f2)` /
-/// `clip (tamped a3f2 2)` as well as legacy `clip (tamped)` /
-/// `clip (tamped 2)` ones.
+/// (collision-counter digits OR a `p<digits>of<digits>` part token — never
+/// both) + `")"`. That covers hashed names like `clip (tamped a3f2)` /
+/// `clip (tamped a3f2 2)`, split parts like `clip (tamped a3f2 p2of5)`, and
+/// the legacy `clip (tamped)` / `clip (tamped 2)` ones.
 pub fn tamped_original_stem(stem: &str) -> Option<&str> {
     let inner = stem.strip_suffix(')')?;
     let idx = inner.rfind(" (tamped")?;
@@ -54,7 +55,8 @@ pub fn tamped_original_stem(stem: &str) -> Option<&str> {
 }
 
 /// Matches what may sit between `" (tamped"` and the closing `")"`:
-/// nothing, `" {hash}"`, `" {digits}"`, or `" {hash} {digits}"`.
+/// nothing, `" {hash}"`, `" {digits}"`, `" {part}"`, `" {hash} {digits}"`,
+/// or `" {hash} {part}"`.
 fn suffix_args_match(rest: &str) -> bool {
     if rest.is_empty() {
         return true;
@@ -63,8 +65,8 @@ fn suffix_args_match(rest: &str) -> bool {
         return false;
     };
     match rest.split_once(' ') {
-        None => is_preset_hash(rest) || is_digits(rest),
-        Some((hash, digits)) => is_preset_hash(hash) && is_digits(digits),
+        None => is_preset_hash(rest) || is_digits(rest) || is_part_token(rest),
+        Some((hash, arg)) => is_preset_hash(hash) && (is_digits(arg) || is_part_token(arg)),
     }
 }
 
@@ -75,6 +77,19 @@ fn is_preset_hash(s: &str) -> bool {
 
 fn is_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `p<digits>of<digits>` — the split-part token (`encoder::plan` emits
+/// `p{i}of{n}`). Purely shape-based: no range checks, so e.g. `p0of0` is
+/// recognised; the planner only ever writes 1-based `i <= n` names.
+fn is_part_token(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('p') else {
+        return false;
+    };
+    match rest.split_once("of") {
+        Some((i, n)) => is_digits(i) && is_digits(n),
+        None => false,
+    }
 }
 
 fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
@@ -258,6 +273,78 @@ mod tests {
     }
 
     #[test]
+    fn part_outputs_excluded_while_original_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "clip.mov",
+            "clip (tamped 823f p1of3).mp4",
+            "clip (tamped 823f p2of3).mp4",
+            "clip (tamped 823f p3of3).mp4",
+            // grammar admits a part token without a hash too
+            "clip (tamped p2of5).mp4",
+        ] {
+            touch(dir.path(), name);
+        }
+        let found = scan(&[dir.path().to_path_buf()], 100);
+        assert_eq!(names(&found), vec!["clip.mov"]);
+        assert!(!found[0].is_output);
+    }
+
+    #[test]
+    fn part_outputs_shown_as_orphans_without_original() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "gone (tamped 823f p1of2).mp4");
+        touch(dir.path(), "gone (tamped 823f p2of2).mp4");
+        let found = scan(&[dir.path().to_path_buf()], 100);
+        let mut got = names(&found);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "gone (tamped 823f p1of2).mp4",
+                "gone (tamped 823f p2of2).mp4",
+            ]
+        );
+        for orphan in &found {
+            assert!(orphan.is_output, "{} must be an output", orphan.name);
+            let meta = orphan.conversion.as_ref().expect("orphan conversion meta");
+            assert_eq!(meta.output_bytes, orphan.size_bytes);
+            assert_eq!(meta.original_bytes, None);
+            assert_eq!(meta.preset_name, None);
+        }
+    }
+
+    #[test]
+    fn part_outputs_mix_with_legacy_hash_and_counter_forms() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "clip.mov",
+            "clip (tamped).mp4",            // legacy
+            "clip (tamped 2).mp4",          // legacy + counter
+            "clip (tamped a3f2).mp4",       // hash
+            "clip (tamped a3f2 2).mp4",     // hash + counter
+            "clip (tamped a3f2 p1of2).mp4", // hash + part
+            "clip (tamped a3f2 p2of2).mp4",
+            // malformed part tokens are not outputs, so they stay listed
+            "clip (tamped a3f2 pof3).mp4",
+            "clip (tamped a3f2 2 p1of2).mp4", // counter AND part: never both
+        ] {
+            touch(dir.path(), name);
+        }
+        let found = scan(&[dir.path().to_path_buf()], 100);
+        let mut got = names(&found);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "clip (tamped a3f2 2 p1of2).mp4",
+                "clip (tamped a3f2 pof3).mp4",
+                "clip.mov",
+            ]
+        );
+    }
+
+    #[test]
     fn original_with_different_extension_still_suppresses_output() {
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "demo.webm");
@@ -288,6 +375,54 @@ mod tests {
             tamped_original_stem("demo (tamped a3f2) (tamped 9bd0)"),
             Some("demo (tamped a3f2)")
         );
+    }
+
+    #[test]
+    fn derives_original_stem_for_part_tokens() {
+        assert_eq!(
+            tamped_original_stem("clip (tamped 823f p1of3)"),
+            Some("clip")
+        );
+        assert_eq!(
+            tamped_original_stem("clip (tamped 823f p2of5)"),
+            Some("clip")
+        );
+        assert_eq!(
+            tamped_original_stem("clip (tamped 823f p12of20)"),
+            Some("clip")
+        );
+        // part token without a hash is within the grammar
+        assert_eq!(tamped_original_stem("clip (tamped p2of5)"), Some("clip"));
+        // the contract grammar is p<digits>of<digits> with no further
+        // validation, so out-of-range digits are still recognised; must stay
+        // consistent with encoder::plan::output_original_stem
+        assert_eq!(
+            tamped_original_stem("clip (tamped 823f p0of0)"),
+            Some("clip")
+        );
+        // originals whose own name contains parentheses
+        assert_eq!(
+            tamped_original_stem("demo (1) (tamped 823f p1of2)"),
+            Some("demo (1)")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_part_tokens() {
+        assert_eq!(tamped_original_stem("clip (tamped 823f pof3)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f p2of)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f pof)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f P2of5)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f p2OF5)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f p2of5x)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f px2of5)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f 2of5)"), None);
+        // counter and part token never appear together, in either order
+        assert_eq!(tamped_original_stem("clip (tamped 823f 2 p1of2)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 823f p1of2 2)"), None);
+        // part token must follow a valid hash when two tokens are present
+        assert_eq!(tamped_original_stem("clip (tamped A3F2 p1of2)"), None);
+        assert_eq!(tamped_original_stem("clip (tamped 2 p1of2)"), None);
     }
 
     #[test]

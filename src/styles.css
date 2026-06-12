@@ -776,6 +776,28 @@ textarea {
   margin-bottom: 6px;
 }
 
+/* ---------- "Split into parts" control (preset editor + custom page) ---------- */
+
+.split-field {
+  margin-bottom: 8px;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 26px;
+}
+
+.split-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
 .input {
   font-family: inherit;
   font-size: 12px;

@@ -12,6 +12,7 @@ import {
   formatSelect,
   numberInput,
   parseOptionalPositiveInt,
+  splitControl,
   switchRow,
 } from "../lib/forms";
 import { truncateMiddle } from "../lib/format";
@@ -82,6 +83,8 @@ export function openCustomModal(opts: {
     if (scaleInput.value.trim() !== "") widthInput.value = "";
   });
 
+  const split = splitControl();
+
   const audio = switchRow("Strip audio", false);
 
   const grid1 = document.createElement("div");
@@ -117,6 +120,11 @@ export function openCustomModal(opts: {
       showToast("FPS, width and scale must be positive whole numbers");
       return;
     }
+    const splitRead = split.read();
+    if ("error" in splitRead) {
+      showToast(splitRead.error);
+      return;
+    }
     const config: CustomConfig = {
       targetMb: target,
       maxFps: fps,
@@ -124,6 +132,7 @@ export function openCustomModal(opts: {
       scalePercent: width != null ? null : scale,
       stripAudio: audio.input.checked,
       format: formatInput.value as OutputFormat,
+      split: splitRead.config,
     };
     convert.disabled = true;
     customConvert(video.path, config)
@@ -137,7 +146,7 @@ export function openCustomModal(opts: {
       });
   });
 
-  body.append(grid1, grid2, hint, audio.row, convert);
+  body.append(grid1, grid2, hint, split.el, audio.row, convert);
   el.append(header, body);
   opts.host.appendChild(el);
   targetInput.focus();

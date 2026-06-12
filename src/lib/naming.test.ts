@@ -29,6 +29,33 @@ describe("stripOutputSuffix", () => {
     expect(stripOutputSuffix("clip (tamped 1234).mp4")).toBe("clip");
   });
 
+  it("strips the hashed split-part suffix", () => {
+    expect(stripOutputSuffix("clip (tamped 823f p2of5).mp4")).toBe("clip");
+    expect(stripOutputSuffix("clip (tamped a3f2 p10of12).webm")).toBe("clip");
+  });
+
+  it("strips a part token without a hash (grammar allows it)", () => {
+    expect(stripOutputSuffix("clip (tamped p1of2).mp4")).toBe("clip");
+  });
+
+  it("never matches a collision counter and a part token together", () => {
+    expect(stripOutputSuffix("clip (tamped a3f2 2 p1of2).mp4")).toBe(
+      "clip (tamped a3f2 2 p1of2)",
+    );
+  });
+
+  it("does not match malformed part tokens", () => {
+    expect(stripOutputSuffix("clip (tamped a3f2 pof2).mp4")).toBe(
+      "clip (tamped a3f2 pof2)",
+    );
+    expect(stripOutputSuffix("clip (tamped a3f2 p2of).mp4")).toBe(
+      "clip (tamped a3f2 p2of)",
+    );
+    expect(stripOutputSuffix("clip (tamped a3f2 P2of5).mp4")).toBe(
+      "clip (tamped a3f2 P2of5)",
+    );
+  });
+
   it("only drops the extension on non-output names", () => {
     expect(stripOutputSuffix("clip.mov")).toBe("clip");
     expect(stripOutputSuffix("Screen Recording at 15.53.01.mov")).toBe(

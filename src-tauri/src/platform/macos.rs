@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -24,11 +24,21 @@ pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-pub fn copy_file_to_clipboard(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| "path is not valid UTF-8".to_string())?
-        .to_string();
+/// Writes ALL `paths` as file URLs onto the general pasteboard in a single
+/// `writeObjects` call — one clearContents, one NSArray — so pasting into
+/// Finder/Discord drops the whole set at once.
+pub fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("no files to copy".to_string());
+    }
+    let path_strs = paths
+        .iter()
+        .map(|p| {
+            p.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))
+        })
+        .collect::<Result<Vec<String>, String>>()?;
 
     // NSPasteboard must be used from the main thread; ship the result back
     // over a channel since run_on_main_thread takes a fire-and-forget closure.
@@ -36,10 +46,14 @@ pub fn copy_file_to_clipboard(app: &tauri::AppHandle, path: &Path) -> Result<(),
     app.run_on_main_thread(move || {
         let pasteboard = NSPasteboard::generalPasteboard();
         pasteboard.clearContents();
-        let url = NSURL::fileURLWithPath(&NSString::from_str(&path_str));
-        let object: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
-            ProtocolObject::from_retained(url);
-        let objects = NSArray::from_retained_slice(&[object]);
+        let objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = path_strs
+            .iter()
+            .map(|path_str| {
+                let url = NSURL::fileURLWithPath(&NSString::from_str(path_str));
+                ProtocolObject::from_retained(url)
+            })
+            .collect();
+        let objects = NSArray::from_retained_slice(&objects);
         let ok = pasteboard.writeObjects(&objects);
         let _ = tx.send(ok);
     })

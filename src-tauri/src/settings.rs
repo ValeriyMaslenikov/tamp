@@ -17,6 +17,79 @@ pub enum OutputFormat {
     Gif,
 }
 
+/// How a video gets split into independently compressed parts. Off keeps the
+/// historical single-output behavior; presets stored before the field existed
+/// deserialize as Off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitMode {
+    #[default]
+    Off,
+    Smart,
+    Static,
+}
+
+/// What a static split is measured in: a fixed number of parts, or a target
+/// part length in seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StaticSplitBy {
+    #[default]
+    Parts,
+    Seconds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitConfig {
+    #[serde(default)]
+    pub mode: SplitMode,
+    #[serde(default)]
+    pub by: StaticSplitBy,
+    #[serde(default = "default_split_parts")]
+    pub parts: u32,
+    #[serde(default = "default_split_seconds")]
+    pub seconds: u32,
+}
+
+fn default_split_parts() -> u32 {
+    2
+}
+
+fn default_split_seconds() -> u32 {
+    30
+}
+
+impl Default for SplitConfig {
+    fn default() -> Self {
+        SplitConfig {
+            mode: SplitMode::Off,
+            by: StaticSplitBy::Parts,
+            parts: default_split_parts(),
+            seconds: default_split_seconds(),
+        }
+    }
+}
+
+/// Validates a split config; shared by preset validation and the one-off
+/// custom-convert path (`commands.rs`). Only the dimension a static split
+/// actually uses is checked — the other field is inert until selected, and
+/// the frontend form keeps it in range before it can become active.
+pub fn validate_split(split: &SplitConfig) -> Result<(), String> {
+    if split.mode != SplitMode::Static {
+        return Ok(());
+    }
+    match split.by {
+        StaticSplitBy::Parts if !(2..=20).contains(&split.parts) => {
+            Err("split part count must be between 2 and 20".into())
+        }
+        StaticSplitBy::Seconds if split.seconds < 10 => {
+            Err("split part duration must be at least 10 seconds".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preset {
@@ -29,6 +102,8 @@ pub struct Preset {
     pub strip_audio: bool,
     #[serde(default)]
     pub format: OutputFormat,
+    #[serde(default)]
+    pub split: SplitConfig,
 }
 
 // Field-level defaults keep previously stored settings readable when new
@@ -107,6 +182,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
             scale_percent: None,
             strip_audio: false,
             format: OutputFormat::default(),
+            split: SplitConfig::default(),
         }],
         default_preset_id: "discord-10mb".into(),
         launch_at_login: false,
@@ -219,6 +295,9 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
                 preset.name
             ));
         }
+        if let Err(e) = validate_split(&preset.split) {
+            return Err(format!("preset \"{}\": {e}", preset.name));
+        }
     }
     Ok(())
 }
@@ -251,6 +330,8 @@ mod tests {
     fn old_stored_settings_without_new_fields_still_load() {
         let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
         assert_eq!(settings.presets[0].format, OutputFormat::Mp4);
+        assert_eq!(settings.presets[0].split, SplitConfig::default());
+        assert_eq!(settings.presets[0].split.mode, SplitMode::Off);
         assert_eq!(
             settings.shortcut_compress_latest.as_deref(),
             Some("CmdOrCtrl+Alt+T")
@@ -287,6 +368,148 @@ mod tests {
         assert_eq!(json["presets"][0]["format"], serde_json::json!("webm"));
         let back: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(back.presets[0].format, OutputFormat::Webm);
+    }
+
+    #[test]
+    fn split_defaults_match_contract() {
+        let split = SplitConfig::default();
+        assert_eq!(split.mode, SplitMode::Off);
+        assert_eq!(split.by, StaticSplitBy::Parts);
+        assert_eq!(split.parts, 2);
+        assert_eq!(split.seconds, 30);
+    }
+
+    #[test]
+    fn split_enums_serialize_lowercase() {
+        assert_eq!(
+            serde_json::to_value(SplitMode::Off).unwrap(),
+            serde_json::json!("off")
+        );
+        assert_eq!(
+            serde_json::to_value(SplitMode::Smart).unwrap(),
+            serde_json::json!("smart")
+        );
+        assert_eq!(
+            serde_json::to_value(SplitMode::Static).unwrap(),
+            serde_json::json!("static")
+        );
+        assert_eq!(
+            serde_json::to_value(StaticSplitBy::Parts).unwrap(),
+            serde_json::json!("parts")
+        );
+        assert_eq!(
+            serde_json::to_value(StaticSplitBy::Seconds).unwrap(),
+            serde_json::json!("seconds")
+        );
+    }
+
+    #[test]
+    fn partial_split_json_fills_field_defaults() {
+        // A store written by a build that only knew `mode` (or a hand-edited
+        // file) must still load, with the missing fields defaulted.
+        let split: SplitConfig = serde_json::from_str(r#"{ "mode": "smart" }"#).unwrap();
+        assert_eq!(split.mode, SplitMode::Smart);
+        assert_eq!(split.by, StaticSplitBy::Parts);
+        assert_eq!(split.parts, 2);
+        assert_eq!(split.seconds, 30);
+
+        let split: SplitConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(split, SplitConfig::default());
+    }
+
+    #[test]
+    fn preset_split_round_trips_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.presets[0].split = SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Seconds,
+            parts: 4,
+            seconds: 45,
+        };
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            json["presets"][0]["split"],
+            serde_json::json!({
+                "mode": "static",
+                "by": "seconds",
+                "parts": 4,
+                "seconds": 45
+            })
+        );
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.presets[0].split, settings.presets[0].split);
+    }
+
+    fn settings_with_split(split: SplitConfig) -> Settings {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.presets[0].split = split;
+        settings
+    }
+
+    #[test]
+    fn validate_accepts_off_and_smart_regardless_of_numbers() {
+        for mode in [SplitMode::Off, SplitMode::Smart] {
+            let split = SplitConfig {
+                mode,
+                by: StaticSplitBy::Parts,
+                parts: 0,
+                seconds: 0,
+            };
+            assert!(validate(&settings_with_split(split)).is_ok(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn validate_bounds_static_parts() {
+        let by_parts = |parts| SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Parts,
+            parts,
+            seconds: 30,
+        };
+        for parts in [2, 7, 20] {
+            assert!(validate(&settings_with_split(by_parts(parts))).is_ok());
+        }
+        for parts in [0, 1, 21] {
+            let err = validate(&settings_with_split(by_parts(parts))).unwrap_err();
+            assert!(err.contains("between 2 and 20"), "{err}");
+        }
+    }
+
+    #[test]
+    fn validate_bounds_static_seconds() {
+        let by_seconds = |seconds| SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Seconds,
+            parts: 2,
+            seconds,
+        };
+        for seconds in [10, 30, 3600] {
+            assert!(validate(&settings_with_split(by_seconds(seconds))).is_ok());
+        }
+        for seconds in [0, 9] {
+            let err = validate(&settings_with_split(by_seconds(seconds))).unwrap_err();
+            assert!(err.contains("at least 10 seconds"), "{err}");
+        }
+    }
+
+    #[test]
+    fn validate_static_only_checks_the_active_dimension() {
+        // Splitting by parts: a stale seconds value is inert, and vice versa.
+        let split = SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Parts,
+            parts: 3,
+            seconds: 1,
+        };
+        assert!(validate(&settings_with_split(split)).is_ok());
+        let split = SplitConfig {
+            mode: SplitMode::Static,
+            by: StaticSplitBy::Seconds,
+            parts: 99,
+            seconds: 15,
+        };
+        assert!(validate(&settings_with_split(split)).is_ok());
     }
 
     #[test]

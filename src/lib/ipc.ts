@@ -5,6 +5,21 @@ export { convertFileSrc } from "@tauri-apps/api/core";
 
 export type OutputFormat = "mp4" | "webm" | "gif";
 
+export type SplitMode = "off" | "smart" | "static";
+
+export type StaticSplitBy = "parts" | "seconds";
+
+/**
+ * Split-into-parts settings: each part is compressed independently to the
+ * preset's full target size. `parts`/`seconds` only apply in static mode.
+ */
+export interface SplitConfig {
+  mode: SplitMode;
+  by: StaticSplitBy;
+  parts: number;
+  seconds: number;
+}
+
 export interface Preset {
   id: string;
   name: string;
@@ -14,6 +29,7 @@ export interface Preset {
   scalePercent: number | null;
   stripAudio: boolean;
   format: OutputFormat;
+  split: SplitConfig;
 }
 
 export interface Settings {
@@ -39,6 +55,7 @@ export interface CustomConfig {
   scalePercent: number | null;
   stripAudio: boolean;
   format: OutputFormat;
+  split: SplitConfig;
 }
 
 /** Conversion details for an orphaned output row (original gone). */
@@ -84,6 +101,8 @@ export interface JobState {
   outputBytes: number | null;
   /** Done without encoding: an identical earlier output already existed. */
   reused: boolean;
+  /** Split jobs only: [current part, total parts]; null for single outputs. */
+  part: [number, number] | null;
   error: string | null;
   /** Set when a post-action (clipboard copy / trash original) failed after a successful encode. */
   postError: string | null;

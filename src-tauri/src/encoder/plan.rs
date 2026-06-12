@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::settings::{OutputFormat, Preset};
+use crate::settings::{OutputFormat, Preset, SplitMode, StaticSplitBy};
 
 use super::probe::ProbeInfo;
 
@@ -27,6 +27,11 @@ pub struct EncodePlan {
     /// probe couldn't determine geometry/fps, so the gate never triggers on
     /// a guess.
     pub bpp: f64,
+    /// Input trim for split parts: `(start_secs, length_secs)`, emitted as
+    /// `-ss {start}` before `-i` and `-t {len}` right after the input.
+    /// `None` — always what `build_plan` emits — encodes the whole input;
+    /// the worker fills this in per part of a split job.
+    pub trim: Option<(f64, f64)>,
 }
 
 /// Bits per pixel per frame below which screen content stops being legible
@@ -85,6 +90,7 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
             auto_fps: None,
             auto_width: None,
             bpp: f64::INFINITY,
+            trim: None,
         });
     }
 
@@ -208,7 +214,132 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         auto_fps,
         auto_width,
         bpp,
+        trim: None,
     })
+}
+
+/// How a split job divides its input: `count` equal-length parts of
+/// `part_secs` each (`part_secs = duration / count`). The worker gives the
+/// LAST part the remainder so the lengths sum to the exact duration.
+/// `count == 1` means no split — the single-output pipeline runs unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplitPlan {
+    pub count: u32,
+    pub part_secs: f64,
+}
+
+/// Splitting never engages on clips at or under this duration (seconds):
+/// the parts would be too short to be worth posting separately.
+const SPLIT_MIN_DURATION: f64 = 12.0;
+
+/// Equal-length parts are never shorter than this many seconds; a static
+/// count is reduced until the floor holds.
+const SPLIT_MIN_PART_SECS: f64 = 5.0;
+
+/// Smart mode never proposes parts shorter than ~this many seconds.
+const SMART_MIN_PART_SECS: f64 = 10.0;
+
+/// Smart mode never proposes more than this many parts.
+const SMART_MAX_PARTS: u32 = 10;
+
+/// Bits per pixel per frame Smart mode considers GOOD quality — the
+/// per-part bitrate it splits until it reaches.
+const SMART_GOOD_BPP: f64 = 0.04;
+
+/// Smart mode judges quality at a frame rate capped here (mirroring the
+/// planner's own 30 fps auto-cap) …
+const SMART_FPS_CAP: f64 = 30.0;
+
+/// … and at a width capped here (keeping aspect), since huge captures get
+/// downscaled rather than split forever.
+const SMART_WIDTH_CAP: f64 = 1920.0;
+
+/// The part length Smart mode falls back to for GIF presets, which have no
+/// bitrate math to judge quality by: behave as a static "every 15 seconds".
+const SMART_GIF_PART_SECS: u32 = 15;
+
+/// Decides how many independently compressed parts `info` splits into under
+/// `preset` — each part gets the preset's FULL byte target. Pure planning:
+/// `count == 1` (split off, clip too short, or quality already good) leaves
+/// the single-output behavior untouched.
+pub fn plan_split(info: &ProbeInfo, preset: &Preset) -> SplitPlan {
+    let duration = info.duration_secs;
+    if preset.split.mode == SplitMode::Off || duration <= SPLIT_MIN_DURATION {
+        return SplitPlan {
+            count: 1,
+            part_secs: duration,
+        };
+    }
+    let count = match preset.split.mode {
+        SplitMode::Off => 1,
+        SplitMode::Static => match preset.split.by {
+            StaticSplitBy::Parts => preset.split.parts.clamp(1, 20),
+            StaticSplitBy::Seconds => static_seconds_count(duration, preset.split.seconds),
+        },
+        // GIF has no bitrate to judge quality by; Smart degenerates to a
+        // static ~15s split.
+        SplitMode::Smart if preset.format == OutputFormat::Gif => {
+            static_seconds_count(duration, SMART_GIF_PART_SECS)
+        }
+        SplitMode::Smart => smart_count(info, preset),
+    };
+    // Never let equal-length parts drop under the floor: reduce the count
+    // until part_secs >= SPLIT_MIN_PART_SECS (and keep count >= 1).
+    let max_count = ((duration / SPLIT_MIN_PART_SECS).floor() as u32).max(1);
+    let count = count.clamp(1, max_count);
+    SplitPlan {
+        count,
+        part_secs: duration / f64::from(count),
+    }
+}
+
+/// Part count for a static "every N seconds" split: enough parts that none
+/// runs longer than `seconds`. A zero `seconds` (invalid config) is treated
+/// as 1 rather than dividing by zero.
+fn static_seconds_count(duration: f64, seconds: u32) -> u32 {
+    (duration / f64::from(seconds.max(1))).ceil() as u32
+}
+
+/// Smart mode's part count for mp4/webm: the smallest count whose PER-PART
+/// video bitrate reaches GOOD quality ([`SMART_GOOD_BPP`] at the effective
+/// fps/geometry), capped so parts never run shorter than ~10s and never more
+/// than 10 parts. When even the cap can't reach GOOD quality, the maximum
+/// allowed count is used — splitting more wouldn't fit anyway.
+fn smart_count(info: &ProbeInfo, preset: &Preset) -> u32 {
+    let duration = info.duration_secs;
+    let max_count = ((duration / SMART_MIN_PART_SECS).floor() as u32).clamp(1, SMART_MAX_PARTS);
+    // Unknown geometry or frame rate: never split on a guess.
+    if info.width == 0 || info.height == 0 || info.fps <= 0.0 {
+        return 1;
+    }
+    let budget_kbit = preset.target_mb * 1_000_000.0 * 8.0 / 1000.0 * 0.95;
+    let audio_kbit: f64 = if preset.strip_audio || !info.has_audio {
+        0.0
+    } else {
+        match preset.format {
+            OutputFormat::Webm => 64.0,
+            _ => 96.0,
+        }
+    };
+    // Quality is judged at the dimensions/fps the encode will realistically
+    // run at: the user's own caps and the 1920px/30fps ceilings the planner
+    // degrades huge captures to anyway.
+    let eff_w = f64::from(info.width)
+        .min(preset.max_width.map_or(f64::from(info.width), f64::from))
+        .min(SMART_WIDTH_CAP);
+    let eff_h = f64::from(info.height) * eff_w / f64::from(info.width);
+    let eff_fps = info
+        .fps
+        .min(preset.max_fps.map_or(info.fps, f64::from))
+        .min(SMART_FPS_CAP);
+    let needed_kbit = SMART_GOOD_BPP * (eff_w * eff_h) * eff_fps / 1000.0;
+    for count in 1..=max_count {
+        let per_part_kbit = budget_kbit / (duration / f64::from(count)) - audio_kbit;
+        if per_part_kbit >= needed_kbit {
+            return count;
+        }
+    }
+    max_count
 }
 
 /// The output file extension per format. Naming, reuse probing and the
@@ -297,7 +428,11 @@ fn fnv1a(hash: u64, bytes: &[u8]) -> u64 {
 /// `scale_percent` (u32 LE, `u32::MAX` for `None`), then `strip_audio` (0/1).
 /// Non-mp4 formats fold their name in as a FINAL step so every mp4 preset —
 /// including all pre-format outputs in the wild — hashes exactly as before.
-/// Cosmetic fields (id, name) are deliberately excluded.
+/// Splitting folds in after that, and ONLY when enabled, for the same
+/// reason: every split-off preset hashes exactly as it always has. Only the
+/// dimension a split actually uses is folded (a static-parts split ignores
+/// `seconds` and vice versa; smart ignores both). Cosmetic fields (id, name)
+/// are deliberately excluded.
 pub fn preset_hash(p: &crate::settings::Preset) -> String {
     let mut h = fnv1a(FNV_OFFSET, &p.target_mb.to_bits().to_le_bytes());
     h = fnv1a(h, &p.max_fps.unwrap_or(u32::MAX).to_le_bytes());
@@ -308,6 +443,20 @@ pub fn preset_hash(p: &crate::settings::Preset) -> String {
         OutputFormat::Mp4 => {}
         OutputFormat::Webm => h = fnv1a(h, b"webm"),
         OutputFormat::Gif => h = fnv1a(h, b"gif"),
+    }
+    match p.split.mode {
+        SplitMode::Off => {}
+        SplitMode::Smart => h = fnv1a(h, b"split-smart"),
+        SplitMode::Static => match p.split.by {
+            StaticSplitBy::Parts => {
+                h = fnv1a(h, b"split-parts");
+                h = fnv1a(h, &p.split.parts.to_le_bytes());
+            }
+            StaticSplitBy::Seconds => {
+                h = fnv1a(h, b"split-secs");
+                h = fnv1a(h, &p.split.seconds.to_le_bytes());
+            }
+        },
     }
     format!("{:04x}", h & 0xffff)
 }
@@ -329,6 +478,25 @@ pub fn expected_output(input: &Path, hash: &str, format: OutputFormat) -> PathBu
     dir.join(format!("{} (tamped {hash}).{ext}", input_stem(input)))
 }
 
+/// The fixed output paths for an `n`-part split of `input` under a preset
+/// `hash`: "{stem} (tamped {hash} p{i}of{n}).{ext}" for i in 1..=n, next to
+/// the input. Part names carry no collision counter — the worker sweeps
+/// stale part files for the hash before encoding a fresh set, so these exact
+/// paths are always the destination.
+pub fn expected_part_outputs(
+    input: &Path,
+    hash: &str,
+    format: OutputFormat,
+    n: u32,
+) -> Vec<PathBuf> {
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    let stem = input_stem(input);
+    let ext = extension(format);
+    (1..=n)
+        .map(|i| dir.join(format!("{stem} (tamped {hash} p{i}of{n}).{ext}")))
+        .collect()
+}
+
 /// The crash-safe temp sibling every encode attempt writes to:
 /// "{final_stem}.{ext}.part" in the SAME directory as `output`, so the final
 /// rename never crosses filesystems. Its extension is "part", which the
@@ -343,25 +511,52 @@ pub fn part_path(output: &Path) -> PathBuf {
     output.with_file_name(name)
 }
 
+/// The single token a sibling of the base output carries between the base
+/// stem (minus its closing paren) and ").{ext}": Some("2") for
+/// "clip (tamped 823f 2).mp4" against base "clip (tamped 823f)" / "mp4".
+/// The base output itself, other hashes/stems/extensions and `.part` files
+/// all yield `None`.
+fn sibling_token<'a>(name: &'a str, base_stem: &str, ext: &str) -> Option<&'a str> {
+    let stem = name.strip_suffix(ext).and_then(|n| n.strip_suffix('.'))?;
+    let base = base_stem.strip_suffix(')')?;
+    stem.strip_prefix(base)
+        .and_then(|r| r.strip_prefix(' '))
+        .and_then(|r| r.strip_suffix(')'))
+}
+
+/// A non-empty all-digits collision counter ("2", "17").
+fn is_counter_token(t: &str) -> bool {
+    !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A split-part token: exactly `p<digits>of<digits>` ("p2of5"). Purely
+/// shape-based — no range checks — matching the scanner's recognizer.
+fn is_part_token(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix('p') else {
+        return false;
+    };
+    match rest.split_once("of") {
+        Some((i, n)) => is_counter_token(i) && is_counter_token(n),
+        None => false,
+    }
+}
+
 /// True when `name` is a numbered sibling of the base output whose stem is
 /// `base_stem` (e.g. "clip (tamped 823f)") with extension `ext`: exactly
 /// "{stem} (tamped {hash} N).{ext}" for some run of digits N. The base
-/// output itself, other hashes/stems/extensions and `.part` files all fail.
+/// output itself, part outputs, other hashes/stems/extensions and `.part`
+/// files all fail.
 pub fn is_numbered_sibling(name: &str, base_stem: &str, ext: &str) -> bool {
-    let Some(stem) = name.strip_suffix(ext).and_then(|n| n.strip_suffix('.')) else {
-        return false;
-    };
-    let Some(base) = base_stem.strip_suffix(')') else {
-        return false;
-    };
-    let Some(digits) = stem
-        .strip_prefix(base)
-        .and_then(|r| r.strip_prefix(' '))
-        .and_then(|r| r.strip_suffix(')'))
-    else {
-        return false;
-    };
-    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+    sibling_token(name, base_stem, ext).is_some_and(is_counter_token)
+}
+
+/// True when `name` is a split-part sibling of the base output whose stem is
+/// `base_stem`: exactly "{stem} (tamped {hash} p{i}of{n}).{ext}" for ANY
+/// digit runs i/n — leftovers from a previous split geometry match too, so a
+/// stale-set sweep catches them all. Numbered siblings, the base output and
+/// `.part` files all fail.
+pub fn is_part_sibling(name: &str, base_stem: &str, ext: &str) -> bool {
+    sibling_token(name, base_stem, ext).is_some_and(is_part_token)
 }
 
 fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
@@ -384,8 +579,10 @@ fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
 /// Recognises tamp output stems, returning the derived original stem (the
 /// stem with the whole tamp suffix removed). The scanner and the planner
 /// must agree on this pattern. Accepted suffixes:
-/// " (tamped)" / " (tamped 2)" (legacy, pre-hash) and
-/// " (tamped 823f)" / " (tamped 823f 2)" (current, 4 lowercase hex chars).
+/// " (tamped)" / " (tamped 2)" (legacy, pre-hash),
+/// " (tamped 823f)" / " (tamped 823f 2)" (current, 4 lowercase hex chars),
+/// and " (tamped 823f p2of5)" (split parts). After the optional hash there
+/// is EITHER a collision counter OR a part token — never both.
 pub fn output_original_stem(stem: &str) -> Option<&str> {
     const MARKER: &str = " (tamped";
     let inner = stem.strip_suffix(')')?;
@@ -405,12 +602,13 @@ pub fn output_original_stem(stem: &str) -> Option<&str> {
         && first
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    let is_counter = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
     let recognised = match second {
-        // "{stem} (tamped 823f)" or legacy "{stem} (tamped 2)"
-        None => is_hash || is_counter(first),
-        // "{stem} (tamped 823f 2)"
-        Some(second) => is_hash && is_counter(second),
+        // "{stem} (tamped 823f)", legacy "{stem} (tamped 2)", or a bare part
+        // token (the planner always writes the hash before it; accepted for
+        // parity with the scanner's recognizer)
+        None => is_hash || is_counter_token(first) || is_part_token(first),
+        // "{stem} (tamped 823f 2)" or "{stem} (tamped 823f p2of5)"
+        Some(second) => is_hash && (is_counter_token(second) || is_part_token(second)),
     };
     recognised.then_some(original)
 }
@@ -418,6 +616,7 @@ pub fn output_original_stem(stem: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::SplitConfig;
 
     fn preset(target_mb: f64) -> Preset {
         Preset {
@@ -429,6 +628,16 @@ mod tests {
             scale_percent: None,
             strip_audio: false,
             format: OutputFormat::Mp4,
+            split: SplitConfig::default(),
+        }
+    }
+
+    fn split_config(mode: SplitMode, by: StaticSplitBy, parts: u32, seconds: u32) -> SplitConfig {
+        SplitConfig {
+            mode,
+            by,
+            parts,
+            seconds,
         }
     }
 
@@ -1057,6 +1266,7 @@ mod tests {
             scale_percent: Some(50),
             strip_audio: true,
             format: OutputFormat::Mp4,
+            split: SplitConfig::default(),
         };
         assert_eq!(preset_hash(&full), "eb3d");
     }
@@ -1109,6 +1319,297 @@ mod tests {
         renamed.id = "other-id".to_string();
         renamed.name = "Other Name".to_string();
         assert_eq!(preset_hash(&preset(10.0)), preset_hash(&renamed));
+    }
+
+    #[test]
+    fn preset_hash_unchanged_while_split_is_off() {
+        // Splitting off must hash EXACTLY as before the field existed, no
+        // matter what the inert dimension fields say — every existing output
+        // in the wild keeps its hash.
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Off, StaticSplitBy::Seconds, 7, 99);
+        assert_eq!(preset_hash(&p), "823f");
+    }
+
+    // Pinned like the other hashes: computed with a reference FNV-1a
+    // implementation, must never change across releases.
+    #[test]
+    fn preset_hash_pins_each_split_variant() {
+        let mut smart = preset(10.0);
+        smart.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        assert_eq!(preset_hash(&smart), "9ca1");
+
+        let mut by_parts = preset(10.0);
+        by_parts.split = split_config(SplitMode::Static, StaticSplitBy::Parts, 2, 30);
+        assert_eq!(preset_hash(&by_parts), "7680");
+        by_parts.split.parts = 4;
+        assert_eq!(preset_hash(&by_parts), "e1e6");
+
+        let mut by_secs = preset(10.0);
+        by_secs.split = split_config(SplitMode::Static, StaticSplitBy::Seconds, 2, 30);
+        assert_eq!(preset_hash(&by_secs), "a9cc");
+    }
+
+    #[test]
+    fn preset_hash_folds_only_the_active_split_dimension() {
+        // Smart ignores both numeric fields…
+        let mut a = preset(10.0);
+        a.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        let mut b = preset(10.0);
+        b.split = split_config(SplitMode::Smart, StaticSplitBy::Seconds, 19, 600);
+        assert_eq!(preset_hash(&a), preset_hash(&b));
+
+        // …static-by-parts ignores seconds…
+        a.split = split_config(SplitMode::Static, StaticSplitBy::Parts, 4, 30);
+        b.split = split_config(SplitMode::Static, StaticSplitBy::Parts, 4, 999);
+        assert_eq!(preset_hash(&a), preset_hash(&b));
+
+        // …and static-by-seconds ignores parts, while the active dimension
+        // always differentiates.
+        a.split = split_config(SplitMode::Static, StaticSplitBy::Seconds, 2, 30);
+        b.split = split_config(SplitMode::Static, StaticSplitBy::Seconds, 19, 30);
+        assert_eq!(preset_hash(&a), preset_hash(&b));
+        b.split.seconds = 31;
+        assert_ne!(preset_hash(&a), preset_hash(&b));
+    }
+
+    fn split_info(duration_secs: f64) -> ProbeInfo {
+        ProbeInfo {
+            duration_secs,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            has_audio: true,
+        }
+    }
+
+    #[test]
+    fn plan_split_stays_single_when_off_or_short() {
+        // Off: count 1 regardless of duration.
+        let plan = plan_split(&split_info(600.0), &preset(10.0));
+        assert_eq!(plan.count, 1);
+        assert_eq!(plan.part_secs, 600.0);
+
+        // At or under 12s: count 1 even with splitting configured.
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Static, StaticSplitBy::Parts, 4, 30);
+        assert_eq!(plan_split(&split_info(12.0), &p).count, 1);
+        assert_eq!(plan_split(&split_info(8.0), &p).count, 1);
+        // Just over the floor it engages.
+        assert!(plan_split(&split_info(20.1), &p).count > 1);
+    }
+
+    #[test]
+    fn plan_split_static_parts_divides_equally_and_clamps() {
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Static, StaticSplitBy::Parts, 3, 30);
+        let plan = plan_split(&split_info(60.0), &p);
+        assert_eq!(plan.count, 3);
+        assert_eq!(plan.part_secs, 20.0);
+
+        // The count clamps to 20…
+        p.split.parts = 99;
+        assert_eq!(plan_split(&split_info(600.0), &p).count, 20);
+        // …and to 1 from below (invalid stored value).
+        p.split.parts = 0;
+        assert_eq!(plan_split(&split_info(600.0), &p).count, 1);
+
+        // Parts never run shorter than 5s: 10 parts of a 30s clip reduce to 6.
+        p.split.parts = 10;
+        let plan = plan_split(&split_info(30.0), &p);
+        assert_eq!(plan.count, 6);
+        assert_eq!(plan.part_secs, 5.0);
+    }
+
+    #[test]
+    fn plan_split_static_seconds_ceils_to_cover_the_clip() {
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Static, StaticSplitBy::Seconds, 2, 30);
+        // 100s at "every 30s" needs 4 parts of 25s.
+        let plan = plan_split(&split_info(100.0), &p);
+        assert_eq!(plan.count, 4);
+        assert_eq!(plan.part_secs, 25.0);
+        // An exact multiple stays exact.
+        assert_eq!(plan_split(&split_info(90.0), &p).count, 3);
+
+        // The 5s part floor binds here too: every 10s over 14s would be two
+        // 7s parts — fine; but a 13s clip "every 10s" gives 6.5s parts, ok;
+        // a zero seconds value (invalid) is treated as 1, then floored.
+        p.split.seconds = 10;
+        let plan = plan_split(&split_info(13.0), &p);
+        assert_eq!(plan.count, 2);
+        assert!((plan.part_secs - 6.5).abs() < 1e-9);
+        p.split.seconds = 0;
+        let plan = plan_split(&split_info(13.0), &p);
+        assert_eq!(plan.count, 2); // floor(13/5) = 2, never sub-5s parts
+    }
+
+    #[test]
+    fn plan_split_smart_pins_the_production_case() {
+        // The real-world starved recording (3456x2234 @57fps, 127.78s) into
+        // 10 MB: per-part bitrate reaches GOOD quality at 5 parts.
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        let plan = plan_split(&starved_info(), &p);
+        assert_eq!(plan.count, 5);
+        assert!((plan.part_secs - 127.78 / 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn plan_split_smart_stays_single_when_quality_is_already_good() {
+        // 1280x720@30 over 60s into 10 MB: ~1170 kbit/part at count 1 already
+        // exceeds the ~1106 kbit GOOD threshold — no split.
+        let info = ProbeInfo {
+            duration_secs: 60.0,
+            width: 1280,
+            height: 720,
+            fps: 30.0,
+            has_audio: true,
+        };
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        assert_eq!(plan_split(&info, &p).count, 1);
+    }
+
+    #[test]
+    fn plan_split_smart_respects_part_length_and_count_caps() {
+        let mut p = preset(1.0);
+        p.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        // 4K@30 over 60s into 1 MB can never reach GOOD quality, but parts
+        // must stay >= ~10s: the count caps at floor(60/10) = 6.
+        let info = ProbeInfo {
+            duration_secs: 60.0,
+            width: 3840,
+            height: 2160,
+            fps: 30.0,
+            has_audio: true,
+        };
+        assert_eq!(plan_split(&info, &p).count, 6);
+        // With a long clip the hard cap of 10 parts binds instead.
+        let long = ProbeInfo {
+            duration_secs: 300.0,
+            ..info
+        };
+        assert_eq!(plan_split(&long, &p).count, 10);
+    }
+
+    #[test]
+    fn plan_split_smart_never_splits_on_unknown_geometry() {
+        let mut p = preset(10.0);
+        p.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        for info in [
+            ProbeInfo {
+                width: 0,
+                ..split_info(600.0)
+            },
+            ProbeInfo {
+                height: 0,
+                ..split_info(600.0)
+            },
+            ProbeInfo {
+                fps: 0.0,
+                ..split_info(600.0)
+            },
+        ] {
+            assert_eq!(plan_split(&info, &p).count, 1);
+        }
+    }
+
+    #[test]
+    fn plan_split_smart_gif_behaves_as_static_fifteen_seconds() {
+        let mut gif = preset(10.0);
+        gif.format = OutputFormat::Gif;
+        gif.split = split_config(SplitMode::Smart, StaticSplitBy::Parts, 2, 30);
+        // 60s at "every 15s" -> 4 parts.
+        let plan = plan_split(&split_info(60.0), &gif);
+        assert_eq!(plan.count, 4);
+        assert_eq!(plan.part_secs, 15.0);
+        assert_eq!(plan_split(&split_info(100.0), &gif).count, 7);
+    }
+
+    #[test]
+    fn expected_part_outputs_name_parts_one_based() {
+        assert_eq!(
+            expected_part_outputs(Path::new(INPUT), "823f", OutputFormat::Mp4, 3),
+            vec![
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p1of3).mp4"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p2of3).mp4"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p3of3).mp4"),
+            ]
+        );
+        assert_eq!(
+            expected_part_outputs(Path::new(INPUT), "270f", OutputFormat::Gif, 2),
+            vec![
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f p1of2).gif"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f p2of2).gif"),
+            ]
+        );
+    }
+
+    #[test]
+    fn matches_part_siblings_of_the_exact_base_output() {
+        let base = "clip (tamped 823f)";
+        // Any part geometry of this hash matches…
+        assert!(is_part_sibling("clip (tamped 823f p1of3).mp4", base, "mp4"));
+        assert!(is_part_sibling("clip (tamped 823f p2of7).mp4", base, "mp4"));
+        assert!(is_part_sibling(
+            "clip (tamped 823f p10of20).mp4",
+            base,
+            "mp4"
+        ));
+        for name in [
+            "clip (tamped 823f).mp4",            // the base output itself
+            "clip (tamped 823f 2).mp4",          // a numbered sibling
+            "clip (tamped 823f p1of3).gif",      // wrong extension
+            "clip (tamped ffff p1of3).mp4",      // different hash
+            "other (tamped 823f p1of3).mp4",     // different stem
+            "clip (tamped 823f pof3).mp4",       // missing index digits
+            "clip (tamped 823f p1of).mp4",       // missing count digits
+            "clip (tamped 823f pxofy).mp4",      // not digits
+            "clip (tamped 823f p1of3).mp4.part", // in-flight temp
+            "clip (tamped 823f p1of3 2).mp4",    // part + counter
+        ] {
+            assert!(!is_part_sibling(name, base, "mp4"), "{name}");
+        }
+        // …and the numbered-sibling matcher never claims part names.
+        assert!(!is_numbered_sibling(
+            "clip (tamped 823f p1of3).mp4",
+            base,
+            "mp4"
+        ));
+    }
+
+    #[test]
+    fn recognises_part_output_stems_and_derives_original() {
+        assert_eq!(
+            output_original_stem("clip (tamped 823f p2of5)"),
+            Some("clip")
+        );
+        assert_eq!(
+            output_original_stem("clip (tamped 823f p1of20)"),
+            Some("clip")
+        );
+        // A bare part token (no hash) is accepted for scanner parity.
+        assert_eq!(output_original_stem("clip (tamped p2of5)"), Some("clip"));
+        for stem in [
+            "clip (tamped 823f 2 p1of2)", // counter + part: never both
+            "clip (tamped 823f p1of2 2)",
+            "clip (tamped 823f pof5)",  // missing index digits
+            "clip (tamped 823f p2of)",  // missing count digits
+            "clip (tamped 823f pxofy)", // not digits
+            "clip (tamped 823f p2f5)",  // no "of"
+            "clip (tamped p2of5 2)",    // part token can't precede a counter
+        ] {
+            assert_eq!(output_original_stem(stem), None, "{stem}");
+        }
+    }
+
+    #[test]
+    fn build_plan_never_emits_a_trim() {
+        // The trim is the worker's per-part concern; a fresh plan never has
+        // one, so single-output behavior is bit-identical to before.
+        let plan = build_plan(&info(), &preset(10.0), Path::new(INPUT)).unwrap();
+        assert_eq!(plan.trim, None);
     }
 
     #[test]

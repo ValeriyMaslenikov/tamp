@@ -5,8 +5,41 @@ import {
   formatDuration,
   formatPercentSmaller,
   formatRelativeTime,
+  splitSummaryLabel,
   truncateMiddle,
 } from "./format";
+import type { SplitConfig } from "./ipc";
+
+const split = (overrides: Partial<SplitConfig> = {}): SplitConfig => ({
+  mode: "off",
+  by: "parts",
+  parts: 2,
+  seconds: 30,
+  ...overrides,
+});
+
+describe("splitSummaryLabel", () => {
+  it("is null when splitting is off or missing", () => {
+    expect(splitSummaryLabel(split())).toBeNull();
+    expect(splitSummaryLabel(undefined)).toBeNull();
+  });
+
+  it("labels smart mode", () => {
+    expect(splitSummaryLabel(split({ mode: "smart" }))).toBe("smart split");
+  });
+
+  it("labels static by-parts with the count", () => {
+    expect(splitSummaryLabel(split({ mode: "static", parts: 4 }))).toBe(
+      "4 parts",
+    );
+  });
+
+  it("labels static by-duration with the seconds", () => {
+    expect(
+      splitSummaryLabel(split({ mode: "static", by: "seconds", seconds: 30 })),
+    ).toBe("split ≈30s");
+  });
+});
 
 describe("formatBytes", () => {
   it("formats 0 bytes", () => {

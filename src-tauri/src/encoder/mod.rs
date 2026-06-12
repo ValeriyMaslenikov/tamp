@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 // Re-exported so integration tests can build presets even though the
 // `settings` module itself is private to the crate.
-pub use crate::settings::{OutputFormat, Preset};
+pub use crate::settings::{OutputFormat, Preset, SplitConfig, SplitMode, StaticSplitBy};
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +42,9 @@ pub struct JobState {
     /// True when the encode was skipped because an output for this exact
     /// input + preset configuration already existed and was reused.
     pub reused: bool,
+    /// `Some((i, n))` once a split job is working part i of n (1-based);
+    /// `None` for single-output jobs. Serializes as `[i, n]`.
+    pub part: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize)]
@@ -170,6 +173,7 @@ impl Encoder {
             error: None,
             post_error: None,
             reused: false,
+            part: None,
         };
         crate::log_info!(
             "job {id}: enqueued {} ({} bytes) with preset \"{}\" (hash {}, format {:?}, target {} MB)",
@@ -350,6 +354,29 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     let preset_hash = plan::preset_hash(&job.preset);
     let target_bytes = job.preset.target_mb * 1_000_000.0;
 
+    // Split planning needs a probe, but the single-output path must keep its
+    // probe-free reuse short-circuit — so only probe early when splitting is
+    // enabled. A split plan of count 1 (clip too short, or smart already at
+    // GOOD quality) falls through to the single-output path unchanged,
+    // reusing the early probe.
+    if job.preset.split.mode != SplitMode::Off {
+        let info = probe::probe(&job.input).await?;
+        let split = plan::plan_split(&info, &job.preset);
+        if split.count > 1 {
+            return run_split_set(inner, job, &info, split, &preset_hash, target_bytes).await;
+        }
+        return run_single(inner, job, Some(info), &preset_hash, target_bytes).await;
+    }
+    run_single(inner, job, None, &preset_hash, target_bytes).await
+}
+
+async fn run_single(
+    inner: &Arc<Inner>,
+    job: &QueuedJob,
+    pre_probed: Option<probe::ProbeInfo>,
+    preset_hash: &str,
+    target_bytes: f64,
+) -> Result<(), String> {
     // A previous run with this exact preset configuration already produced
     // an output next to the input: reuse it instead of re-encoding — but
     // only when it actually fits the target AND the journal doesn't show it
@@ -359,7 +386,7 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     // unique_output probe, so the fresh encode targets the now-free base
     // expected_output path; an under-target file with mismatched provenance
     // is left alone and the fresh encode lands on a numbered sibling.
-    let expected = plan::expected_output(&job.input, &preset_hash, job.preset.format);
+    let expected = plan::expected_output(&job.input, preset_hash, job.preset.format);
     if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
         if reuse_is_stale(&inner.app, &job.input, &expected) {
             crate::log_info!(
@@ -375,7 +402,12 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
             );
             // Post-actions still run so the reuse behaves like a fresh encode
             // from the user's perspective (clipboard copy / trash original).
-            let post_error = run_post_actions(inner, &job.post, &job.input, &expected);
+            let post_error = run_post_actions(
+                inner,
+                &job.post,
+                &job.input,
+                std::slice::from_ref(&expected),
+            );
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Done;
                 j.progress = 1.0;
@@ -392,7 +424,10 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
         }
     }
 
-    let info = probe::probe(&job.input).await?;
+    let info = match pre_probed {
+        Some(info) => info,
+        None => probe::probe(&job.input).await?,
+    };
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
     if plan.auto_fps.is_some() || plan.auto_width.is_some() {
         let caps: Vec<String> = plan
@@ -513,8 +548,13 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     );
     // Run post-actions first so their failures ride along on the final Done
     // state instead of vanishing into stderr.
-    let post_error = run_post_actions(inner, &job.post, &job.input, &plan.output);
-    append_journal(inner, job, &plan.output, &preset_hash, actual);
+    let post_error = run_post_actions(
+        inner,
+        &job.post,
+        &job.input,
+        std::slice::from_ref(&plan.output),
+    );
+    append_journal(inner, job, &plan.output, preset_hash, actual);
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Done;
         j.progress = 1.0;
@@ -524,6 +564,320 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
         emit_state(inner, &state, true);
     }
     Ok(())
+}
+
+/// Runs a split job: `split.count` (> 1) equal-length parts, each compressed
+/// independently to the preset's FULL byte target through the exact same
+/// per-part pipeline a single-output job uses, trimmed via `-ss`/`-t`.
+/// Reuse is all-or-nothing: only a complete set of fitting, journal-clean
+/// part files short-circuits; anything less is swept and re-encoded. Failure
+/// or cancellation mid-set removes every part of THIS run — a half-set is
+/// useless to post.
+async fn run_split_set(
+    inner: &Arc<Inner>,
+    job: &QueuedJob,
+    info: &probe::ProbeInfo,
+    split: plan::SplitPlan,
+    preset_hash: &str,
+    target_bytes: f64,
+) -> Result<(), String> {
+    let n = split.count;
+    let parts = plan::expected_part_outputs(&job.input, preset_hash, job.preset.format, n);
+    crate::log_info!(
+        "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
+        job.id,
+        info.duration_secs,
+        split.part_secs,
+        job.preset.target_mb
+    );
+
+    // Set-level reuse: every part must exist, fit the target and carry clean
+    // journal provenance — then the whole set is served as-is.
+    if let Some(sizes) = check_reuse_set(&parts, target_bytes) {
+        if parts
+            .iter()
+            .any(|p| reuse_is_stale(&inner.app, &job.input, p))
+        {
+            crate::log_info!(
+                "job {}: not reusing the existing {n}-part set — the journal records different content; re-encoding",
+                job.id
+            );
+        } else {
+            let total: u64 = sizes.iter().sum();
+            crate::log_info!(
+                "job {}: reusing the existing {n}-part set ({total} bytes total)",
+                job.id
+            );
+            let post_error = run_post_actions(inner, &job.post, &job.input, &parts);
+            if let Some(state) = update_job(inner, &job.id, |j| {
+                j.phase = Phase::Done;
+                j.progress = 1.0;
+                j.reused = true;
+                j.part = Some((n, n));
+                j.output_path = Some(parts[0].to_string_lossy().into_owned());
+                j.output_bytes = Some(total);
+                j.post_error = post_error;
+            }) {
+                emit_state(inner, &state, true);
+            }
+            // Deliberately no journal append: the original encode already
+            // recorded these outputs.
+            return Ok(());
+        }
+    }
+    // Anything short of a full clean set is useless: best-effort sweep of
+    // tamp-owned stale part files for this hash (any geometry), then encode
+    // the whole set fresh onto the now-free expected paths.
+    sweep_stale_parts(&plan::expected_output(
+        &job.input,
+        preset_hash,
+        job.preset.format,
+    ));
+
+    match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
+        Ok(total) => {
+            if let Some(state) = update_job(inner, &job.id, |j| {
+                j.phase = Phase::Verifying;
+                j.progress = 1.0;
+            }) {
+                emit_state(inner, &state, true);
+            }
+            crate::log_info!(
+                "job {}: done — {} -> {n} parts ({total} bytes total, each under the {} MB target)",
+                job.id,
+                job.input.display(),
+                job.preset.target_mb
+            );
+            // Clipboard gets ALL parts in order; the original is only ever
+            // trashed once the FULL set succeeded.
+            let post_error = run_post_actions(inner, &job.post, &job.input, &parts);
+            if let Some(state) = update_job(inner, &job.id, |j| {
+                j.phase = Phase::Done;
+                j.progress = 1.0;
+                j.output_bytes = Some(total);
+                j.post_error = post_error;
+            }) {
+                emit_state(inner, &state, true);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            // A half-set is useless: remove this run's promoted parts and any
+            // in-flight temp before failing/cancelling. The pre-encode sweep
+            // already cleared older files at these names, so everything here
+            // is THIS run's own debris.
+            for part in &parts {
+                if part.exists() {
+                    let _ = std::fs::remove_file(part);
+                }
+                let tmp = plan::part_path(part);
+                if tmp.exists() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+/// The encode loop behind [`run_split_set`]: parts 1..=n, each through the
+/// existing per-part pipeline (auto-degradation, convergence retries, .part
+/// temp + promote, enforce_target) with the input trimmed to its slice. The
+/// LAST part takes the remainder so the lengths sum to the exact duration.
+/// Returns the SUM of all part sizes; a failed part aborts the loop (the
+/// caller cleans up the half-set).
+async fn encode_part_set(
+    inner: &Arc<Inner>,
+    job: &QueuedJob,
+    info: &probe::ProbeInfo,
+    split: plan::SplitPlan,
+    parts: &[PathBuf],
+    preset_hash: &str,
+    target_bytes: f64,
+) -> Result<u64, String> {
+    let n = split.count;
+    let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
+
+    if let Some(state) = update_job(inner, &job.id, |j| {
+        j.phase = Phase::Pass1;
+        j.part = Some((1, n));
+        j.output_path = Some(parts[0].to_string_lossy().into_owned());
+    }) {
+        emit_state(inner, &state, true);
+    }
+    update_tray(inner, Some(0.0));
+
+    let c_inner = inner.clone();
+    let c_id = job.id.clone();
+    // shutdown() reads as a cancel at every decision point, exactly like the
+    // single-output path.
+    let is_cancelled = move || {
+        c_inner.shutting_down.load(Ordering::SeqCst)
+            || c_inner.cancelled.lock().unwrap().contains(&c_id)
+    };
+
+    let mut total: u64 = 0;
+    for (idx, output) in parts.iter().enumerate() {
+        let i = idx as u32 + 1;
+        let start = split.part_secs * f64::from(i - 1);
+        let len = if i == n {
+            // The remainder, so float error never drops the final frames.
+            info.duration_secs - split.part_secs * f64::from(n - 1)
+        } else {
+            split.part_secs
+        };
+        let mut part_info = info.clone();
+        part_info.duration_secs = len;
+
+        // The per-part plan sees only the part's duration, so the bitrate
+        // math gives every part the preset's whole byte budget.
+        let mut plan = plan::build_plan(&part_info, &job.preset, &job.input)?;
+        plan.output = output.clone();
+        plan.trim = Some((start, len));
+        if plan.auto_fps.is_some() || plan.auto_width.is_some() {
+            let caps: Vec<String> = plan
+                .auto_fps
+                .map(|f| format!("{f} fps"))
+                .into_iter()
+                .chain(plan.auto_width.map(|w| format!("{w}px")))
+                .collect();
+            crate::log_info!(
+                "job {}: part {i}/{n} auto-capped to {} to fit {} MB ({:.4} bits/pixel/frame)",
+                job.id,
+                caps.join(" and "),
+                job.preset.target_mb,
+                plan.bpp
+            );
+        }
+
+        let cb_inner = inner.clone();
+        let cb_id = job.id.clone();
+        let mut last_phase = Phase::Pass1;
+        let mut on_progress = move |pass: u8, within_part: f64| {
+            let phase = if pass <= 1 {
+                Phase::Pass1
+            } else {
+                Phase::Pass2
+            };
+            let force = phase != last_phase;
+            last_phase = phase;
+            let overall = (f64::from(i - 1) + within_part.clamp(0.0, 1.0)) / f64::from(n);
+            if let Some(state) = update_job(&cb_inner, &cb_id, |j| {
+                j.phase = phase;
+                j.progress = overall;
+                j.part = Some((i, n));
+            }) {
+                emit_state(&cb_inner, &state, force);
+            }
+            update_tray(&cb_inner, Some(overall));
+        };
+
+        let actual = if job.preset.format == OutputFormat::Gif {
+            run_gif(
+                &plan,
+                &part_info,
+                &job.input,
+                target_bytes,
+                &inner.child_slot,
+                &is_cancelled,
+                &mut on_progress,
+            )
+            .await?
+        } else {
+            let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
+            if use_hardware && !hardware_viable(&plan) {
+                crate::log_info!(
+                    "job {}: part {i}/{n} plans {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor; starting on two-pass software directly",
+                    job.id,
+                    plan.bpp
+                );
+                use_hardware = false;
+            }
+            run_video_convergence(
+                &mut plan,
+                &part_info,
+                &job.input,
+                tmp.path(),
+                target_bytes,
+                use_hardware,
+                &inner.child_slot,
+                &is_cancelled,
+                &mut on_progress,
+            )
+            .await?
+        };
+
+        // The same defense in depth as the single-output path: a delivered
+        // part must NEVER be over target.
+        let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+        crate::log_info!(
+            "job {}: part {i}/{n} done — {} ({actual} bytes, target {} MB)",
+            job.id,
+            plan.output.display(),
+            job.preset.target_mb
+        );
+        append_journal(inner, job, &plan.output, preset_hash, actual);
+        total += actual;
+    }
+    Ok(total)
+}
+
+/// Set-level reuse probe: `Some(sizes)` when EVERY path in `parts` is a real
+/// non-empty regular file fitting `target_bytes`; `None` on any miss — a
+/// partial or oversized set is never served. Unlike [`check_reuse`] nothing
+/// is deleted here: the caller sweeps stale part files in one place before
+/// encoding fresh.
+pub fn check_reuse_set(parts: &[PathBuf], target_bytes: f64) -> Option<Vec<u64>> {
+    let mut sizes = Vec::with_capacity(parts.len());
+    for part in parts {
+        let meta = std::fs::symlink_metadata(part).ok()?;
+        if !meta.is_file() || meta.len() == 0 || meta.len() as f64 > target_bytes {
+            return None;
+        }
+        sizes.push(meta.len());
+    }
+    Some(sizes)
+}
+
+/// Best-effort sweep of tamp-owned part files belonging to `expected`'s
+/// configuration: every "{stem} (tamped {hash} p{i}of{n}).{ext}" sibling —
+/// ANY part geometry, so leftovers from a previous split shape go too — is
+/// deleted before a fresh set is encoded. Only regular files are touched;
+/// failures are logged and skipped, never fatal.
+fn sweep_stale_parts(expected: &Path) {
+    let (Some(dir), Some(base_stem), Some(ext)) = (
+        expected.parent(),
+        expected.file_stem().and_then(|s| s.to_str()),
+        expected.extension().and_then(|e| e.to_str()),
+    ) else {
+        return;
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            crate::log_warn!("cannot scan {} for stale part files: {e}", dir.display());
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !plan::is_part_sibling(name, base_stem, ext) {
+            continue;
+        }
+        // DirEntry::metadata does not traverse symlinks, so only a regular
+        // file is ever swept.
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_file(entry.path()) {
+            crate::log_warn!(
+                "cannot remove stale part file {}: {e}",
+                entry.path().display()
+            );
+        }
+    }
 }
 
 /// The reuse short-circuit decision for the worker: `Some(bytes)` when an
@@ -644,6 +998,20 @@ fn enforce_target(
         return Err(retry::give_up_error(target_mb));
     }
     Ok(actual)
+}
+
+/// Emits the input argument(s) for a plan: `-ss {start}` before `-i` and
+/// `-t {len}` right after it when the plan carries a split-part trim, just
+/// `-i {input}` otherwise. Shared by all three engines (two-pass software,
+/// VideoToolbox, GIF) so every attempt of a part encodes the same slice.
+fn apply_trim_input(cmd: &mut tokio::process::Command, plan: &plan::EncodePlan, input: &Path) {
+    if let Some((start, _)) = plan.trim {
+        cmd.arg("-ss").arg(start.to_string());
+    }
+    cmd.arg("-i").arg(input);
+    if let Some((_, len)) = plan.trim {
+        cmd.arg("-t").arg(len.to_string());
+    }
 }
 
 /// The explicit ffmpeg muxer for a plan's container. Encode attempts write
@@ -811,22 +1179,35 @@ async fn convergence_attempts(
 
 /// Runs the post-encode actions per the user's toggles, returning a combined
 /// error string for the Done state's `post_error` when any of them fail.
+/// `outputs` is every file the job delivered — a single output for ordinary
+/// jobs, all parts in order for split jobs — and the clipboard gets the
+/// whole list in one write so multi-file paste works.
 fn run_post_actions(
     inner: &Inner,
     post: &PostActions,
     input: &Path,
-    output: &Path,
+    outputs: &[PathBuf],
 ) -> Option<String> {
     let mut failures: Vec<String> = Vec::new();
     if post.copy_to_clipboard {
-        match crate::platform::copy_file_to_clipboard(&inner.app, output) {
-            Ok(()) => crate::log_info!("copied {} to clipboard", output.display()),
+        match crate::platform::copy_files_to_clipboard(&inner.app, outputs) {
+            Ok(()) => {
+                for output in outputs {
+                    crate::log_info!("copied {} to clipboard", output.display());
+                }
+            }
             Err(e) => {
-                crate::log_error!("copy to clipboard failed for {}: {e}", output.display());
-                failures.push(format!(
-                    "Couldn't copy to clipboard (the file is at {}): {e}",
-                    output.to_string_lossy()
-                ));
+                let shown = outputs
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::log_error!("copy to clipboard failed for {shown}: {e}");
+                let location = match outputs {
+                    [single] => format!("the file is at {}", single.to_string_lossy()),
+                    _ => format!("the {} parts are next to the original", outputs.len()),
+                };
+                failures.push(format!("Couldn't copy to clipboard ({location}): {e}"));
             }
         }
     }
@@ -946,9 +1327,8 @@ pub async fn run_hardware_pass(
         "-nostats",
         "-progress",
         "pipe:1",
-        "-i",
-    ])
-    .arg(input);
+    ]);
+    apply_trim_input(&mut cmd, plan, input);
     if let Some(vf) = &plan.vf {
         cmd.arg("-vf").arg(vf);
     }
@@ -1121,14 +1501,13 @@ async fn run_gif_attempt(
         "-nostats",
         "-progress",
         "pipe:1",
-        "-i",
-    ])
-    .arg(input)
-    .arg("-filter_complex")
-    .arg(plan::gif_filter(fps, max_width))
-    .arg("-an") // GIF never carries audio
-    .args(["-f", muxer(plan.format)])
-    .arg(&plan.output);
+    ]);
+    apply_trim_input(&mut cmd, plan, input);
+    cmd.arg("-filter_complex")
+        .arg(plan::gif_filter(fps, max_width))
+        .arg("-an") // GIF never carries audio
+        .args(["-f", muxer(plan.format)])
+        .arg(&plan.output);
 
     run_ffmpeg_with_progress(
         "gif encode",
@@ -1165,9 +1544,8 @@ async fn run_pass(
         "-nostats",
         "-progress",
         "pipe:1",
-        "-i",
-    ])
-    .arg(input);
+    ]);
+    apply_trim_input(&mut cmd, plan, input);
     if let Some(vf) = &plan.vf {
         cmd.arg("-vf").arg(vf);
     }
@@ -1555,6 +1933,7 @@ mod tests {
             scale_percent: None,
             strip_audio: false,
             format: OutputFormat::Mp4,
+            split: SplitConfig::default(),
         }
     }
 
@@ -1611,5 +1990,126 @@ mod tests {
         assert_eq!(check_reuse(&base, 1000.0), None);
         assert!(base.is_dir(), "the squatting directory must be left alone");
         assert!(!over.exists(), "the over-target sibling must be swept");
+    }
+
+    fn part_set(dir: &Path, n: u32) -> Vec<PathBuf> {
+        (1..=n)
+            .map(|i| dir.join(format!("clip (tamped 823f p{i}of{n}).mp4")))
+            .collect()
+    }
+
+    #[test]
+    fn check_reuse_set_serves_only_a_complete_fitting_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let parts = part_set(dir.path(), 3);
+        for (i, p) in parts.iter().enumerate() {
+            std::fs::write(p, vec![0u8; 100 * (i + 1)]).unwrap();
+        }
+        assert_eq!(check_reuse_set(&parts, 1000.0), Some(vec![100, 200, 300]));
+        // Exactly at the target still reuses — the guarantee is <=.
+        std::fs::write(&parts[2], vec![0u8; 1000]).unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), Some(vec![100, 200, 1000]));
+        // Nothing was deleted by the probe itself.
+        assert!(parts.iter().all(|p| p.exists()));
+    }
+
+    #[test]
+    fn check_reuse_set_rejects_any_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let parts = part_set(dir.path(), 3);
+
+        // One part missing entirely.
+        std::fs::write(&parts[0], vec![0u8; 100]).unwrap();
+        std::fs::write(&parts[1], vec![0u8; 100]).unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), None);
+
+        // One part over target.
+        std::fs::write(&parts[2], vec![0u8; 1001]).unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), None);
+
+        // One part zero-byte (crash leftover).
+        std::fs::write(&parts[2], b"").unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), None);
+
+        // One part not a regular file.
+        std::fs::remove_file(&parts[2]).unwrap();
+        std::fs::create_dir(&parts[2]).unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), None);
+        // The probe never deletes anything — sweeping is the caller's job.
+        assert!(parts[0].exists() && parts[1].exists() && parts[2].exists());
+    }
+
+    #[test]
+    fn check_reuse_set_rejects_a_symlinked_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.mp4");
+        std::fs::write(&real, vec![0u8; 100]).unwrap();
+        let parts = part_set(dir.path(), 2);
+        std::fs::write(&parts[0], vec![0u8; 100]).unwrap();
+        std::os::unix::fs::symlink(&real, &parts[1]).unwrap();
+        assert_eq!(check_reuse_set(&parts, 1000.0), None);
+        assert!(
+            std::fs::symlink_metadata(&parts[1]).unwrap().is_symlink(),
+            "the symlink must be left alone"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_parts_removes_any_part_geometry_of_the_hash_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = dir.path().join("clip (tamped 823f p1of3).mp4");
+        std::fs::write(&mine, vec![0u8; 100]).unwrap();
+        // A leftover from a previous split geometry of the SAME hash.
+        let old_geometry = dir.path().join("clip (tamped 823f p2of7).mp4");
+        std::fs::write(&old_geometry, vec![0u8; 100]).unwrap();
+        // Everything below must survive the sweep.
+        let base = dir.path().join("clip (tamped 823f).mp4");
+        std::fs::write(&base, vec![0u8; 100]).unwrap();
+        let numbered = dir.path().join("clip (tamped 823f 2).mp4");
+        std::fs::write(&numbered, vec![0u8; 100]).unwrap();
+        let other_hash = dir.path().join("clip (tamped ffff p1of3).mp4");
+        std::fs::write(&other_hash, vec![0u8; 100]).unwrap();
+        let other_stem = dir.path().join("other (tamped 823f p1of3).mp4");
+        std::fs::write(&other_stem, vec![0u8; 100]).unwrap();
+        let in_flight = dir.path().join("clip (tamped 823f p1of3).mp4.part");
+        std::fs::write(&in_flight, vec![0u8; 100]).unwrap();
+
+        sweep_stale_parts(&base);
+        assert!(!mine.exists(), "this hash's part files must be swept");
+        assert!(!old_geometry.exists(), "old geometries must be swept too");
+        assert!(base.exists(), "the base output must survive");
+        assert!(numbered.exists(), "numbered siblings must survive");
+        assert!(other_hash.exists(), "other configurations must survive");
+        assert!(other_stem.exists(), "other inputs must survive");
+        assert!(in_flight.exists(), "in-flight temps must survive the sweep");
+    }
+
+    #[test]
+    fn job_state_part_serializes_as_a_pair_under_part() {
+        let state = JobState {
+            id: "j".to_string(),
+            input_path: "/in/clip.mov".to_string(),
+            input_name: "clip.mov".to_string(),
+            output_path: None,
+            preset_id: "p".to_string(),
+            preset_hash: "823f".to_string(),
+            phase: Phase::Pass1,
+            progress: 0.5,
+            input_bytes: 1,
+            output_bytes: None,
+            error: None,
+            post_error: None,
+            reused: false,
+            part: Some((2, 5)),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["part"], serde_json::json!([2, 5]));
+
+        let single = JobState {
+            part: None,
+            ..state
+        };
+        let json = serde_json::to_value(&single).unwrap();
+        assert_eq!(json["part"], serde_json::Value::Null);
     }
 }

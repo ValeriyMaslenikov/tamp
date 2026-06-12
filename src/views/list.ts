@@ -403,6 +403,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
           inputBytes: v.sizeBytes,
           outputBytes: null,
           reused: false,
+          part: null,
           error: null,
           postError: null,
         });
@@ -454,6 +455,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
             inputBytes: v.sizeBytes,
             outputBytes: null,
             reused: false,
+            part: null,
             error: null,
             postError: null,
           });
@@ -783,15 +785,21 @@ export function createListView(getSettings: () => Settings | null): ListView {
       case "pass2":
       case "verifying": {
         const pct = Math.min(100, Math.max(0, Math.round(j.progress * 100)));
+        const partLabel = j.part ? ` · Part ${j.part[0]}/${j.part[1]}` : "";
         status.innerHTML =
           `<span class="status-pct">${pct}%</span>` +
-          `<span class="status-dim">${PHASE_LABELS[j.phase] ?? ""}</span>`;
+          `<span class="status-dim">${PHASE_LABELS[j.phase] ?? ""}${partLabel}</span>`;
         bar.style.width = `${pct}%`;
         break;
       }
       case "done": {
         const outB = j.outputBytes ?? 0;
-        let html = `<span class="done-stat">${formatBytes(j.inputBytes)} → ${formatBytes(outB)}</span>`;
+        // Split jobs produced n part files; outputBytes is their summed size.
+        const parts = j.part && j.part[1] > 1 ? j.part[1] : null;
+        const outText = parts
+          ? `${parts} parts · ${formatBytes(outB)}`
+          : formatBytes(outB);
+        let html = `<span class="done-stat">${formatBytes(j.inputBytes)} → ${outText}</span>`;
         if (j.reused) {
           html += `<span class="done-smaller">Already compressed — reused</span>`;
         } else {

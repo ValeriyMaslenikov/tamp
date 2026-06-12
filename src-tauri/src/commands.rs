@@ -266,6 +266,9 @@ pub struct CustomConfig {
     pub scale_percent: Option<u32>,
     pub strip_audio: bool,
     pub format: OutputFormat,
+    // Older frontends omit the field; default keeps splitting off.
+    #[serde(default)]
+    pub split: crate::settings::SplitConfig,
 }
 
 #[tauri::command]
@@ -278,6 +281,7 @@ pub fn custom_convert(
     if !config.target_mb.is_finite() || config.target_mb <= 0.0 {
         return Err("target size must be greater than 0".to_string());
     }
+    settings::validate_split(&config.split)?;
     let preset = Preset {
         id: "custom".into(),
         name: "Custom".into(),
@@ -287,6 +291,7 @@ pub fn custom_convert(
         scale_percent: config.scale_percent,
         strip_audio: config.strip_audio,
         format: config.format,
+        split: config.split,
     };
     enqueue_preset(&app, path, preset)
 }
@@ -370,6 +375,39 @@ mod tests {
             (INPUT, Phase::Cancelled, "eb3d"),
         ];
         assert!(!trash_conflicts(jobs, INPUT, "d6e4"));
+    }
+
+    #[test]
+    fn custom_config_without_split_defaults_to_off() {
+        // The payload an older frontend (pre-split) sends must keep working.
+        let json = r#"{
+            "targetMb": 10.0,
+            "maxFps": null,
+            "maxWidth": null,
+            "scalePercent": null,
+            "stripAudio": false,
+            "format": "mp4"
+        }"#;
+        let config: CustomConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.split, crate::settings::SplitConfig::default());
+        assert_eq!(config.split.mode, crate::settings::SplitMode::Off);
+    }
+
+    #[test]
+    fn custom_config_split_deserializes_camel_case() {
+        let json = r#"{
+            "targetMb": 10.0,
+            "maxFps": null,
+            "maxWidth": null,
+            "scalePercent": null,
+            "stripAudio": false,
+            "format": "mp4",
+            "split": { "mode": "static", "by": "seconds", "parts": 2, "seconds": 45 }
+        }"#;
+        let config: CustomConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.split.mode, crate::settings::SplitMode::Static);
+        assert_eq!(config.split.by, crate::settings::StaticSplitBy::Seconds);
+        assert_eq!(config.split.seconds, 45);
     }
 
     #[test]
