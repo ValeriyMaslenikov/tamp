@@ -1,4 +1,4 @@
-@font-face {
+﻿@font-face {
   font-family: "Poppins";
   font-style: normal;
   font-weight: 400;
@@ -292,7 +292,7 @@ textarea {
   overflow: hidden;
 }
 
-/* Magnifier next to the file name; reveals the file in Finder. */
+/* Magnifier next to the file name; reveals the file in the file manager. */
 .row-reveal {
   display: inline-flex;
   align-items: center;
@@ -437,7 +437,7 @@ textarea {
   color: var(--text);
 }
 
-/* "›" rotates into "˅" while the row is expanded. */
+/* "â€º" rotates into "Ë…" while the row is expanded. */
 .row.is-expanded .row-chevron {
   transform: rotate(90deg);
 }

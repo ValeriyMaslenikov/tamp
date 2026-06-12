@@ -6,6 +6,7 @@ import {
   onSettingsChanged,
   type Settings,
 } from "./lib/ipc";
+import { initPlatform } from "./lib/platform";
 import { initToast, showToast } from "./lib/toast";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
@@ -79,6 +80,7 @@ function main(): void {
   });
 
   void (async () => {
+    await initPlatform();
     try {
       settings = await getSettings();
       prefsView.render(settings);
