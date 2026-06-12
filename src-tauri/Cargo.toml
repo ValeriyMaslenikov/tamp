@@ -19,9 +19,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# macos-private-api must live HERE, not in the macOS target table:
-# tauri-build validates the base feature list against tauri.macos.conf.json's
-# macOSPrivateApi flag. The feature is inert on Windows/Linux.
+# macos-private-api stays in the base features and macOSPrivateApi in the
+# base tauri.conf.json: tauri-build enforces feature ↔ flag equality on the
+# MERGED config of whichever platform is building. Both are inert outside
+# macOS.
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "protocol-asset"] }
 tauri-plugin-store = "2"
 tauri-plugin-autostart = "2"
