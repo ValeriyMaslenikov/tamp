@@ -42,9 +42,15 @@ async function download(url: string, to: string): Promise<void> {
   await Bun.write(to, res);
 }
 
-/** bsdtar ships with both macOS and Windows 10+ and extracts zips. */
+/**
+ * bsdtar ships with both macOS and Windows 10+ and extracts zips. On Windows
+ * it must be the System32 binary by absolute path: in Git Bash environments
+ * (GitHub Actions `shell: bash`) a plain `tar` resolves to GNU tar, which
+ * parses `C:\…` as a remote host ("Cannot connect to C").
+ */
 async function extract(zip: string, into: string): Promise<void> {
-  const p = Bun.spawn(["tar", "-xf", zip, "-C", into]);
+  const tar = os === "win32" ? "C:\\Windows\\System32\\tar.exe" : "tar";
+  const p = Bun.spawn([tar, "-xf", zip, "-C", into]);
   if ((await p.exited) !== 0) throw new Error(`tar failed on ${zip}`);
 }
 
