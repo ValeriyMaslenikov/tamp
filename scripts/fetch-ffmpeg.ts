@@ -35,11 +35,31 @@ const exe = os === "win32" ? ".exe" : "";
 const destDir = join(import.meta.dir, "..", "src-tauri", "binaries");
 await mkdir(destDir, { recursive: true });
 
+/**
+ * curl rather than fetch(): it ships everywhere this runs (macOS, Windows
+ * 10+, GitHub runners), and martin-riedl.de has been seen stalling Bun's
+ * fetch indefinitely on CI while curl downloads fine. Hard timeouts keep a
+ * bad mirror from hanging a CI job for hours.
+ */
 async function download(url: string, to: string): Promise<void> {
   console.log(`↓ ${url}`);
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  await Bun.write(to, res);
+  const p = Bun.spawn(
+    [
+      "curl",
+      "-fsSL",
+      "--retry",
+      "3",
+      "--connect-timeout",
+      "30",
+      "--max-time",
+      "600",
+      "-o",
+      to,
+      url,
+    ],
+    { stdout: "inherit", stderr: "inherit" },
+  );
+  if ((await p.exited) !== 0) throw new Error(`curl failed for ${url}`);
 }
 
 /**
