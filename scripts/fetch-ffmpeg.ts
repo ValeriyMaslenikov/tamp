@@ -84,6 +84,48 @@ async function run(cmd: string[]): Promise<number> {
   return await p.exited;
 }
 
+/**
+ * Resolves the download URL + inner folder name of the newest BtbN
+ * FFmpeg-Builds asset matching `suffix` (e.g. "win64-gpl"), via the GitHub
+ * API. Deliberately skips the rolling `latest` release — its assets are
+ * deleted and recreated nightly, so they 404 mid-republish (the reason a
+ * direct `latest` download is flaky). The dated `autobuild-*` releases are
+ * immutable, so the asset URL we return never 404s. The inner folder inside
+ * each zip equals the asset name without ".zip".
+ */
+async function resolveBtbnAsset(
+  suffix: string,
+): Promise<{ url: string; inner: string }> {
+  const headers: Record<string, string> = {
+    "User-Agent": "tamp-fetch-ffmpeg",
+    Accept: "application/vnd.github+json",
+  };
+  // Raises the 60/hr anonymous rate limit when a token is present (CI).
+  if (process.env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  }
+  const res = await fetch(
+    "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=30",
+    { headers },
+  );
+  if (!res.ok) throw new Error(`GitHub API ${res.status} listing BtbN releases`);
+  const releases = (await res.json()) as Array<{
+    tag_name: string;
+    assets: Array<{ name: string; browser_download_url: string }>;
+  }>;
+  for (const rel of releases) {
+    if (rel.tag_name === "latest") continue; // skip the volatile rolling release
+    const asset = rel.assets.find((a) => a.name.endsWith(`-${suffix}.zip`));
+    if (asset) {
+      return {
+        url: asset.browser_download_url,
+        inner: asset.name.replace(/\.zip$/, ""),
+      };
+    }
+  }
+  throw new Error(`no ${suffix} asset in the 30 most recent BtbN releases`);
+}
+
 const dests = (["ffmpeg", "ffprobe"] as const).map((bin) => ({
   bin,
   dest: join(destDir, `${bin}-${triple}${exe}`),
@@ -117,21 +159,14 @@ if (dests.every(({ dest }) => existsSync(dest))) {
   // libvpx (no WebM/VP9), and Windows 11 runs x64 binaries transparently via
   // emulation. Codec parity beats native speed; flip to winarm64 once it
   // ships libvpx.
-  const name = "ffmpeg-master-latest-win64-gpl";
+  const { url, inner } = await resolveBtbnAsset("win64-gpl");
   const tmp = await mkdtemp(join(tmpdir(), "tamp-ffmpeg-"));
-  const zip = join(tmp, `${name}.zip`);
-  // Pull from the permanently-tagged `latest` release, NOT `releases/latest`:
-  // GitHub's "latest release" pointer drifts to BtbN's dated autobuilds,
-  // whose assets are version-named (ffmpeg-N-…) and 404 against the stable
-  // `master-latest` filenames. The `latest` tag always carries them.
-  await download(
-    `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${name}.zip`,
-    zip,
-  );
+  const zip = join(tmp, "ffmpeg.zip");
+  await download(url, zip);
   await extract(zip, tmp);
   for (const { bin, dest } of dests) {
     if (existsSync(dest)) continue;
-    await copyFile(join(tmp, name, "bin", `${bin}${exe}`), dest);
+    await copyFile(join(tmp, inner, "bin", `${bin}${exe}`), dest);
     console.log(`✓ ${dest}`);
   }
   await rm(tmp, { recursive: true, force: true });
