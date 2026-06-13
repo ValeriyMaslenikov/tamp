@@ -71,7 +71,7 @@ pub fn build_plan(info: &ProbeInfo, preset: &Preset, input: &Path) -> Result<Enc
         return Err("Video has no measurable duration".to_string());
     }
 
-    let output = unique_output(input, &preset_hash(preset), preset.format);
+    let output = unique_output(input, &preset.name, &preset_hash(preset), preset.format);
 
     // GIF skips the bitrate math entirely (so a small target on a long clip
     // is not an error here) and never carries audio; fps/width live in the
@@ -468,32 +468,86 @@ fn input_stem(input: &Path) -> String {
         .unwrap_or_else(|| "video".to_string())
 }
 
+/// Longest preset-name label embedded in an output name — keeps the readable
+/// label from pushing paths toward MAX_PATH.
+const MAX_NAME_LEN: usize = 24;
+
+/// A filesystem- and grammar-safe label for a preset's name, or `None` when
+/// nothing usable survives. Drops characters illegal in filenames or that
+/// would break the "(tamped …)" grammar (`< > : " / \ | ? * ( )` and
+/// control chars), collapses runs of whitespace to single spaces, and
+/// truncates to [`MAX_NAME_LEN`] chars. The hash — never the name — remains
+/// the reuse key, so two presets sanitizing to the same label still keep
+/// distinct outputs.
+pub fn sanitize_preset_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '(' | ')' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.chars().take(MAX_NAME_LEN).collect::<String>();
+    let trimmed = trimmed.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The "(tamped …)" stem fragment for an output: "(tamped Discord 823f)" with
+/// a sanitized preset name, or the bare "(tamped 823f)" when the name yields
+/// nothing usable.
+fn tamped_label(name: &str, hash: &str) -> String {
+    match sanitize_preset_name(name) {
+        Some(n) => format!("(tamped {n} {hash})"),
+        None => format!("(tamped {hash})"),
+    }
+}
+
 /// The collision-free base output path for `input` under a preset `hash`:
 /// "{stem} (tamped {hash}).mp4|.webm|.gif" next to the input. The worker
 /// probes this exact path before encoding — when it already exists the
 /// previous output is reused instead of re-encoding.
-pub fn expected_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
+pub fn expected_output(input: &Path, name: &str, hash: &str, format: OutputFormat) -> PathBuf {
     let dir = input.parent().unwrap_or_else(|| Path::new("."));
     let ext = extension(format);
-    dir.join(format!("{} (tamped {hash}).{ext}", input_stem(input)))
+    dir.join(format!(
+        "{} {}.{ext}",
+        input_stem(input),
+        tamped_label(name, hash)
+    ))
 }
 
-/// The fixed output paths for an `n`-part split of `input` under a preset
-/// `hash`: "{stem} (tamped {hash} p{i}of{n}).{ext}" for i in 1..=n, next to
-/// the input. Part names carry no collision counter — the worker sweeps
-/// stale part files for the hash before encoding a fresh set, so these exact
-/// paths are always the destination.
+/// The folder a multi-part split writes into: "{stem} (tamped {name} {hash})"
+/// next to the input — a directory, no extension. Parts live inside it so the
+/// recordings list (which scans one level deep, files only) is never
+/// cluttered with the individual parts.
+pub fn expected_part_folder(input: &Path, name: &str, hash: &str) -> PathBuf {
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    dir.join(format!(
+        "{} {}",
+        input_stem(input),
+        tamped_label(name, hash)
+    ))
+}
+
+/// The fixed output paths for an `n`-part split of `input`: "{stem} {i}.{ext}"
+/// for i in 1..=n, inside [`expected_part_folder`]. The folder name carries
+/// the preset+hash; the parts inside stay short. Part names carry no
+/// collision counter — the worker clears the folder before encoding a fresh
+/// set, so these exact paths are always the destination.
 pub fn expected_part_outputs(
     input: &Path,
+    name: &str,
     hash: &str,
     format: OutputFormat,
     n: u32,
 ) -> Vec<PathBuf> {
-    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    let folder = expected_part_folder(input, name, hash);
     let stem = input_stem(input);
     let ext = extension(format);
     (1..=n)
-        .map(|i| dir.join(format!("{stem} (tamped {hash} p{i}of{n}).{ext}")))
+        .map(|i| folder.join(format!("{stem} {i}.{ext}")))
         .collect()
 }
 
@@ -509,6 +563,18 @@ pub fn part_path(output: &Path) -> PathBuf {
         .unwrap_or_default();
     name.push(".part");
     output.with_file_name(name)
+}
+
+/// Removes whatever sits at `dir` (a stale part folder, or a file squatting
+/// the name) and creates a fresh empty directory there — so a split always
+/// encodes into a clean folder.
+pub fn reset_dir(dir: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(dir)?,
+        Ok(_) => std::fs::remove_file(dir)?,
+        Err(_) => {} // nothing there yet
+    }
+    std::fs::create_dir_all(dir)
 }
 
 /// The single token a sibling of the base output carries between the base
@@ -527,6 +593,11 @@ fn sibling_token<'a>(name: &'a str, base_stem: &str, ext: &str) -> Option<&'a st
 /// A non-empty all-digits collision counter ("2", "17").
 fn is_counter_token(t: &str) -> bool {
     !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Exactly 4 lowercase hex chars — the shape [`preset_hash`] emits.
+fn is_preset_hash(t: &str) -> bool {
+    t.len() == 4 && t.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// A split-part token: exactly `p<digits>of<digits>` ("p2of5"). Purely
@@ -550,25 +621,20 @@ pub fn is_numbered_sibling(name: &str, base_stem: &str, ext: &str) -> bool {
     sibling_token(name, base_stem, ext).is_some_and(is_counter_token)
 }
 
-/// True when `name` is a split-part sibling of the base output whose stem is
-/// `base_stem`: exactly "{stem} (tamped {hash} p{i}of{n}).{ext}" for ANY
-/// digit runs i/n — leftovers from a previous split geometry match too, so a
-/// stale-set sweep catches them all. Numbered siblings, the base output and
-/// `.part` files all fail.
-pub fn is_part_sibling(name: &str, base_stem: &str, ext: &str) -> bool {
-    sibling_token(name, base_stem, ext).is_some_and(is_part_token)
-}
-
-fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
-    let candidate = expected_output(input, hash, format);
+fn unique_output(input: &Path, name: &str, hash: &str, format: OutputFormat) -> PathBuf {
+    let candidate = expected_output(input, name, hash, format);
     if !candidate.exists() {
         return candidate;
     }
     let dir = input.parent().unwrap_or_else(|| Path::new("."));
     let stem = input_stem(input);
     let ext = extension(format);
+    // The collision counter goes INSIDE the parens after the hash:
+    // "{stem} (tamped {name} {hash} {n}).{ext}".
+    let label = tamped_label(name, hash);
+    let label_open = label.strip_suffix(')').unwrap_or(&label);
     for n in 2u32.. {
-        let candidate = dir.join(format!("{stem} (tamped {hash} {n}).{ext}"));
+        let candidate = dir.join(format!("{stem} {label_open} {n}).{ext}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -577,40 +643,50 @@ fn unique_output(input: &Path, hash: &str, format: OutputFormat) -> PathBuf {
 }
 
 /// Recognises tamp output stems, returning the derived original stem (the
-/// stem with the whole tamp suffix removed). The scanner and the planner
-/// must agree on this pattern. Accepted suffixes:
+/// stem with the whole tamp suffix removed). The scanner shares this exact
+/// recognizer (it delegates here). Accepted suffixes:
 /// " (tamped)" / " (tamped 2)" (legacy, pre-hash),
 /// " (tamped 823f)" / " (tamped 823f 2)" (current, 4 lowercase hex chars),
-/// and " (tamped 823f p2of5)" (split parts). After the optional hash there
-/// is EITHER a collision counter OR a part token — never both.
+/// " (tamped 823f p2of5)" (legacy split parts), and the named forms
+/// " (tamped Discord 823f)" / " (tamped Discord 823f 2)". After the hash
+/// there is EITHER a collision counter OR a part token — never both.
 pub fn output_original_stem(stem: &str) -> Option<&str> {
     const MARKER: &str = " (tamped";
     let inner = stem.strip_suffix(')')?;
     let idx = inner.rfind(MARKER)?;
     let original = &inner[..idx];
     let rest = &inner[idx + MARKER.len()..];
+    valid_suffix_args(rest).then_some(original)
+}
+
+/// Whether `rest` — the text between "(tamped" and its closing ")" — is a
+/// valid tamp suffix. The hash is always the token immediately before any
+/// counter/part token; any leading words are the (cosmetic) preset name. The
+/// nameless current/legacy forms fall out as the empty-name cases, so every
+/// pre-existing output still parses.
+fn valid_suffix_args(rest: &str) -> bool {
     if rest.is_empty() {
-        return Some(original); // legacy "{stem} (tamped)"
+        return true; // "(tamped)"
     }
-    let mut tokens = rest.strip_prefix(' ')?.split(' ');
-    let first = tokens.next()?;
-    let second = tokens.next();
-    if tokens.next().is_some() {
-        return None;
-    }
-    let is_hash = first.len() == 4
-        && first
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    let recognised = match second {
-        // "{stem} (tamped 823f)", legacy "{stem} (tamped 2)", or a bare part
-        // token (the planner always writes the hash before it; accepted for
-        // parity with the scanner's recognizer)
-        None => is_hash || is_counter_token(first) || is_part_token(first),
-        // "{stem} (tamped 823f 2)" or "{stem} (tamped 823f p2of5)"
-        Some(second) => is_hash && (is_counter_token(second) || is_part_token(second)),
+    let Some(rest) = rest.strip_prefix(' ') else {
+        return false;
     };
-    recognised.then_some(original)
+    let tokens: Vec<&str> = rest.split(' ').collect();
+    match tokens.as_slice() {
+        // "(tamped 823f)", legacy "(tamped 2)" / "(tamped p1of2)"
+        [t] => is_preset_hash(t) || is_counter_token(t) || is_part_token(t),
+        // "(tamped [name…] 823f 2|p1of2)" — name may be empty (current form)
+        [name @ .., hash, arg]
+            if is_preset_hash(hash) && (is_counter_token(arg) || is_part_token(arg)) =>
+        {
+            name.iter().all(|w| !w.is_empty())
+        }
+        // "(tamped name… 823f)" — at least one name word before the hash
+        [name @ .., hash] if is_preset_hash(hash) && !name.is_empty() => {
+            name.iter().all(|w| !w.is_empty())
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -621,7 +697,9 @@ mod tests {
     fn preset(target_mb: f64) -> Preset {
         Preset {
             id: "test".to_string(),
-            name: "Test".to_string(),
+            // Empty so output-name assertions below see the bare hashed form;
+            // the named format has its own dedicated tests.
+            name: String::new(),
             target_mb,
             max_fps: None,
             max_width: None,
@@ -1042,20 +1120,31 @@ mod tests {
 
     #[test]
     fn expected_output_is_the_base_hashed_name() {
+        // Empty preset name → the bare hashed form (every pre-name output).
         assert_eq!(
-            expected_output(Path::new(INPUT), "823f", OutputFormat::Mp4),
+            expected_output(Path::new(INPUT), "", "823f", OutputFormat::Mp4),
             PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f).mp4")
+        );
+        // A name is sanitized and placed before the hash.
+        assert_eq!(
+            expected_output(
+                Path::new(INPUT),
+                "Discord (10MB)",
+                "823f",
+                OutputFormat::Mp4
+            ),
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped Discord 10MB 823f).mp4")
         );
     }
 
     #[test]
     fn output_extension_follows_format() {
         assert_eq!(
-            expected_output(Path::new(INPUT), "8dd6", OutputFormat::Webm),
+            expected_output(Path::new(INPUT), "", "8dd6", OutputFormat::Webm),
             PathBuf::from("/nonexistent-tamp-test/clip (tamped 8dd6).webm")
         );
         assert_eq!(
-            expected_output(Path::new(INPUT), "270f", OutputFormat::Gif),
+            expected_output(Path::new(INPUT), "", "270f", OutputFormat::Gif),
             PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f).gif")
         );
 
@@ -1528,55 +1617,37 @@ mod tests {
     }
 
     #[test]
-    fn expected_part_outputs_name_parts_one_based() {
+    fn expected_part_outputs_live_in_a_named_folder() {
         assert_eq!(
-            expected_part_outputs(Path::new(INPUT), "823f", OutputFormat::Mp4, 3),
+            expected_part_outputs(
+                Path::new(INPUT),
+                "Discord (10MB)",
+                "823f",
+                OutputFormat::Mp4,
+                3
+            ),
             vec![
-                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p1of3).mp4"),
-                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p2of3).mp4"),
-                PathBuf::from("/nonexistent-tamp-test/clip (tamped 823f p3of3).mp4"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped Discord 10MB 823f)/clip 1.mp4"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped Discord 10MB 823f)/clip 2.mp4"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped Discord 10MB 823f)/clip 3.mp4"),
             ]
         );
+        // Empty name → folder carries just the hash.
         assert_eq!(
-            expected_part_outputs(Path::new(INPUT), "270f", OutputFormat::Gif, 2),
+            expected_part_outputs(Path::new(INPUT), "", "270f", OutputFormat::Gif, 2),
             vec![
-                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f p1of2).gif"),
-                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f p2of2).gif"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f)/clip 1.gif"),
+                PathBuf::from("/nonexistent-tamp-test/clip (tamped 270f)/clip 2.gif"),
             ]
         );
     }
 
     #[test]
-    fn matches_part_siblings_of_the_exact_base_output() {
-        let base = "clip (tamped 823f)";
-        // Any part geometry of this hash matches…
-        assert!(is_part_sibling("clip (tamped 823f p1of3).mp4", base, "mp4"));
-        assert!(is_part_sibling("clip (tamped 823f p2of7).mp4", base, "mp4"));
-        assert!(is_part_sibling(
-            "clip (tamped 823f p10of20).mp4",
-            base,
-            "mp4"
-        ));
-        for name in [
-            "clip (tamped 823f).mp4",            // the base output itself
-            "clip (tamped 823f 2).mp4",          // a numbered sibling
-            "clip (tamped 823f p1of3).gif",      // wrong extension
-            "clip (tamped ffff p1of3).mp4",      // different hash
-            "other (tamped 823f p1of3).mp4",     // different stem
-            "clip (tamped 823f pof3).mp4",       // missing index digits
-            "clip (tamped 823f p1of).mp4",       // missing count digits
-            "clip (tamped 823f pxofy).mp4",      // not digits
-            "clip (tamped 823f p1of3).mp4.part", // in-flight temp
-            "clip (tamped 823f p1of3 2).mp4",    // part + counter
-        ] {
-            assert!(!is_part_sibling(name, base, "mp4"), "{name}");
-        }
-        // …and the numbered-sibling matcher never claims part names.
-        assert!(!is_numbered_sibling(
-            "clip (tamped 823f p1of3).mp4",
-            base,
-            "mp4"
-        ));
+    fn expected_part_folder_omits_the_extension() {
+        assert_eq!(
+            expected_part_folder(Path::new(INPUT), "Discord (10MB)", "823f"),
+            PathBuf::from("/nonexistent-tamp-test/clip (tamped Discord 10MB 823f)")
+        );
     }
 
     #[test]
@@ -1662,6 +1733,26 @@ mod tests {
         assert_eq!(output_original_stem("clip (tamped 823f)"), Some("clip"));
         assert_eq!(output_original_stem("clip (tamped 823f 2)"), Some("clip"));
         assert_eq!(output_original_stem("clip (tamped 0042 12)"), Some("clip"));
+        // named (one or more name words before the hash)
+        assert_eq!(
+            output_original_stem("clip (tamped Discord 823f)"),
+            Some("clip")
+        );
+        assert_eq!(
+            output_original_stem("clip (tamped Discord 10MB 823f)"),
+            Some("clip")
+        );
+        assert_eq!(
+            output_original_stem("clip (tamped Discord 823f 2)"),
+            Some("clip")
+        );
+        assert_eq!(
+            output_original_stem("clip (tamped Slack 823f p2of5)"),
+            Some("clip")
+        );
+        // a name word may itself look like a counter — the hash is still the
+        // token before the closing paren / arg
+        assert_eq!(output_original_stem("clip (tamped 2 823f)"), Some("clip"));
         // outputs of outputs keep the inner suffix
         assert_eq!(
             output_original_stem("clip (tamped) (tamped 823f)"),
@@ -1678,16 +1769,56 @@ mod tests {
             "clip (tamped )",
             "clip (tamped x)",
             "clip (tamped xyz)",
-            "clip (tamped 823F)",   // hashes are lowercase
-            "clip (tamped 823f5)",  // 5 chars is neither hash nor counter
-            "clip (tamped abc)",    // 3-char hex is not a hash
-            "clip (tamped 823f x)", // counter must be digits
-            "clip (tamped 2 823f)", // counter cannot precede the hash
+            "clip (tamped 823F)",      // hashes are lowercase
+            "clip (tamped 823f5)",     // 5 chars is neither hash nor counter
+            "clip (tamped abc)",       // 3-char hex is not a hash
+            "clip (tamped 823f x)",    // counter must be digits
+            "clip (tamped Discord)",   // a name needs a trailing hash
+            "clip (tamped Discord 2)", // …a counter is not a hash
             "clip (tamped 823f 2 3)",
             "clip (tamped) more",
             "(tamped)",
         ] {
             assert_eq!(output_original_stem(stem), None, "{stem}");
         }
+    }
+
+    #[test]
+    fn sanitize_preset_name_strips_unsafe_chars_and_truncates() {
+        assert_eq!(
+            sanitize_preset_name("Discord (10MB)").as_deref(),
+            Some("Discord 10MB")
+        );
+        assert_eq!(
+            sanitize_preset_name("Slack/Email").as_deref(),
+            Some("Slack Email")
+        );
+        assert_eq!(
+            sanitize_preset_name("  spaced   out  ").as_deref(),
+            Some("spaced out")
+        );
+        // illegal-only and empty sanitize to nothing (caller falls back to the
+        // bare hash)
+        assert_eq!(sanitize_preset_name("////"), None);
+        assert_eq!(sanitize_preset_name(""), None);
+        // truncated to MAX_NAME_LEN chars, then re-trimmed
+        let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(
+            sanitize_preset_name(long).unwrap().chars().count(),
+            MAX_NAME_LEN
+        );
+    }
+
+    #[test]
+    fn named_output_round_trips_to_the_original_stem() {
+        // A single named output's stem derives back to the original recording.
+        let out = expected_output(
+            Path::new(INPUT),
+            "Discord (10MB)",
+            "823f",
+            OutputFormat::Mp4,
+        );
+        let stem = out.file_stem().unwrap().to_str().unwrap();
+        assert_eq!(output_original_stem(stem), Some("clip"));
     }
 }
