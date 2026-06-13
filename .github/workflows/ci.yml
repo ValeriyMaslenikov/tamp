@@ -27,6 +27,9 @@ jobs:
       matrix:
         os: [macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -38,10 +41,8 @@ jobs:
           workspaces: src-tauri
       - name: Build frontend (tauri's generate_context! embeds ../dist)
         run: bun install --frozen-lockfile && bun run build
-        shell: bash
       - name: Fetch FFmpeg sidecars (used by integration tests)
         run: bun scripts/fetch-ffmpeg.ts
-        shell: bash
       - name: rustfmt
         run: cargo fmt --check
         working-directory: src-tauri

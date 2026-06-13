@@ -33,6 +33,29 @@ pub struct TrayProgress {
     pub queued: usize,
 }
 
+impl TrayProgress {
+    /// Whole percent (0..=100) every strategy displays.
+    pub fn percent(&self) -> u32 {
+        (self.fraction.clamp(0.0, 1.0) * 100.0).round() as u32
+    }
+}
+
+/// Clipboard implementations need their paths as UTF-8; reject (rather than
+/// mangle) the exotic ones so the error names the offending file.
+fn paths_to_utf8(paths: &[PathBuf]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Err("no files to copy".to_string());
+    }
+    paths
+        .iter()
+        .map(|p| {
+            p.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))
+        })
+        .collect()
+}
+
 /// One hardware H.264 encoder this OS may offer; the encoder probes the
 /// bundled ffmpeg for availability before use.
 pub struct HwCandidate {

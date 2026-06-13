@@ -25,7 +25,7 @@ pub async fn available_candidates() -> &'static [&'static HwCandidate] {
             let available: Vec<&'static HwCandidate> = crate::platform::native()
                 .hw_candidates()
                 .iter()
-                .filter(|c| names.contains(c.name))
+                .filter(|c| names.iter().any(|n| n == c.name))
                 .collect();
             crate::log_info!(
                 "hardware encoder candidates: [{}]",
@@ -40,7 +40,12 @@ pub async fn available_candidates() -> &'static [&'static HwCandidate] {
         .await
 }
 
-async fn encoder_list() -> Result<String, String> {
+/// Video encoder names from `ffmpeg -encoders`. Each table row is
+/// ` <flags> <name> <description>`, flags starting with `V` for video —
+/// parsing the name token (rather than substring-matching the whole output)
+/// keeps a description that happens to mention another encoder from
+/// producing a false positive.
+async fn encoder_list() -> Result<Vec<String>, String> {
     let out = crate::platform::background_command(super::bin::ffmpeg_path())
         .args(["-hide_banner", "-encoders"])
         .stdin(std::process::Stdio::null())
@@ -50,5 +55,15 @@ async fn encoder_list() -> Result<String, String> {
     if !out.status.success() {
         return Err(format!("ffmpeg -encoders exited with {}", out.status));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut tokens = line.split_whitespace();
+            let flags = tokens.next()?;
+            if !flags.starts_with('V') {
+                return None;
+            }
+            tokens.next().map(str::to_string)
+        })
+        .collect())
 }

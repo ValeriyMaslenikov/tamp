@@ -50,7 +50,7 @@ impl Platform for MacOs {
     fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
         // Tray title text next to the icon is a macOS-only capability.
         let text = progress.map(|p| {
-            let pct = (p.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+            let pct = p.percent();
             if p.queued > 0 {
                 format!("{pct}% (+{})", p.queued)
             } else {
@@ -91,17 +91,7 @@ fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
 /// `writeObjects` call — one clearContents, one NSArray — so pasting into
 /// Finder/Discord drops the whole set at once.
 fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
-    if paths.is_empty() {
-        return Err("no files to copy".to_string());
-    }
-    let path_strs = paths
-        .iter()
-        .map(|p| {
-            p.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))
-        })
-        .collect::<Result<Vec<String>, String>>()?;
+    let path_strs = super::paths_to_utf8(paths)?;
 
     // NSPasteboard must be used from the main thread; ship the result back
     // over a channel since run_on_main_thread takes a fire-and-forget closure.

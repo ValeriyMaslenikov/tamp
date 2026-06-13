@@ -54,6 +54,9 @@ jobs:
           - os: windows-11-arm
             bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -62,15 +65,11 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
-        shell: bash
       - run: bun scripts/fetch-ffmpeg.ts
-        shell: bash
       - name: Build app bundle
         run: bun tauri build
-        shell: bash
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
-        shell: bash
         run: gh release upload "v${VERSION}" ${{ matrix.bundle-glob }} --clobber

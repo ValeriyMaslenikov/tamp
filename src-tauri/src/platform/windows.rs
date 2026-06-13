@@ -17,17 +17,7 @@ impl Platform for Windows {
         _app: &tauri::AppHandle,
         paths: &[PathBuf],
     ) -> Result<(), String> {
-        if paths.is_empty() {
-            return Err("no files to copy".to_string());
-        }
-        let path_strs = paths
-            .iter()
-            .map(|p| {
-                p.to_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))
-            })
-            .collect::<Result<Vec<String>, String>>()?;
+        let path_strs = super::paths_to_utf8(paths)?;
         let _clip = clipboard_win::Clipboard::new_attempts(10)
             .map_err(|e| format!("cannot open clipboard: {e}"))?;
         clipboard_win::raw::set_file_list(&path_strs)
@@ -76,12 +66,25 @@ impl Platform for Windows {
     /// Windows tray icons can't carry text, so progress is a rendered ring
     /// icon plus the exact percentage in the tooltip.
     fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
+        // ffmpeg reports progress every few hundred ms; re-rasterizing the
+        // ring and poking the shell is only worth it when the DISPLAYED
+        // state (whole percent + queue depth) actually changed. u64::MAX
+        // marks idle so the first report after it always draws.
+        static LAST_SHOWN: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(u64::MAX);
+        let shown = progress.map_or(u64::MAX, |p| {
+            (p.percent() as u64) << 32 | p.queued.min(u32::MAX as usize) as u64
+        });
+        if LAST_SHOWN.swap(shown, std::sync::atomic::Ordering::Relaxed) == shown {
+            return;
+        }
+
         let Some(tray) = app.tray_by_id("main") else {
             return;
         };
         let result = match progress {
             Some(p) => {
-                let pct = (p.fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+                let pct = p.percent();
                 let tooltip = if p.queued > 0 {
                     format!("tamp — {pct}% (+{} queued)", p.queued)
                 } else {
