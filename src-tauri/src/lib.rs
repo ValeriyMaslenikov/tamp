@@ -65,21 +65,12 @@ fn migrate_legacy_data(app: &AppHandle) {
 /// (app relaunch, Dock/Finder reopen).
 fn show_panel_fallback(app: &AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
-        // No tray click happened, so the positioner has no tray rect;
-        // top-right of the primary monitor approximates the tray area.
-        // (Current-monitor positioning can land on a sleeping display.)
+        // No tray click happened, so the positioner has no tray rect; the
+        // platform strategy drops the panel in its tray corner of the primary
+        // monitor's work area. (Current-monitor positioning can land on a
+        // sleeping display, so anchor to the primary one.)
         if let Ok(Some(monitor)) = panel.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size().to_logical::<f64>(scale);
-            let pos = monitor.position().to_logical::<f64>(scale);
-            let width = panel
-                .outer_size()
-                .map(|s| s.width as f64 / scale)
-                .unwrap_or(420.0);
-            let _ = panel.set_position(tauri::LogicalPosition::new(
-                pos.x + size.width - width - 8.0,
-                pos.y + 32.0,
-            ));
+            platform::native().position_panel_fallback(&panel, &monitor);
         }
         let _ = panel.show();
         let _ = panel.set_focus();

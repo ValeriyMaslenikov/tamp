@@ -107,6 +107,13 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
     for folder in folders {
         let entries = match std::fs::read_dir(folder) {
             Ok(entries) => entries,
+            // A default watched folder (e.g. Windows' Videos\Screen
+            // Recordings) may not exist until the user first records there;
+            // that's expected, not worth a warning on every scan.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                crate::log_debug!("watched folder {} does not exist yet", folder.display());
+                continue;
+            }
             Err(e) => {
                 crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
                 continue;

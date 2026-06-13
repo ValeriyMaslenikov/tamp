@@ -1,7 +1,8 @@
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_positioner::{Position, WindowExt};
+
+use crate::platform::Platform as _;
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open_logs = MenuItemBuilder::with_id("open-logs", "Open Logs").build(app)?;
@@ -67,9 +68,7 @@ fn toggle_panel(app: &AppHandle) {
             crate::log_warn!("failed to hide panel: {e}");
         }
     } else {
-        if let Err(e) = panel.move_window(Position::TrayBottomCenter) {
-            crate::log_warn!("failed to position panel under tray icon: {e}");
-        }
+        crate::platform::native().position_panel_at_tray(&panel);
         if let Err(e) = panel.show() {
             crate::log_warn!("failed to show panel: {e}");
         }

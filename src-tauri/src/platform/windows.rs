@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use tauri_plugin_positioner::{Position, WindowExt as _};
+
 use super::{HwCandidate, Platform, TrayProgress};
 
 pub struct Windows;
@@ -29,10 +31,28 @@ impl Platform for Windows {
         Ok(())
     }
 
+    fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
+        // Taskbar (and tray) sit at the bottom, so the panel rises ABOVE the
+        // icon — TrayCenter anchors the panel's bottom at the icon's top.
+        // Constrained keeps a right-edge icon from pushing the centered panel
+        // off-screen.
+        if let Err(e) = panel.move_window_constrained(Position::TrayCenter) {
+            crate::log_warn!("failed to position panel above tray icon: {e}");
+        }
+    }
+
+    fn position_panel_fallback(&self, panel: &tauri::WebviewWindow, monitor: &tauri::Monitor) {
+        if let Some(pos) = super::work_area_corner(panel, monitor, super::VAnchor::Bottom) {
+            let _ = panel.set_position(pos);
+        }
+    }
+
     /// Desktop plus wherever the stock Windows recorders save: Snipping Tool
-    /// → Videos\Screen Recordings, Xbox Game Bar → Videos\Captures. The
-    /// Videos subfolders are only watched when they exist (they appear after
-    /// first use of the respective tool); Desktop is watched unconditionally.
+    /// → Videos\Screen Recordings, Xbox Game Bar → Videos\Captures. These are
+    /// watched unconditionally — a recorder creates its folder lazily on the
+    /// first capture (often after tamp's first launch), and the scanner
+    /// tolerates a not-yet-existent folder, so gating on existence here would
+    /// silently miss recordings made later.
     fn default_watched_folders(&self, app: &tauri::AppHandle) -> Vec<PathBuf> {
         let path = tauri::Manager::path(app);
         let mut folders = Vec::new();
@@ -43,12 +63,10 @@ impl Platform for Windows {
             }
         }
         match path.video_dir() {
-            Ok(videos) => folders.extend(
-                ["Screen Recordings", "Captures"]
-                    .iter()
-                    .map(|sub| videos.join(sub))
-                    .filter(|dir| dir.is_dir()),
-            ),
+            Ok(videos) => {
+                folders.push(videos.join("Screen Recordings"));
+                folders.push(videos.join("Captures"));
+            }
             Err(e) => {
                 crate::log_warn!("cannot resolve videos dir for default watched folders: {e}")
             }

@@ -40,6 +40,34 @@ impl TrayProgress {
     }
 }
 
+/// Which horizontal screen edge a fallback panel hugs — the side this OS's
+/// tray lives on. Each OS uses exactly one variant, so the other reads as
+/// dead code on any single target.
+#[allow(dead_code)]
+pub(crate) enum VAnchor {
+    Top,
+    Bottom,
+}
+
+/// Physical top-left to place `panel` in the right-`vanchor` corner of
+/// `monitor`'s WORK AREA (excludes the taskbar/menu bar), inset from the
+/// edges. `None` if the panel size can't be read.
+pub(crate) fn work_area_corner(
+    panel: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+    vanchor: VAnchor,
+) -> Option<tauri::PhysicalPosition<i32>> {
+    const INSET: i32 = 8;
+    let area = monitor.work_area();
+    let win = panel.outer_size().ok()?;
+    let x = area.position.x + area.size.width as i32 - win.width as i32 - INSET;
+    let y = match vanchor {
+        VAnchor::Top => area.position.y + INSET,
+        VAnchor::Bottom => area.position.y + area.size.height as i32 - win.height as i32 - INSET,
+    };
+    Some(tauri::PhysicalPosition::new(x, y))
+}
+
 /// Clipboard implementations need their paths as UTF-8; reject (rather than
 /// mangle) the exotic ones so the error names the offending file.
 fn paths_to_utf8(paths: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -82,6 +110,16 @@ pub trait Platform {
     /// Per-OS window tweaks for the tray panel (e.g. on macOS, letting it
     /// appear over full-screen apps and follow the user across Spaces).
     fn configure_panel(&self, window: &tauri::WebviewWindow) -> Result<(), String>;
+
+    /// Positions `panel` against the clicked tray icon (the positioner has
+    /// cached the click rect). The anchor differs by where this OS puts its
+    /// tray: macOS's menu bar is at the top so the panel drops below it;
+    /// Windows' taskbar is at the bottom so the panel rises above it.
+    fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow);
+
+    /// Positions `panel` in this OS's tray corner of `monitor`'s work area
+    /// when there is no click rect to anchor to (shortcut toggle, relaunch).
+    fn position_panel_fallback(&self, panel: &tauri::WebviewWindow, monitor: &tauri::Monitor);
 
     /// Folders watched out of the box — wherever this OS's default screen
     /// recorders save.

@@ -7,6 +7,8 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSWindow, NSWindowCollectionBehavior};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
+use tauri_plugin_positioner::{Position, WindowExt as _};
+
 use super::{HwCandidate, Platform, TrayProgress};
 
 pub struct MacOs;
@@ -32,6 +34,19 @@ impl Platform for MacOs {
             .set_visible_on_all_workspaces(true)
             .map_err(|e| format!("failed to set panel visible on all workspaces: {e}"))?;
         configure_panel(window)
+    }
+
+    fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
+        // Menu bar is at the top, so the panel hangs below the icon.
+        if let Err(e) = panel.move_window_constrained(Position::TrayBottomCenter) {
+            crate::log_warn!("failed to position panel under tray icon: {e}");
+        }
+    }
+
+    fn position_panel_fallback(&self, panel: &tauri::WebviewWindow, monitor: &tauri::Monitor) {
+        if let Some(pos) = super::work_area_corner(panel, monitor, super::VAnchor::Top) {
+            let _ = panel.set_position(pos);
+        }
     }
 
     fn default_watched_folders(&self, app: &tauri::AppHandle) -> Vec<PathBuf> {
