@@ -7,7 +7,7 @@ use std::process::Command;
 
 use tamp_lib::encoder::{
     bin,
-    plan::{build_plan, expected_part_outputs, plan_split, preset_hash},
+    plan::{build_plan, expected_output, expected_part_outputs, plan_split, preset_hash},
     probe::probe,
     run_gif, run_hardware_pass, run_passes, run_video_convergence, ChildSlot, OutputFormat, Preset,
     SplitConfig, SplitMode, StaticSplitBy,
@@ -141,8 +141,16 @@ async fn two_pass_encode_hits_target_size() {
     assert!(plan.video_kbit >= 100);
     assert_eq!(
         plan.output,
-        dir.path()
-            .join(format!("clip (tamped {}).mp4", preset_hash(&preset)))
+        expected_output(
+            &input,
+            &preset.name,
+            &preset_hash(&preset),
+            OutputFormat::Mp4
+        )
+    );
+    assert_eq!(
+        plan.output.file_name().unwrap().to_string_lossy(),
+        format!("clip (tamped Test 1MB {}).mp4", preset_hash(&preset))
     );
 
     let passlog = tempfile::tempdir().unwrap();
@@ -358,8 +366,12 @@ async fn webm_two_pass_vp9_hits_target_size() {
     assert!(plan.video_kbit >= 100);
     assert_eq!(
         plan.output,
-        dir.path()
-            .join(format!("clip (tamped {}).webm", preset_hash(&preset)))
+        expected_output(
+            &input,
+            &preset.name,
+            &preset_hash(&preset),
+            OutputFormat::Webm
+        )
     );
 
     let passlog = tempfile::tempdir().unwrap();
@@ -457,8 +469,12 @@ async fn gif_palette_encode_stays_under_generous_target() {
     assert_eq!(plan.audio_kbit, 0); // GIF never carries audio
     assert_eq!(
         plan.output,
-        dir.path()
-            .join(format!("clip (tamped {}).gif", preset_hash(&preset)))
+        expected_output(
+            &input,
+            &preset.name,
+            &preset_hash(&preset),
+            OutputFormat::Gif
+        )
     );
 
     let target_bytes = preset.target_mb * 1_000_000.0;
@@ -704,13 +720,21 @@ async fn static_split_encodes_three_parts_each_under_the_full_target() {
     assert!((split.part_secs - info.duration_secs / 3.0).abs() < 1e-9);
 
     let hash = preset_hash(&preset);
-    let parts = expected_part_outputs(&input, &hash, OutputFormat::Mp4, split.count);
+    let parts = expected_part_outputs(&input, &preset.name, &hash, OutputFormat::Mp4, split.count);
     assert_eq!(parts.len(), 3);
+    // Parts live in a single named folder, short-numbered inside it.
+    let folder = parts[0].parent().unwrap();
+    assert_eq!(
+        folder.file_name().unwrap().to_string_lossy(),
+        format!("clip (tamped Test Split 1MB x3 {hash})"),
+        "the folder carries the sanitized preset name and hash"
+    );
+    std::fs::create_dir_all(folder).unwrap();
     for (idx, part) in parts.iter().enumerate() {
         assert_eq!(
             part.file_name().unwrap().to_string_lossy(),
-            format!("clip (tamped {hash} p{}of3).mp4", idx + 1),
-            "part output names must follow the p{{i}}of{{n}} grammar"
+            format!("clip {}.mp4", idx + 1),
+            "part files are short-numbered inside the folder"
         );
     }
 

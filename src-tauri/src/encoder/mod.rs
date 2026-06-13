@@ -383,7 +383,8 @@ async fn run_single(
     // unique_output probe, so the fresh encode targets the now-free base
     // expected_output path; an under-target file with mismatched provenance
     // is left alone and the fresh encode lands on a numbered sibling.
-    let expected = plan::expected_output(&job.input, preset_hash, job.preset.format);
+    let expected =
+        plan::expected_output(&job.input, &job.preset.name, preset_hash, job.preset.format);
     if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
         if reuse_is_stale(&inner.app, &job.input, &expected) {
             crate::log_info!(
@@ -579,7 +580,13 @@ async fn run_split_set(
     target_bytes: f64,
 ) -> Result<(), String> {
     let n = split.count;
-    let parts = plan::expected_part_outputs(&job.input, preset_hash, job.preset.format, n);
+    let parts = plan::expected_part_outputs(
+        &job.input,
+        &job.preset.name,
+        preset_hash,
+        job.preset.format,
+        n,
+    );
     crate::log_info!(
         "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
         job.id,
@@ -622,14 +629,16 @@ async fn run_split_set(
             return Ok(());
         }
     }
-    // Anything short of a full clean set is useless: best-effort sweep of
-    // tamp-owned stale part files for this hash (any geometry), then encode
-    // the whole set fresh onto the now-free expected paths.
-    sweep_stale_parts(&plan::expected_output(
-        &job.input,
-        preset_hash,
-        job.preset.format,
-    ));
+    // Anything short of a full clean set is useless: give the fresh set a
+    // clean folder (clears any stale parts from a prior geometry of this
+    // hash), then encode the whole set onto the now-free expected paths.
+    let folder = plan::expected_part_folder(&job.input, &job.preset.name, preset_hash);
+    if let Err(e) = plan::reset_dir(&folder) {
+        return Err(format!(
+            "cannot prepare output folder {}: {e}",
+            folder.display()
+        ));
+    }
 
     match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
         Ok(total) => {
@@ -672,6 +681,9 @@ async fn run_split_set(
                     let _ = std::fs::remove_file(&tmp);
                 }
             }
+            // Drop the now-empty part folder so a failed/cancelled split
+            // leaves nothing behind.
+            let _ = std::fs::remove_dir(&folder);
             Err(err)
         }
     }
@@ -834,47 +846,6 @@ pub fn check_reuse_set(parts: &[PathBuf], target_bytes: f64) -> Option<Vec<u64>>
         sizes.push(meta.len());
     }
     Some(sizes)
-}
-
-/// Best-effort sweep of tamp-owned part files belonging to `expected`'s
-/// configuration: every "{stem} (tamped {hash} p{i}of{n}).{ext}" sibling —
-/// ANY part geometry, so leftovers from a previous split shape go too — is
-/// deleted before a fresh set is encoded. Only regular files are touched;
-/// failures are logged and skipped, never fatal.
-fn sweep_stale_parts(expected: &Path) {
-    let (Some(dir), Some(base_stem), Some(ext)) = (
-        expected.parent(),
-        expected.file_stem().and_then(|s| s.to_str()),
-        expected.extension().and_then(|e| e.to_str()),
-    ) else {
-        return;
-    };
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            crate::log_warn!("cannot scan {} for stale part files: {e}", dir.display());
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !plan::is_part_sibling(name, base_stem, ext) {
-            continue;
-        }
-        // DirEntry::metadata does not traverse symlinks, so only a regular
-        // file is ever swept.
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
-            continue;
-        }
-        if let Err(e) = std::fs::remove_file(entry.path()) {
-            crate::log_warn!(
-                "cannot remove stale part file {}: {e}",
-                entry.path().display()
-            );
-        }
-    }
 }
 
 /// The reuse short-circuit decision for the worker: `Some(bytes)` when an
@@ -2068,36 +2039,6 @@ mod tests {
             std::fs::symlink_metadata(&parts[1]).unwrap().is_symlink(),
             "the symlink must be left alone"
         );
-    }
-
-    #[test]
-    fn sweep_stale_parts_removes_any_part_geometry_of_the_hash_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mine = dir.path().join("clip (tamped 823f p1of3).mp4");
-        std::fs::write(&mine, vec![0u8; 100]).unwrap();
-        // A leftover from a previous split geometry of the SAME hash.
-        let old_geometry = dir.path().join("clip (tamped 823f p2of7).mp4");
-        std::fs::write(&old_geometry, vec![0u8; 100]).unwrap();
-        // Everything below must survive the sweep.
-        let base = dir.path().join("clip (tamped 823f).mp4");
-        std::fs::write(&base, vec![0u8; 100]).unwrap();
-        let numbered = dir.path().join("clip (tamped 823f 2).mp4");
-        std::fs::write(&numbered, vec![0u8; 100]).unwrap();
-        let other_hash = dir.path().join("clip (tamped ffff p1of3).mp4");
-        std::fs::write(&other_hash, vec![0u8; 100]).unwrap();
-        let other_stem = dir.path().join("other (tamped 823f p1of3).mp4");
-        std::fs::write(&other_stem, vec![0u8; 100]).unwrap();
-        let in_flight = dir.path().join("clip (tamped 823f p1of3).mp4.part");
-        std::fs::write(&in_flight, vec![0u8; 100]).unwrap();
-
-        sweep_stale_parts(&base);
-        assert!(!mine.exists(), "this hash's part files must be swept");
-        assert!(!old_geometry.exists(), "old geometries must be swept too");
-        assert!(base.exists(), "the base output must survive");
-        assert!(numbered.exists(), "numbered siblings must survive");
-        assert!(other_hash.exists(), "other configurations must survive");
-        assert!(other_stem.exists(), "other inputs must survive");
-        assert!(in_flight.exists(), "in-flight temps must survive the sweep");
     }
 
     #[test]
