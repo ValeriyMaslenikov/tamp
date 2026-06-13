@@ -48,7 +48,12 @@ async function download(url: string, to: string): Promise<void> {
       "curl",
       "-fsSL",
       "--retry",
-      "3",
+      "5",
+      // Retry transient HTTP errors too (BtbN republishes the rolling
+      // `latest` release nightly, briefly 404ing its assets mid-update).
+      "--retry-all-errors",
+      "--retry-delay",
+      "5",
       "--connect-timeout",
       "30",
       "--max-time",
@@ -115,8 +120,12 @@ if (dests.every(({ dest }) => existsSync(dest))) {
   const name = "ffmpeg-master-latest-win64-gpl";
   const tmp = await mkdtemp(join(tmpdir(), "tamp-ffmpeg-"));
   const zip = join(tmp, `${name}.zip`);
+  // Pull from the permanently-tagged `latest` release, NOT `releases/latest`:
+  // GitHub's "latest release" pointer drifts to BtbN's dated autobuilds,
+  // whose assets are version-named (ffmpeg-N-…) and 404 against the stable
+  // `master-latest` filenames. The `latest` tag always carries them.
   await download(
-    `https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/${name}.zip`,
+    `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${name}.zip`,
     zip,
   );
   await extract(zip, tmp);
