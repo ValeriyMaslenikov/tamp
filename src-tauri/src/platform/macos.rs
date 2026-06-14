@@ -38,7 +38,10 @@ impl Platform for MacOs {
 
     fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
         // Menu bar is at the top, so the panel hangs below the icon.
-        if panel.move_window_constrained(Position::TrayBottomCenter).is_ok() {
+        if panel
+            .move_window_constrained(Position::TrayBottomCenter)
+            .is_ok()
+        {
             return;
         }
         // No cached tray rect to anchor against: fall back to the work
