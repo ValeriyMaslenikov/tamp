@@ -122,6 +122,19 @@ pub enum OpenAfterConvert {
     All,
 }
 
+/// How the Videos screen offers presets when compressing a recording.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideosLayout {
+    /// Clicking a video opens a preset picker (default highlighted) — best
+    /// when you choose a preset per clip.
+    #[default]
+    QuickPick,
+    /// A persistent bar holds one active preset; clicking a video applies it
+    /// immediately — best when you mostly use one preset.
+    ActiveBar,
+}
+
 // Field-level defaults keep previously stored settings readable when new
 // fields are added later (missing keys no longer fail deserialization).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +170,9 @@ pub struct Settings {
     /// completes (off / multi-part splits only / all conversions).
     #[serde(default)]
     pub open_after_convert: OpenAfterConvert,
+    /// Which preset-selection UI the Videos screen shows.
+    #[serde(default)]
+    pub videos_layout: VideosLayout,
 }
 
 fn default_true() -> bool {
@@ -209,6 +225,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         shortcut_toggle_panel: default_shortcut_toggle_panel(),
         stale_warn_minutes: default_stale_warn_minutes(),
         open_after_convert: OpenAfterConvert::default(),
+        videos_layout: VideosLayout::default(),
     }
 }
 

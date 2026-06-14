@@ -47,10 +47,15 @@ export interface Settings {
   staleWarnMinutes: number;
   /** Reveal finished outputs in the file manager after converting. */
   openAfterConvert: OpenAfterConvert;
+  /** Which preset-selection UI the Videos screen shows. */
+  videosLayout: VideosLayout;
 }
 
 /** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
 export type OpenAfterConvert = "off" | "multipart" | "all";
+
+/** quick-pick = picker per video (default); active-bar = one active preset. */
+export type VideosLayout = "quick-pick" | "active-bar";
 
 /** One-off conversion settings for custom_convert. */
 export interface CustomConfig {

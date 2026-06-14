@@ -10,6 +10,7 @@ import {
   reveal,
   type JobState,
   type Phase,
+  type Preset,
   type RecentVideo,
   type Settings,
 } from "../lib/ipc";
@@ -83,9 +84,15 @@ export function createListView(getSettings: () => Settings | null): ListView {
   filterInput.placeholder = "Filter recordings…";
   filterRow.appendChild(filterInput);
 
+  // Active-preset bar (videos-layout "active-bar" mode). Hidden in quick-pick
+  // mode; rebuilt by updateActiveBar().
+  const activeBar = document.createElement("div");
+  activeBar.className = "active-bar";
+  activeBar.hidden = true;
+
   const listScroll = document.createElement("div");
   listScroll.className = "list-scroll";
-  el.append(filterRow, listScroll);
+  el.append(activeBar, filterRow, listScroll);
 
   let videos: RecentVideo[] = [];
   const jobs = new Map<string, JobState>(); // job id -> latest state
@@ -102,6 +109,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
   let selectedPath: string | null = null; // keyboard selection (violet ring)
   let expandedPath: string | null = null; // at most one row is expanded
   let modal: CustomModal | null = null; // open custom-conversion page
+  // "active-bar" mode: the preset every click applies. Session state, reset to
+  // the default preset whenever the panel opens (focusFilter).
+  let activePresetId: string | null = null;
+  // "quick-pick" mode: the open picker overlay (null when closed).
+  let quickPick: { el: HTMLElement; video: RecentVideo; presets: Preset[]; index: number } | null =
+    null;
 
   function jobForPath(path: string): JobState | undefined {
     const id = jobByPath.get(path);
@@ -245,9 +258,20 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (selectedPath) setSelected(selectedPath); // re-ring after a rebuild
   }
 
-  function focusFilter(): void {
+  function focusFilterOnly(): void {
     filterInput.focus();
     filterInput.select();
+  }
+
+  /** Public entry (panel shown / tab switched to Videos): the active-bar
+   *  preset resets to the default, then the filter takes focus. */
+  function focusFilter(): void {
+    const s = getSettings();
+    if (s) {
+      activePresetId = s.defaultPresetId;
+      updateActiveBar();
+    }
+    focusFilterOnly();
   }
 
   filterInput.addEventListener("input", () => applyFilter(true));
@@ -269,7 +293,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (dir === -1 && idx === 0) {
       // Off the top of the list: hand focus back to the filter.
       setSelected(null);
-      focusFilter();
+      focusFilterOnly();
       return;
     }
     const next = Math.min(vis.length - 1, Math.max(0, idx + dir));
@@ -288,7 +312,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (filterInput.value !== "") {
       filterInput.value = "";
       applyFilter(true);
-      focusFilter();
+      focusFilterOnly();
       return;
     }
     getCurrentWindow()
@@ -312,6 +336,35 @@ export function createListView(getSettings: () => Settings | null): ListView {
       }
       return;
     }
+    if (quickPick) {
+      // The picker captures keys: numbers apply, Enter takes the default,
+      // arrows move the highlight, C goes to Custom, Esc cancels.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeQuickPick();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        applyQuickPick(quickPick.index);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveQuick(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveQuick(-1);
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        const v = quickPick.video;
+        closeQuickPick();
+        openCustom(v);
+      } else if (e.key >= "1" && e.key <= "9") {
+        const n = Number(e.key) - 1;
+        if (n < quickPick.presets.length) {
+          e.preventDefault();
+          applyQuickPick(n);
+        }
+      }
+      return; // swallow everything else while the picker is open
+    }
     if (el.hidden) return; // preferences tab
     const inFilter = e.target === filterInput;
     if (!inFilter && isEditable(e.target)) return;
@@ -331,6 +384,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
         return;
     }
     if (inFilter) return; // everything else types into the filter natively
+
+    // Active-bar mode: [ and ] cycle the active preset.
+    if (layoutMode() === "active-bar" && (e.key === "[" || e.key === "]")) {
+      e.preventDefault();
+      cycleActive(e.key === "]" ? 1 : -1);
+      return;
+    }
 
     const selected = selectedPath
       ? videos.find((v) => v.path === selectedPath)
@@ -414,6 +474,171 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
+  // ----- preset selection (videos-layout modes) --------------------------
+
+  function layoutMode(): "quick-pick" | "active-bar" {
+    return getSettings()?.videosLayout ?? "quick-pick";
+  }
+
+  /** Presets with the default first, so it's option 1 / the highlighted one. */
+  function orderedPresets(): Preset[] {
+    const s = getSettings();
+    if (!s) return [];
+    const def = s.presets.find((p) => p.id === s.defaultPresetId);
+    const rest = s.presets.filter((p) => p.id !== s.defaultPresetId);
+    return def ? [def, ...rest] : [...s.presets];
+  }
+
+  /** The active-bar preset, falling back to default / first if unset. */
+  function activePreset(): Preset | null {
+    const s = getSettings();
+    if (!s) return null;
+    return (
+      s.presets.find((p) => p.id === activePresetId) ??
+      s.presets.find((p) => p.id === s.defaultPresetId) ??
+      s.presets[0] ??
+      null
+    );
+  }
+
+  function cycleActive(dir: 1 | -1): void {
+    const s = getSettings();
+    if (!s || s.presets.length === 0) return;
+    const cur = activePreset();
+    const idx = cur ? s.presets.findIndex((p) => p.id === cur.id) : -1;
+    const n = s.presets.length;
+    activePresetId = s.presets[((idx < 0 ? 0 : idx) + dir + n) % n].id;
+    updateActiveBar();
+  }
+
+  /** Renders the active-preset bar; shown only in "active-bar" mode. */
+  function updateActiveBar(): void {
+    const s = getSettings();
+    const show = !!s && layoutMode() === "active-bar";
+    activeBar.hidden = !show;
+    activeBar.innerHTML = "";
+    if (!show || !s) return;
+    const ap = activePreset();
+
+    const label = document.createElement("span");
+    label.className = "active-bar-label";
+    label.textContent = "Compress with";
+
+    const control = document.createElement("div");
+    control.className = "active-bar-control";
+    const prev = document.createElement("button");
+    prev.type = "button";
+    prev.className = "active-bar-arrow";
+    prev.textContent = "‹";
+    prev.title = "Previous preset ([)";
+    prev.tabIndex = -1;
+    prev.disabled = s.presets.length < 2;
+    prev.addEventListener("click", () => cycleActive(-1));
+    const name = document.createElement("span");
+    name.className = "active-bar-name";
+    name.textContent = ap ? ap.name : "—";
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "active-bar-arrow";
+    next.textContent = "›";
+    next.title = "Next preset (])";
+    next.tabIndex = -1;
+    next.disabled = s.presets.length < 2;
+    next.addEventListener("click", () => cycleActive(1));
+    control.append(prev, name, next);
+
+    activeBar.append(label, control);
+  }
+
+  function closeQuickPick(): void {
+    if (!quickPick) return;
+    quickPick.el.remove();
+    quickPick = null;
+  }
+
+  function highlightQuick(): void {
+    if (!quickPick) return;
+    const items = quickPick.el.querySelectorAll<HTMLElement>(
+      ".quickpick-item:not(.quickpick-custom)",
+    );
+    items.forEach((it, i) => it.classList.toggle("is-highlight", i === quickPick?.index));
+  }
+
+  function moveQuick(dir: 1 | -1): void {
+    if (!quickPick) return;
+    const n = quickPick.presets.length;
+    quickPick.index = (quickPick.index + dir + n) % n;
+    highlightQuick();
+  }
+
+  function applyQuickPick(i: number): void {
+    if (!quickPick) return;
+    const p = quickPick.presets[i];
+    const v = quickPick.video;
+    closeQuickPick();
+    if (p) void doEnqueue(v, p.id);
+  }
+
+  /** Opens the per-video preset picker (quick-pick mode). */
+  function openQuickPick(v: RecentVideo): void {
+    closeQuickPick();
+    const presets = orderedPresets();
+    if (presets.length === 0) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "quickpick-overlay";
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeQuickPick();
+    });
+
+    const card = document.createElement("div");
+    card.className = "quickpick";
+    const title = document.createElement("div");
+    title.className = "quickpick-title";
+    title.textContent = `Compress with…`;
+    card.appendChild(title);
+
+    presets.forEach((p, i) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "quickpick-item";
+      item.innerHTML =
+        `<span class="quickpick-num">${i < 9 ? i + 1 : ""}</span>` +
+        `<span class="quickpick-name"></span>`;
+      (item.querySelector(".quickpick-name") as HTMLElement).textContent = p.name;
+      item.addEventListener("click", () => applyQuickPick(i));
+      item.addEventListener("mousemove", () => {
+        if (quickPick && quickPick.index !== i) {
+          quickPick.index = i;
+          highlightQuick();
+        }
+      });
+      card.appendChild(item);
+    });
+
+    const custom = document.createElement("button");
+    custom.type = "button";
+    custom.className = "quickpick-item quickpick-custom";
+    custom.innerHTML =
+      `<span class="quickpick-num">C</span>` +
+      `<span class="quickpick-name">Custom…</span>`;
+    custom.addEventListener("click", () => {
+      closeQuickPick();
+      openCustom(v);
+    });
+    card.appendChild(custom);
+
+    const hint = document.createElement("div");
+    hint.className = "quickpick-hint";
+    hint.textContent = "1–9 apply · ⏎ default · ↑↓ move · esc cancel";
+    card.appendChild(hint);
+
+    overlay.appendChild(card);
+    el.appendChild(overlay);
+    quickPick = { el: overlay, video: v, presets, index: 0 };
+    highlightQuick();
+  }
+
   function onRowClick(v: RecentVideo): void {
     if (v.isOutput) {
       // Orphaned output: the original is gone, so a click just copies the file.
@@ -433,7 +658,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     const settings = getSettings();
     if (!settings) return;
-    void doEnqueue(v, settings.defaultPresetId);
+    if (layoutMode() === "active-bar") {
+      const ap = activePreset();
+      if (ap) void doEnqueue(v, ap.id);
+      return;
+    }
+    openQuickPick(v);
   }
 
   function openCustom(v: RecentVideo): void {
@@ -838,7 +1068,15 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   function onSettingsChanged(): void {
     // Presets drive the chips; collapse previews and repaint statuses.
+    closeQuickPick();
     collapseExpanded();
+    // Keep the active preset valid (the chosen preset may have been deleted)
+    // and reflect any layout-mode / preset changes in the bar.
+    const s = getSettings();
+    if (s && !s.presets.some((p) => p.id === activePresetId)) {
+      activePresetId = s.defaultPresetId;
+    }
+    updateActiveBar();
     for (const [path, row] of rowByPath) {
       const expand = row.querySelector<HTMLElement>(".row-expand");
       if (expand) collapseRow(row, expand);
