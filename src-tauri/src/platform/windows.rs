@@ -158,4 +158,10 @@ impl Platform for Windows {
             },
         ]
     }
+
+    fn resolve_accelerator(&self, accelerator: &str) -> String {
+        // Windows hotkeys go through the active layout already (RegisterHotKey
+        // is virtual-key based), so the configured character works as typed.
+        accelerator.to_string()
+    }
 }

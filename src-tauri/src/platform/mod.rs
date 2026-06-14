@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", test))]
+mod macos_keyboard;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(any(target_os = "windows", test))]
@@ -136,6 +138,39 @@ pub trait Platform {
     /// Hardware H.264 encoders this OS can offer, in preference order.
     /// Empty means hardware encoding is never attempted.
     fn hw_candidates(&self) -> &'static [HwCandidate];
+
+    /// Rewrites a global-shortcut accelerator so it fires on the key that
+    /// PRODUCES the configured character in the user's current keyboard
+    /// layout, rather than the physical QWERTY position. Only macOS needs
+    /// this (its hotkey API is positional); other platforms return the
+    /// accelerator unchanged. See [`rewrite_accelerator_key`].
+    fn resolve_accelerator(&self, accelerator: &str) -> String;
+}
+
+/// Replaces the trailing key token of an accelerator ("CmdOrCtrl+Alt+T" ->
+/// key "T") using `map`, keeping the modifiers intact. `map` receives the
+/// lowercased single-character key and returns the replacement character, or
+/// `None` to leave the accelerator untouched (non-character keys, unmapped
+/// layouts). Shared so a platform can focus only on the character→character
+/// translation. Only macOS rewrites accelerators; gated so it isn't dead code
+/// elsewhere.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn rewrite_accelerator_key(
+    accelerator: &str,
+    map: impl FnOnce(char) -> Option<char>,
+) -> String {
+    let Some(plus) = accelerator.rfind('+') else {
+        return accelerator.to_string(); // a bare key, no modifiers
+    };
+    let (mods, key) = accelerator.split_at(plus + 1);
+    let mut chars = key.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return accelerator.to_string(); // not a single-character key
+    };
+    match map(c.to_ascii_lowercase()) {
+        Some(replacement) => format!("{mods}{}", replacement.to_ascii_uppercase()),
+        None => accelerator.to_string(),
+    }
 }
 
 /// Single-file convenience over [`Platform::copy_files_to_clipboard`].

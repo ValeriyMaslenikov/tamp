@@ -4,6 +4,7 @@
 //! from `save_settings` whenever the accelerators change (with rollback to
 //! the previous pair when the new ones fail to register).
 
+use crate::platform::Platform as _;
 use crate::settings::Settings;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -30,28 +31,36 @@ pub fn apply(app: &AppHandle, settings: &Settings) -> Result<(), String> {
         .map_err(|e| format!("failed to clear global shortcuts: {e}"))?;
 
     if let Some(accel) = enabled(&settings.shortcut_compress_latest) {
+        // Register against the key that TYPES the configured character in the
+        // user's layout (a no-op outside macOS / on QWERTY).
+        let registered = crate::platform::native().resolve_accelerator(accel);
         let handler_app = app.clone();
         shortcuts
-            .on_shortcut(accel, move |_app, _shortcut, event| {
+            .on_shortcut(registered.as_str(), move |_app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {
                     compress_latest(&handler_app);
                 }
             })
             .map_err(|e| format!("Invalid \"compress latest\" shortcut \"{accel}\": {e}"))?;
-        crate::log_info!("registered compress-latest global shortcut \"{accel}\"");
+        crate::log_info!(
+            "registered compress-latest global shortcut \"{accel}\" (as \"{registered}\")"
+        );
     } else {
         crate::log_info!("compress-latest global shortcut is disabled");
     }
     if let Some(accel) = enabled(&settings.shortcut_toggle_panel) {
+        let registered = crate::platform::native().resolve_accelerator(accel);
         let handler_app = app.clone();
         shortcuts
-            .on_shortcut(accel, move |_app, _shortcut, event| {
+            .on_shortcut(registered.as_str(), move |_app, _shortcut, event| {
                 if event.state() == ShortcutState::Pressed {
                     crate::toggle_panel_fallback(&handler_app);
                 }
             })
             .map_err(|e| format!("Invalid \"toggle panel\" shortcut \"{accel}\": {e}"))?;
-        crate::log_info!("registered toggle-panel global shortcut \"{accel}\"");
+        crate::log_info!(
+            "registered toggle-panel global shortcut \"{accel}\" (as \"{registered}\")"
+        );
     } else {
         crate::log_info!("toggle-panel global shortcut is disabled");
     }

@@ -92,6 +92,12 @@ impl Platform for MacOs {
             extra_args: &["-allow_sw", "1"],
         }]
     }
+
+    fn resolve_accelerator(&self, accelerator: &str) -> String {
+        // macOS hotkeys are positional; rewrite the key token to the position
+        // that types the configured character in the active layout.
+        super::rewrite_accelerator_key(accelerator, super::macos_keyboard::layout_token)
+    }
 }
 
 /// Lets the panel join the Space of a full-screen app; without
