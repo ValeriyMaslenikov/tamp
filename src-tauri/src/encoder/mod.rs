@@ -70,6 +70,8 @@ impl Phase {
 pub struct PostActions {
     pub copy_to_clipboard: bool,
     pub trash_original: bool,
+    /// Whether to reveal the finished output(s) in the file manager.
+    pub open_after: crate::settings::OpenAfterConvert,
 }
 
 /// Shared slot holding the currently running ffmpeg child so `cancel()` /
@@ -1216,7 +1218,47 @@ fn run_post_actions(
             }
         }
     }
+    open_output_location(&inner.app, &post.open_after, outputs);
     (!failures.is_empty()).then(|| failures.join("; "))
+}
+
+/// Reveals the finished outputs in the system file manager per the user's
+/// `open_after` preference: a multi-part set (more than one output) opens its
+/// containing folder; a single output is revealed in its folder, but only
+/// when the preference is `All`. Cross-platform via the opener plugin;
+/// best-effort, so a failure is logged, not surfaced as a post-error.
+fn open_output_location(
+    app: &AppHandle,
+    open_after: &crate::settings::OpenAfterConvert,
+    outputs: &[PathBuf],
+) {
+    use crate::settings::OpenAfterConvert;
+    use tauri_plugin_opener::OpenerExt as _;
+    let multipart = outputs.len() > 1;
+    let act = match open_after {
+        OpenAfterConvert::Off => false,
+        OpenAfterConvert::Multipart => multipart,
+        OpenAfterConvert::All => true,
+    };
+    if !act {
+        return;
+    }
+    let Some(first) = outputs.first() else {
+        return;
+    };
+    let result = if multipart {
+        match first.parent() {
+            Some(folder) => app
+                .opener()
+                .open_path(folder.to_string_lossy(), None::<&str>),
+            None => return,
+        }
+    } else {
+        app.opener().reveal_item_in_dir(first)
+    };
+    if let Err(e) = result {
+        crate::log_warn!("failed to open output location: {e}");
+    }
 }
 
 /// Records a successful (non-reused) encode in the conversion journal.

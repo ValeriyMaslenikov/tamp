@@ -203,6 +203,7 @@ fn enqueue_preset(app: &AppHandle, path: String, preset: Preset) -> Result<Strin
         let post = PostActions {
             copy_to_clipboard: guard.copy_to_clipboard,
             trash_original: guard.trash_original,
+            open_after: guard.open_after_convert,
         };
         (post, guard.use_hardware_encoder)
     };

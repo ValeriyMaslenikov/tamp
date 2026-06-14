@@ -3,6 +3,7 @@ import {
   getSettings,
   pickFolder,
   saveSettings,
+  type OpenAfterConvert,
   type OutputFormat,
   type Preset,
   type Settings,
@@ -343,6 +344,40 @@ export function createPreferencesView(opts: {
     return row;
   }
 
+  /** A labelled row of mutually-exclusive radio options. */
+  function radioRow<T extends string>(
+    labelText: string,
+    value: T,
+    options: ReadonlyArray<{ value: T; label: string }>,
+    onChange: (v: T) => void,
+  ): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "radio-row";
+    const label = document.createElement("span");
+    label.className = "toggle-label";
+    label.textContent = labelText;
+    const group = document.createElement("div");
+    group.className = "radio-group";
+    const name = `radio-${labelText.replace(/\s+/g, "-").toLowerCase()}`;
+    for (const opt of options) {
+      const item = document.createElement("label");
+      item.className = "radio-item";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = name;
+      input.checked = opt.value === value;
+      input.addEventListener("change", () => {
+        if (input.checked) onChange(opt.value);
+      });
+      const text = document.createElement("span");
+      text.textContent = opt.label;
+      item.append(input, text);
+      group.append(item);
+    }
+    row.append(label, group);
+    return row;
+  }
+
   function behaviorCard(): HTMLElement {
     const s = current as Settings;
     const card = document.createElement("div");
@@ -370,6 +405,19 @@ export function createPreferencesView(opts: {
         void persist((d) => {
           d.launchAtLogin = v;
         }),
+      ),
+      radioRow<OpenAfterConvert>(
+        "Open in file manager after converting",
+        s.openAfterConvert,
+        [
+          { value: "off", label: "Off" },
+          { value: "multipart", label: "Multi-part splits only" },
+          { value: "all", label: "All conversions" },
+        ],
+        (v) =>
+          void persist((d) => {
+            d.openAfterConvert = v;
+          }),
       ),
     );
     return card;
