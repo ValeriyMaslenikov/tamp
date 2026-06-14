@@ -36,8 +36,15 @@ impl Platform for Windows {
         // icon — TrayCenter anchors the panel's bottom at the icon's top.
         // Constrained keeps a right-edge icon from pushing the centered panel
         // off-screen.
-        if let Err(e) = panel.move_window_constrained(Position::TrayCenter) {
-            crate::log_warn!("failed to position panel above tray icon: {e}");
+        if panel.move_window_constrained(Position::TrayCenter).is_ok() {
+            return;
+        }
+        // No usable tray rect (e.g. the icon is tucked in the overflow
+        // flyout, so no click rect was ever cached): fall back to the work
+        // area's bottom corner so the panel is never positioned off-screen.
+        crate::log_warn!("no tray rect to anchor the panel; using the work-area corner");
+        if let Ok(Some(monitor)) = panel.primary_monitor() {
+            self.position_panel_fallback(panel, &monitor);
         }
     }
 

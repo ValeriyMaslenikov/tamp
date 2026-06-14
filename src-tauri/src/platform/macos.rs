@@ -38,8 +38,14 @@ impl Platform for MacOs {
 
     fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
         // Menu bar is at the top, so the panel hangs below the icon.
-        if let Err(e) = panel.move_window_constrained(Position::TrayBottomCenter) {
-            crate::log_warn!("failed to position panel under tray icon: {e}");
+        if panel.move_window_constrained(Position::TrayBottomCenter).is_ok() {
+            return;
+        }
+        // No cached tray rect to anchor against: fall back to the work
+        // area's top corner so the panel is never positioned off-screen.
+        crate::log_warn!("no tray rect to anchor the panel; using the work-area corner");
+        if let Ok(Some(monitor)) = panel.primary_monitor() {
+            self.position_panel_fallback(panel, &monitor);
         }
     }
 
