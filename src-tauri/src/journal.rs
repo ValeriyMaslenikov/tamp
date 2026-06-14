@@ -86,6 +86,11 @@ impl Journal {
         self.persist(&records);
     }
 
+    /// All recorded conversions, newest first — for the Converted history view.
+    pub fn records(&self) -> Vec<ConversionRecord> {
+        self.records.lock().unwrap().iter().rev().cloned().collect()
+    }
+
     pub fn find_by_output(&self, output_path: &str) -> Option<ConversionRecord> {
         self.records
             .lock()

@@ -126,6 +126,21 @@ export interface JobState {
 export const listRecents = (): Promise<RecentVideo[]> =>
   invoke<RecentVideo[]>("list_recents");
 
+/** One past conversion, from the persistent journal. */
+export interface ConversionRecord {
+  inputPath: string;
+  inputBytes: number;
+  outputPath: string;
+  outputBytes: number;
+  presetHash: string;
+  presetName: string;
+  targetMb: number;
+  completedAtMs: number;
+}
+
+export const listConversions = (): Promise<ConversionRecord[]> =>
+  invoke<ConversionRecord[]>("list_conversions");
+
 export const getSettings = (): Promise<Settings> =>
   invoke<Settings>("get_settings");
 

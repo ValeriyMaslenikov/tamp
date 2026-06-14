@@ -337,6 +337,14 @@ pub fn os_info() -> &'static str {
     std::env::consts::OS
 }
 
+/// The conversion history (newest first) for the Converted tab.
+#[tauri::command]
+pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord> {
+    app.try_state::<crate::journal::Journal>()
+        .map(|j| j.records())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
