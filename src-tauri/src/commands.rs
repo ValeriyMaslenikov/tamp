@@ -203,6 +203,7 @@ fn enqueue_preset(app: &AppHandle, path: String, preset: Preset) -> Result<Strin
         let post = PostActions {
             copy_to_clipboard: guard.copy_to_clipboard,
             trash_original: guard.trash_original,
+            open_after: guard.open_after_convert,
         };
         (post, guard.use_hardware_encoder)
     };
@@ -323,20 +324,17 @@ pub async fn copy_file(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn reveal(path: String) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Err(e) = std::process::Command::new("/usr/bin/open")
-            .args(["-R", &path])
-            .spawn()
-        {
-            crate::log_error!("failed to reveal {path}: {e}");
-        }
+pub fn reveal(app: AppHandle, path: String) {
+    use tauri_plugin_opener::OpenerExt as _;
+    if let Err(e) = app.opener().reveal_item_in_dir(&path) {
+        crate::log_error!("failed to reveal {path}: {e}");
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = path;
-    }
+}
+
+/// The backend OS ("macos" | "windows" | "linux") for per-platform UI labels.
+#[tauri::command]
+pub fn os_info() -> &'static str {
+    std::env::consts::OS
 }
 
 #[cfg(test)]

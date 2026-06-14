@@ -7,10 +7,97 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardWriting, NSWindow, NSWindowCollectionBehavior};
 use objc2_foundation::{NSArray, NSString, NSURL};
 
+use tauri_plugin_positioner::{Position, WindowExt as _};
+
+use super::{HwCandidate, Platform, TrayProgress};
+
+pub struct MacOs;
+
+impl Platform for MacOs {
+    fn configure_app(&self, app: &mut tauri::App) {
+        // No Dock icon — tamp lives entirely in the menu bar.
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+
+    fn copy_files_to_clipboard(
+        &self,
+        app: &tauri::AppHandle,
+        paths: &[PathBuf],
+    ) -> Result<(), String> {
+        copy_files_to_clipboard(app, paths)
+    }
+
+    fn configure_panel(&self, window: &tauri::WebviewWindow) -> Result<(), String> {
+        // Tray panels must follow the user across Spaces/displays; without
+        // this the panel opens on the Space the app launched on.
+        window
+            .set_visible_on_all_workspaces(true)
+            .map_err(|e| format!("failed to set panel visible on all workspaces: {e}"))?;
+        configure_panel(window)
+    }
+
+    fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
+        // Menu bar is at the top, so the panel hangs below the icon.
+        if panel
+            .move_window_constrained(Position::TrayBottomCenter)
+            .is_ok()
+        {
+            return;
+        }
+        // No cached tray rect to anchor against: fall back to the work
+        // area's top corner so the panel is never positioned off-screen.
+        crate::log_warn!("no tray rect to anchor the panel; using the work-area corner");
+        if let Ok(Some(monitor)) = panel.primary_monitor() {
+            self.position_panel_fallback(panel, &monitor);
+        }
+    }
+
+    fn position_panel_fallback(&self, panel: &tauri::WebviewWindow, monitor: &tauri::Monitor) {
+        if let Some(pos) = super::work_area_corner(panel, monitor, super::VAnchor::Top) {
+            let _ = panel.set_position(pos);
+        }
+    }
+
+    fn default_watched_folders(&self, app: &tauri::AppHandle) -> Vec<PathBuf> {
+        // ⌘⇧5 saves to the Desktop by default.
+        match tauri::Manager::path(app).desktop_dir() {
+            Ok(desktop) => vec![desktop],
+            Err(e) => {
+                crate::log_warn!("cannot resolve desktop dir for default watched folder: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn prepare_background_command(&self, _cmd: &mut tokio::process::Command) {}
+
+    fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
+        // Tray title text next to the icon is a macOS-only capability.
+        let text = progress.map(|p| {
+            let pct = p.percent();
+            if p.queued > 0 {
+                format!("{pct}% (+{})", p.queued)
+            } else {
+                format!("{pct}%")
+            }
+        });
+        crate::tray::set_title(app, text);
+    }
+
+    fn hw_candidates(&self) -> &'static [HwCandidate] {
+        // `-allow_sw 1` lets VideoToolbox use Apple's software encoder when
+        // no hardware session is available.
+        &[HwCandidate {
+            name: "h264_videotoolbox",
+            extra_args: &["-allow_sw", "1"],
+        }]
+    }
+}
+
 /// Lets the panel join the Space of a full-screen app; without
 /// `FullScreenAuxiliary` macOS refuses to show it over full-screen windows.
 /// Must run on the main thread (Tauri's setup hook does).
-pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
     let ns_window = window
         .ns_window()
         .map_err(|e| format!("failed to get NSWindow handle: {e}"))?
@@ -27,18 +114,8 @@ pub fn configure_panel(window: &tauri::WebviewWindow) -> Result<(), String> {
 /// Writes ALL `paths` as file URLs onto the general pasteboard in a single
 /// `writeObjects` call — one clearContents, one NSArray — so pasting into
 /// Finder/Discord drops the whole set at once.
-pub fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
-    if paths.is_empty() {
-        return Err("no files to copy".to_string());
-    }
-    let path_strs = paths
-        .iter()
-        .map(|p| {
-            p.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| format!("path is not valid UTF-8: {}", p.display()))
-        })
-        .collect::<Result<Vec<String>, String>>()?;
+fn copy_files_to_clipboard(app: &tauri::AppHandle, paths: &[PathBuf]) -> Result<(), String> {
+    let path_strs = super::paths_to_utf8(paths)?;
 
     // NSPasteboard must be used from the main thread; ship the result back
     // over a channel since run_on_main_thread takes a fire-and-forget closure.

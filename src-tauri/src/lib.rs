@@ -11,6 +11,7 @@ mod shortcuts;
 mod thumbs;
 mod tray;
 
+use platform::Platform as _;
 use std::sync::atomic::AtomicBool;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
@@ -64,21 +65,12 @@ fn migrate_legacy_data(app: &AppHandle) {
 /// (app relaunch, Dock/Finder reopen).
 fn show_panel_fallback(app: &AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
-        // No tray click happened, so the positioner has no tray rect;
-        // top-right of the primary monitor approximates the tray area.
-        // (Current-monitor positioning can land on a sleeping display.)
+        // No tray click happened, so the positioner has no tray rect; the
+        // platform strategy drops the panel in its tray corner of the primary
+        // monitor's work area. (Current-monitor positioning can land on a
+        // sleeping display, so anchor to the primary one.)
         if let Ok(Some(monitor)) = panel.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size().to_logical::<f64>(scale);
-            let pos = monitor.position().to_logical::<f64>(scale);
-            let width = panel
-                .outer_size()
-                .map(|s| s.width as f64 / scale)
-                .unwrap_or(420.0);
-            let _ = panel.set_position(tauri::LogicalPosition::new(
-                pos.x + size.width - width - 8.0,
-                pos.y + 32.0,
-            ));
+            platform::native().position_panel_fallback(&panel, &monitor);
         }
         let _ = panel.show();
         let _ = panel.set_focus();
@@ -116,9 +108,9 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            platform::native().configure_app(app);
 
             // File logging first so everything below (including migration and
             // settings load) is captured. Failure is non-fatal: debug builds
@@ -187,14 +179,9 @@ pub fn run() {
                 log_warn!("failed to register global shortcuts: {e}");
             }
 
-            // Tray panels must follow the user across Spaces/displays; without
-            // this the panel opens on the Space the app launched on.
             if let Some(panel) = app.get_webview_window("panel") {
-                if let Err(e) = panel.set_visible_on_all_workspaces(true) {
-                    log_warn!("failed to set panel visible on all workspaces: {e}");
-                }
-                if let Err(e) = platform::configure_panel(&panel) {
-                    log_warn!("failed to configure panel for full-screen overlay: {e}");
+                if let Err(e) = platform::native().configure_panel(&panel) {
+                    log_warn!("failed to configure panel: {e}");
                 }
             }
             Ok(())
@@ -231,7 +218,8 @@ pub fn run() {
             commands::queue_state,
             commands::ensure_preview,
             commands::copy_file,
-            commands::reveal
+            commands::reveal,
+            commands::os_info
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");

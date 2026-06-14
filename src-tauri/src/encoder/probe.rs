@@ -10,7 +10,7 @@ pub struct ProbeInfo {
 }
 
 pub async fn probe(path: &Path) -> Result<ProbeInfo, String> {
-    let output = tokio::process::Command::new(super::bin::ffprobe_path())
+    let output = crate::platform::background_command(super::bin::ffprobe_path())
         .args([
             "-v",
             "error",
@@ -73,7 +73,7 @@ fn parse_secs(value: &serde_json::Value) -> Option<f64> {
 /// Last-resort duration: demux the video stream and take the largest packet
 /// timestamp. Demux-only (no decode), so it stays fast even for big files.
 async fn duration_from_packets(path: &Path) -> Option<f64> {
-    let output = tokio::process::Command::new(super::bin::ffprobe_path())
+    let output = crate::platform::background_command(super::bin::ffprobe_path())
         .args([
             "-v",
             "error",

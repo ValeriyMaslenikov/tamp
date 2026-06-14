@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "settings.json";
@@ -106,6 +106,22 @@ pub struct Preset {
     pub split: SplitConfig,
 }
 
+/// When to reveal finished outputs in the system file manager after a
+/// conversion completes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenAfterConvert {
+    /// Never open anything (the default).
+    #[default]
+    Off,
+    /// Open the part folder when a multi-part split finishes; do nothing for
+    /// single outputs.
+    Multipart,
+    /// Open the part folder for splits, and reveal the file for single
+    /// outputs.
+    All,
+}
+
 // Field-level defaults keep previously stored settings readable when new
 // fields are added later (missing keys no longer fail deserialization).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +153,10 @@ pub struct Settings {
     /// user thinks they're compressing.
     #[serde(default = "default_stale_warn_minutes")]
     pub stale_warn_minutes: u32,
+    /// Whether to open finished outputs in the file manager when a conversion
+    /// completes (off / multi-part splits only / all conversions).
+    #[serde(default)]
+    pub open_after_convert: OpenAfterConvert,
 }
 
 fn default_true() -> bool {
@@ -157,17 +177,16 @@ fn default_stale_warn_minutes() -> u32 {
 
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// Default settings. Needs the app handle because the default watched folder
-/// is `~/Desktop` and home resolution goes through the Tauri path resolver.
+/// Default settings. Needs the app handle because the default watched
+/// folders come from the platform strategy (wherever this OS's screen
+/// recorders save) via the Tauri path resolver.
 pub fn default_settings(app: &AppHandle) -> Settings {
-    let watched_folders = app
-        .path()
-        .home_dir()
-        .map(|home| vec![home.join("Desktop").to_string_lossy().into_owned()])
-        .unwrap_or_else(|e| {
-            crate::log_warn!("cannot resolve home dir for default watched folder: {e}");
-            Vec::new()
-        });
+    use crate::platform::Platform as _;
+    let watched_folders = crate::platform::native()
+        .default_watched_folders(app)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     Settings {
         watched_folders,
         copy_to_clipboard: true,
@@ -189,6 +208,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         shortcut_compress_latest: default_shortcut_compress_latest(),
         shortcut_toggle_panel: default_shortcut_toggle_panel(),
         stale_warn_minutes: default_stale_warn_minutes(),
+        open_after_convert: OpenAfterConvert::default(),
     }
 }
 

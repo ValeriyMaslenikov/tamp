@@ -1,7 +1,8 @@
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_positioner::{Position, WindowExt};
+
+use crate::platform::Platform as _;
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open_logs = MenuItemBuilder::with_id("open-logs", "Open Logs").build(app)?;
@@ -36,9 +37,11 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Opens the app's log directory in Finder. The dir is created first so a
-/// fresh install (or a failed logger init) still has something to open.
+/// Opens the app's log directory in the system file manager. The dir is
+/// created first so a fresh install (or a failed logger init) still has
+/// something to open.
 fn open_logs_dir(app: &AppHandle) {
+    use tauri_plugin_opener::OpenerExt as _;
     let dir = match app.path().app_log_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -50,11 +53,7 @@ fn open_logs_dir(app: &AppHandle) {
         crate::log_error!("cannot create log dir {}: {e}", dir.display());
         return;
     }
-    #[cfg(target_os = "macos")]
-    if let Err(e) = std::process::Command::new("/usr/bin/open")
-        .arg(&dir)
-        .spawn()
-    {
+    if let Err(e) = app.opener().open_path(dir.to_string_lossy(), None::<&str>) {
         crate::log_error!("failed to open log dir {}: {e}", dir.display());
     }
 }
@@ -69,9 +68,7 @@ fn toggle_panel(app: &AppHandle) {
             crate::log_warn!("failed to hide panel: {e}");
         }
     } else {
-        if let Err(e) = panel.move_window(Position::TrayBottomCenter) {
-            crate::log_warn!("failed to position panel under tray icon: {e}");
-        }
+        crate::platform::native().position_panel_at_tray(&panel);
         if let Err(e) = panel.show() {
             crate::log_warn!("failed to show panel: {e}");
         }
@@ -82,7 +79,10 @@ fn toggle_panel(app: &AppHandle) {
     }
 }
 
-pub fn set_progress(app: &AppHandle, text: Option<String>) {
+/// Sets the text shown next to the tray icon (macOS-only capability; the
+/// macOS platform strategy is the only caller).
+#[cfg(target_os = "macos")]
+pub fn set_title(app: &AppHandle, text: Option<String>) {
     let Some(tray) = app.tray_by_id("main") else {
         return;
     };

@@ -21,6 +21,7 @@ import {
   truncateMiddle,
 } from "../lib/format";
 import { stripOutputSuffix } from "../lib/naming";
+import { revealLabel } from "../lib/platform";
 import { showToast } from "../lib/toast";
 import { openCustomModal, type CustomModal } from "./custom";
 
@@ -623,12 +624,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
     row.classList.remove("is-expanded");
   }
 
-  /** Small magnifier button that reveals the file in Finder. */
+  /** Small magnifier button that reveals the file in the file manager. */
   function buildRevealButton(path: string): HTMLButtonElement {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "row-reveal";
-    btn.title = "Reveal in Finder";
+    btn.title = revealLabel();
     btn.tabIndex = -1; // arrow-key selection owns keyboard focus
     btn.innerHTML =
       `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ` +

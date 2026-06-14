@@ -45,7 +45,12 @@ export interface Settings {
   shortcutTogglePanel: string | null;
   /** Notify when the compress-latest shortcut picks a video older than this. */
   staleWarnMinutes: number;
+  /** Reveal finished outputs in the file manager after converting. */
+  openAfterConvert: OpenAfterConvert;
 }
+
+/** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
+export type OpenAfterConvert = "off" | "multipart" | "all";
 
 /** One-off conversion settings for custom_convert. */
 export interface CustomConfig {

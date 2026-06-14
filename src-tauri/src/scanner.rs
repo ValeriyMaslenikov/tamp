@@ -41,55 +41,12 @@ fn has_video_ext(path: &Path) -> bool {
 /// If `stem` ends with a tamped-output suffix, returns the derived original
 /// stem (the stem with the whole suffix removed); `None` otherwise.
 ///
-/// The suffix grammar (must agree with output naming in `encoder::plan`):
-/// `" (tamped"` + optional `" "` + 4 lowercase hex chars + optional `" "` +
-/// (collision-counter digits OR a `p<digits>of<digits>` part token — never
-/// both) + `")"`. That covers hashed names like `clip (tamped a3f2)` /
-/// `clip (tamped a3f2 2)`, split parts like `clip (tamped a3f2 p2of5)`, and
-/// the legacy `clip (tamped)` / `clip (tamped 2)` ones.
+/// The recognizer lives in `encoder::plan` (the planner that emits these
+/// names); the scanner delegates so the two can never drift. Covers hashed
+/// names like `clip (tamped a3f2)` / `clip (tamped a3f2 2)`, named ones like
+/// `clip (tamped Discord a3f2)`, split parts, and the legacy forms.
 pub fn tamped_original_stem(stem: &str) -> Option<&str> {
-    let inner = stem.strip_suffix(')')?;
-    let idx = inner.rfind(" (tamped")?;
-    let rest = &inner[idx + " (tamped".len()..];
-    suffix_args_match(rest).then(|| &inner[..idx])
-}
-
-/// Matches what may sit between `" (tamped"` and the closing `")"`:
-/// nothing, `" {hash}"`, `" {digits}"`, `" {part}"`, `" {hash} {digits}"`,
-/// or `" {hash} {part}"`.
-fn suffix_args_match(rest: &str) -> bool {
-    if rest.is_empty() {
-        return true;
-    }
-    let Some(rest) = rest.strip_prefix(' ') else {
-        return false;
-    };
-    match rest.split_once(' ') {
-        None => is_preset_hash(rest) || is_digits(rest) || is_part_token(rest),
-        Some((hash, arg)) => is_preset_hash(hash) && (is_digits(arg) || is_part_token(arg)),
-    }
-}
-
-/// Exactly 4 lowercase hex chars, the shape `encoder::plan::preset_hash` emits.
-fn is_preset_hash(s: &str) -> bool {
-    s.len() == 4 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn is_digits(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// `p<digits>of<digits>` — the split-part token (`encoder::plan` emits
-/// `p{i}of{n}`). Purely shape-based: no range checks, so e.g. `p0of0` is
-/// recognised; the planner only ever writes 1-based `i <= n` names.
-fn is_part_token(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix('p') else {
-        return false;
-    };
-    match rest.split_once("of") {
-        Some((i, n)) => is_digits(i) && is_digits(n),
-        None => false,
-    }
+    crate::encoder::plan::output_original_stem(stem)
 }
 
 fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
@@ -107,6 +64,13 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
     for folder in folders {
         let entries = match std::fs::read_dir(folder) {
             Ok(entries) => entries,
+            // A default watched folder (e.g. Windows' Videos\Screen
+            // Recordings) may not exist until the user first records there;
+            // that's expected, not worth a warning on every scan.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                crate::log_debug!("watched folder {} does not exist yet", folder.display());
+                continue;
+            }
             Err(e) => {
                 crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
                 continue;

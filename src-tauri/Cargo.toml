@@ -19,6 +19,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# macos-private-api stays in the base features and macOSPrivateApi in the
+# base tauri.conf.json: tauri-build enforces feature ↔ flag equality on the
+# MERGED config of whichever platform is building. Both are inert outside
+# macOS.
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "protocol-asset"] }
 tauri-plugin-store = "2"
 tauri-plugin-autostart = "2"
@@ -34,11 +38,15 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+# Free space on the output volume, logged when an encode attempt fails.
+fs4 = "0.13"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# CF_HDROP file lists — pasting outputs as files into Explorer/chat apps.
+clipboard-win = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Already in the tree transitively; a direct dep only for statvfs (logging
-# the output volume's free space when an encode attempt fails).
-libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSPasteboard", "NSPasteboardItem", "NSResponder", "NSWindow"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSEnumerator"] }

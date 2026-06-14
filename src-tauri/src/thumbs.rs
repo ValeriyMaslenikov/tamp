@@ -38,7 +38,7 @@ async fn generate(ffmpeg: &Path, input: &Path, output: &Path) -> bool {
     // short-clip case, not a problem.
     let mut last_failure: Option<String> = None;
     for seek in [Some("1"), None] {
-        let mut cmd = tokio::process::Command::new(ffmpeg);
+        let mut cmd = crate::platform::background_command(ffmpeg);
         // `-v error` keeps the captured stderr to actual error lines.
         cmd.args(["-y", "-v", "error"]);
         if let Some(seek) = seek {

@@ -6,6 +6,7 @@ import {
   onSettingsChanged,
   type Settings,
 } from "./lib/ipc";
+import { initPlatform } from "./lib/platform";
 import { initToast, showToast } from "./lib/toast";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
@@ -63,7 +64,6 @@ function main(): void {
   for (const b of segButtons) {
     b.addEventListener("click", () => setTab(b.dataset.tab as Tab));
   }
-  setTab("videos");
 
   void onPanelShown(() => {
     void listView.refresh();
@@ -79,6 +79,10 @@ function main(): void {
   });
 
   void (async () => {
+    // Platform resolves before the first render so per-OS labels (reveal
+    // button) never flash the wrong OS's wording.
+    await initPlatform();
+    setTab("videos");
     try {
       settings = await getSettings();
       prefsView.render(settings);

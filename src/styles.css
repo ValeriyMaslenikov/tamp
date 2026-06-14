@@ -1,4 +1,4 @@
-@font-face {
+﻿@font-face {
   font-family: "Poppins";
   font-style: normal;
   font-weight: 400;
@@ -292,7 +292,7 @@ textarea {
   overflow: hidden;
 }
 
-/* Magnifier next to the file name; reveals the file in Finder. */
+/* Magnifier next to the file name; reveals the file in the file manager. */
 .row-reveal {
   display: inline-flex;
   align-items: center;
@@ -437,7 +437,7 @@ textarea {
   color: var(--text);
 }
 
-/* "›" rotates into "˅" while the row is expanded. */
+/* "â€º" rotates into "Ë…" while the row is expanded. */
 .row.is-expanded .row-chevron {
   transform: rotate(90deg);
 }
@@ -937,6 +937,39 @@ select.input {
   font-size: 12px;
   font-weight: 500;
   color: var(--text);
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.radio-row:not(:last-child) {
+  border-bottom: 1px solid #232328;
+}
+
+.radio-group {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.radio-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-dim, #b8b8c0);
+  cursor: pointer;
+}
+
+.radio-item input {
+  accent-color: #7c5cfc;
+  cursor: pointer;
 }
 
 .switch {

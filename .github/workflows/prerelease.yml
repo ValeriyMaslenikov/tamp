@@ -1,0 +1,58 @@
+name: Beta release
+
+# Beta tags (vX.Y.Z-beta.N) can be pushed from any branch: tag-push events run
+# the workflow file at the tagged commit, so this needs nothing on main.
+on:
+  push:
+    tags: ["v*-beta*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --prerelease \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Beta build. Unsigned binaries — see the README install notes for the Gatekeeper/SmartScreen bypass." \
+            || echo "release already exists"
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            bundle-glob: src-tauri/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+          - os: windows-11-arm
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/fetch-ffmpeg.ts
+      - name: Build app bundle
+        run: bun tauri build
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" ${{ matrix.bundle-glob }} --clobber

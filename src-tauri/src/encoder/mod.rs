@@ -1,4 +1,5 @@
 pub mod bin;
+pub mod hw;
 pub mod plan;
 pub mod probe;
 pub mod progress;
@@ -11,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::platform::Platform as _;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -68,6 +70,8 @@ impl Phase {
 pub struct PostActions {
     pub copy_to_clipboard: bool,
     pub trash_original: bool,
+    /// Whether to reveal the finished output(s) in the file manager.
+    pub open_after: crate::settings::OpenAfterConvert,
 }
 
 /// Shared slot holding the currently running ffmpeg child so `cancel()` /
@@ -77,12 +81,12 @@ pub type ChildSlot = Arc<Mutex<Option<tokio::process::Child>>>;
 const MAX_TRACKED_JOBS: usize = 50;
 const EMIT_THROTTLE: Duration = Duration::from_millis(100);
 
-/// Bits per pixel per frame below which h264_videotoolbox's quality floor
-/// IGNORES the requested bitrate (a 498 kbit request once emitted 89.7 MB):
-/// such an attempt is wasted work that always overshoots, so the worker
-/// skips straight to two-pass software. Rare after the planner's
-/// auto-degradation — only a plan held at the 640px width floor can still
-/// sit below this.
+/// Bits per pixel per frame below which single-pass hardware encoders'
+/// quality floors IGNORE the requested bitrate (h264_videotoolbox once
+/// emitted 89.7 MB for a 498 kbit request): such an attempt is wasted work
+/// that always overshoots, so the worker skips straight to two-pass
+/// software. Rare after the planner's auto-degradation — only a plan held at
+/// the 640px width floor can still sit below this.
 pub const HW_MIN_BPP: f64 = 0.013;
 
 /// Whether a plan's bitrate is dense enough for the VideoToolbox attempt to
@@ -276,16 +280,11 @@ fn emit_state(inner: &Inner, state: &JobState, force: bool) {
 }
 
 fn update_tray(inner: &Inner, progress: Option<f64>) {
-    let text = progress.map(|p| {
-        let pct = (p.clamp(0.0, 1.0) * 100.0).round() as u32;
-        let queued = inner.pending.load(Ordering::SeqCst);
-        if queued > 0 {
-            format!("{pct}% (+{queued})")
-        } else {
-            format!("{pct}%")
-        }
+    let progress = progress.map(|p| crate::platform::TrayProgress {
+        fraction: p,
+        queued: inner.pending.load(Ordering::SeqCst),
     });
-    crate::tray::set_progress(&inner.app, text);
+    crate::platform::native().tray_progress(&inner.app, progress);
 }
 
 async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
@@ -295,7 +294,7 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
             emit_state(inner, &state, true);
         }
         if inner.pending.load(Ordering::SeqCst) == 0 {
-            crate::tray::set_progress(&inner.app, None);
+            update_tray(inner, None);
         }
         return;
     }
@@ -346,7 +345,7 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
     }
 
     if inner.pending.load(Ordering::SeqCst) == 0 {
-        crate::tray::set_progress(&inner.app, None);
+        update_tray(inner, None);
     }
 }
 
@@ -386,7 +385,8 @@ async fn run_single(
     // unique_output probe, so the fresh encode targets the now-free base
     // expected_output path; an under-target file with mismatched provenance
     // is left alone and the fresh encode lands on a numbered sibling.
-    let expected = plan::expected_output(&job.input, preset_hash, job.preset.format);
+    let expected =
+        plan::expected_output(&job.input, &job.preset.name, preset_hash, job.preset.format);
     if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
         if reuse_is_stale(&inner.app, &job.input, &expected) {
             crate::log_info!(
@@ -506,7 +506,7 @@ async fn run_single(
         let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
         if use_hardware && !hardware_viable(&plan) {
             crate::log_info!(
-                "job {}: plan is {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor — it would ignore the rate and overshoot; starting on two-pass software directly",
+                "job {}: plan is {:.4} bits/pixel/frame, under the ~{HW_MIN_BPP} single-pass hardware quality floor — it would ignore the rate and overshoot; starting on two-pass software directly",
                 job.id,
                 plan.bpp
             );
@@ -582,7 +582,13 @@ async fn run_split_set(
     target_bytes: f64,
 ) -> Result<(), String> {
     let n = split.count;
-    let parts = plan::expected_part_outputs(&job.input, preset_hash, job.preset.format, n);
+    let parts = plan::expected_part_outputs(
+        &job.input,
+        &job.preset.name,
+        preset_hash,
+        job.preset.format,
+        n,
+    );
     crate::log_info!(
         "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
         job.id,
@@ -625,14 +631,16 @@ async fn run_split_set(
             return Ok(());
         }
     }
-    // Anything short of a full clean set is useless: best-effort sweep of
-    // tamp-owned stale part files for this hash (any geometry), then encode
-    // the whole set fresh onto the now-free expected paths.
-    sweep_stale_parts(&plan::expected_output(
-        &job.input,
-        preset_hash,
-        job.preset.format,
-    ));
+    // Anything short of a full clean set is useless: give the fresh set a
+    // clean folder (clears any stale parts from a prior geometry of this
+    // hash), then encode the whole set onto the now-free expected paths.
+    let folder = plan::expected_part_folder(&job.input, &job.preset.name, preset_hash);
+    if let Err(e) = plan::reset_dir(&folder) {
+        return Err(format!(
+            "cannot prepare output folder {}: {e}",
+            folder.display()
+        ));
+    }
 
     match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
         Ok(total) => {
@@ -675,6 +683,9 @@ async fn run_split_set(
                     let _ = std::fs::remove_file(&tmp);
                 }
             }
+            // Drop the now-empty part folder so a failed/cancelled split
+            // leaves nothing behind.
+            let _ = std::fs::remove_dir(&folder);
             Err(err)
         }
     }
@@ -787,7 +798,7 @@ async fn encode_part_set(
             let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
             if use_hardware && !hardware_viable(&plan) {
                 crate::log_info!(
-                    "job {}: part {i}/{n} plans {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor; starting on two-pass software directly",
+                    "job {}: part {i}/{n} plans {:.4} bits/pixel/frame, under the ~{HW_MIN_BPP} single-pass hardware quality floor; starting on two-pass software directly",
                     job.id,
                     plan.bpp
                 );
@@ -837,47 +848,6 @@ pub fn check_reuse_set(parts: &[PathBuf], target_bytes: f64) -> Option<Vec<u64>>
         sizes.push(meta.len());
     }
     Some(sizes)
-}
-
-/// Best-effort sweep of tamp-owned part files belonging to `expected`'s
-/// configuration: every "{stem} (tamped {hash} p{i}of{n}).{ext}" sibling —
-/// ANY part geometry, so leftovers from a previous split shape go too — is
-/// deleted before a fresh set is encoded. Only regular files are touched;
-/// failures are logged and skipped, never fatal.
-fn sweep_stale_parts(expected: &Path) {
-    let (Some(dir), Some(base_stem), Some(ext)) = (
-        expected.parent(),
-        expected.file_stem().and_then(|s| s.to_str()),
-        expected.extension().and_then(|e| e.to_str()),
-    ) else {
-        return;
-    };
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            crate::log_warn!("cannot scan {} for stale part files: {e}", dir.display());
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !plan::is_part_sibling(name, base_stem, ext) {
-            continue;
-        }
-        // DirEntry::metadata does not traverse symlinks, so only a regular
-        // file is ever swept.
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
-            continue;
-        }
-        if let Err(e) = std::fs::remove_file(entry.path()) {
-            crate::log_warn!(
-                "cannot remove stale part file {}: {e}",
-                entry.path().display()
-            );
-        }
-    }
 }
 
 /// The reuse short-circuit decision for the worker: `Some(bytes)` when an
@@ -1106,25 +1076,49 @@ async fn convergence_attempts(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<u64, String> {
-    let mut use_hardware = use_hardware && plan.format == OutputFormat::Mp4;
+    let mut candidates: VecDeque<&'static crate::platform::HwCandidate> =
+        if use_hardware && plan.format == OutputFormat::Mp4 {
+            hw::available_candidates().await.iter().copied().collect()
+        } else {
+            VecDeque::new()
+        };
     for attempt in 0..=retry::MAX_RE_ENCODES {
-        if use_hardware {
-            let hw =
-                run_hardware_pass(plan, info, input, child_slot, is_cancelled, on_progress).await;
-            let fallback_reason = match hw {
+        // Hardware attempt: the first candidate that produces output wins; a
+        // candidate that errors or writes nothing falls through to the next
+        // (same attempt — no convergence info was gained), and an empty
+        // queue means two-pass software.
+        let mut ran_hardware = false;
+        while let Some(cand) = candidates.front().copied() {
+            let hw = run_hardware_pass(
+                cand,
+                plan,
+                info,
+                input,
+                child_slot,
+                is_cancelled,
+                on_progress,
+            )
+            .await;
+            let failure = match hw {
                 Ok(()) => match std::fs::metadata(&plan.output) {
                     Ok(meta) if meta.len() > 0 => None,
-                    _ => Some("hardware encode produced no output".to_string()),
+                    _ => Some(format!("{} produced no output", cand.name)),
                 },
                 Err(e) if is_cancelled() => return Err(e),
                 Err(e) => Some(e),
             };
-            if let Some(reason) = fallback_reason {
-                crate::log_warn!("{reason}; falling back to two-pass libx264");
-                use_hardware = false; // sticks for every later attempt too
+            match failure {
+                None => {
+                    ran_hardware = true;
+                    break;
+                }
+                Some(reason) => {
+                    crate::log_warn!("{reason}; trying the next encoder");
+                    candidates.pop_front();
+                }
             }
         }
-        if !use_hardware {
+        if !ran_hardware {
             // run_passes restarts progress from 0 on its own first callback.
             run_passes(
                 plan,
@@ -1141,7 +1135,7 @@ async fn convergence_attempts(
         let actual = std::fs::metadata(&plan.output)
             .map_err(|e| format!("encoded output missing: {e}"))?
             .len();
-        let encoder = if use_hardware {
+        let encoder = if ran_hardware {
             retry::EncoderKind::Hardware
         } else {
             retry::EncoderKind::Software
@@ -1163,7 +1157,11 @@ async fn convergence_attempts(
                     plan.video_kbit
                 );
                 plan.video_kbit = video_kbit;
-                use_hardware = next_encoder == retry::EncoderKind::Hardware;
+                if next_encoder == retry::EncoderKind::Software {
+                    // Overshoot means rate control lied — switching hardware
+                    // vendors won't fix it; all retries run two-pass x264.
+                    candidates.clear();
+                }
             }
             retry::NextAction::GiveUp => {
                 crate::log_warn!(
@@ -1190,7 +1188,7 @@ fn run_post_actions(
 ) -> Option<String> {
     let mut failures: Vec<String> = Vec::new();
     if post.copy_to_clipboard {
-        match crate::platform::copy_files_to_clipboard(&inner.app, outputs) {
+        match crate::platform::native().copy_files_to_clipboard(&inner.app, outputs) {
             Ok(()) => {
                 for output in outputs {
                     crate::log_info!("copied {} to clipboard", output.display());
@@ -1220,7 +1218,47 @@ fn run_post_actions(
             }
         }
     }
+    open_output_location(&inner.app, &post.open_after, outputs);
     (!failures.is_empty()).then(|| failures.join("; "))
+}
+
+/// Reveals the finished outputs in the system file manager per the user's
+/// `open_after` preference: a multi-part set (more than one output) opens its
+/// containing folder; a single output is revealed in its folder, but only
+/// when the preference is `All`. Cross-platform via the opener plugin;
+/// best-effort, so a failure is logged, not surfaced as a post-error.
+fn open_output_location(
+    app: &AppHandle,
+    open_after: &crate::settings::OpenAfterConvert,
+    outputs: &[PathBuf],
+) {
+    use crate::settings::OpenAfterConvert;
+    use tauri_plugin_opener::OpenerExt as _;
+    let multipart = outputs.len() > 1;
+    let act = match open_after {
+        OpenAfterConvert::Off => false,
+        OpenAfterConvert::Multipart => multipart,
+        OpenAfterConvert::All => true,
+    };
+    if !act {
+        return;
+    }
+    let Some(first) = outputs.first() else {
+        return;
+    };
+    let result = if multipart {
+        match first.parent() {
+            Some(folder) => app
+                .opener()
+                .open_path(folder.to_string_lossy(), None::<&str>),
+            None => return,
+        }
+    } else {
+        app.opener().reveal_item_in_dir(first)
+    };
+    if let Err(e) = result {
+        crate::log_warn!("failed to open output location: {e}");
+    }
 }
 
 /// Records a successful (non-reused) encode in the conversion journal.
@@ -1302,12 +1340,12 @@ pub async fn run_passes(
     .await
 }
 
-/// Runs the single-pass h264_videotoolbox encode for `plan`, reporting
-/// progress as pass 1 mapped to the FULL 0..1 range. `-allow_sw 1` lets
-/// VideoToolbox use Apple's software encoder when no hardware session is
-/// available; the worker falls back to the two-pass libx264 path when this
+/// Runs the single-pass hardware encode for `plan` on `cand`, reporting
+/// progress as pass 1 mapped to the FULL 0..1 range. The worker falls
+/// through to the next candidate (and ultimately two-pass libx264) when this
 /// errors or leaves a missing/empty output. Public for the integration test.
 pub async fn run_hardware_pass(
+    cand: &crate::platform::HwCandidate,
     plan: &plan::EncodePlan,
     info: &probe::ProbeInfo,
     input: &Path,
@@ -1315,7 +1353,7 @@ pub async fn run_hardware_pass(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1332,10 +1370,10 @@ pub async fn run_hardware_pass(
     if let Some(vf) = &plan.vf {
         cmd.arg("-vf").arg(vf);
     }
-    cmd.args(["-c:v", "h264_videotoolbox"])
+    cmd.args(["-c:v", cand.name])
         .arg("-b:v")
         .arg(format!("{}k", plan.video_kbit))
-        .args(["-allow_sw", "1"]);
+        .args(cand.extra_args);
     if plan.audio_kbit > 0 {
         cmd.args(["-c:a", "aac"])
             .arg("-b:a")
@@ -1489,7 +1527,7 @@ async fn run_gif_attempt(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1532,7 +1570,7 @@ async fn run_pass(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1645,26 +1683,11 @@ fn format_argv(cmd: &tokio::process::Command) -> String {
         .join(" ")
 }
 
-/// Free bytes on the volume holding `path` (POSIX statvfs) — logged when an
-/// encode attempt fails, since a full output volume is the classic transient
-/// cause that a re-run hours later doesn't reproduce.
-#[cfg(target_os = "macos")]
+/// Free bytes on the volume holding `path` — logged when an encode attempt
+/// fails, since a full output volume is the classic transient cause that a
+/// re-run hours later doesn't reproduce.
 fn free_disk_bytes(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
-    // SAFETY: cpath is a valid NUL-terminated path and stat points at
-    // properly sized writable memory; statvfs only writes into it.
-    if unsafe { libc::statvfs(cpath.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let stat = unsafe { stat.assume_init() };
-    Some(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn free_disk_bytes(_path: &Path) -> Option<u64> {
-    None
+    fs4::available_space(path).ok()
 }
 
 /// Best-effort log of the output volume's free space after a failed attempt.
@@ -1843,6 +1866,10 @@ mod tests {
         assert!(out.is_dir(), "a squatting directory must be left alone");
     }
 
+    // Symlink creation is unprivileged only on Unix; the symlink-rejection
+    // logic itself (symlink_metadata) is platform-neutral and CI covers it
+    // on macOS.
+    #[cfg(unix)]
     #[test]
     fn check_reuse_leaves_a_symlink_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -2039,6 +2066,8 @@ mod tests {
         assert!(parts[0].exists() && parts[1].exists() && parts[2].exists());
     }
 
+    // See check_reuse_leaves_a_symlink_alone for the cfg(unix) rationale.
+    #[cfg(unix)]
     #[test]
     fn check_reuse_set_rejects_a_symlinked_part() {
         let dir = tempfile::tempdir().unwrap();
@@ -2052,36 +2081,6 @@ mod tests {
             std::fs::symlink_metadata(&parts[1]).unwrap().is_symlink(),
             "the symlink must be left alone"
         );
-    }
-
-    #[test]
-    fn sweep_stale_parts_removes_any_part_geometry_of_the_hash_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mine = dir.path().join("clip (tamped 823f p1of3).mp4");
-        std::fs::write(&mine, vec![0u8; 100]).unwrap();
-        // A leftover from a previous split geometry of the SAME hash.
-        let old_geometry = dir.path().join("clip (tamped 823f p2of7).mp4");
-        std::fs::write(&old_geometry, vec![0u8; 100]).unwrap();
-        // Everything below must survive the sweep.
-        let base = dir.path().join("clip (tamped 823f).mp4");
-        std::fs::write(&base, vec![0u8; 100]).unwrap();
-        let numbered = dir.path().join("clip (tamped 823f 2).mp4");
-        std::fs::write(&numbered, vec![0u8; 100]).unwrap();
-        let other_hash = dir.path().join("clip (tamped ffff p1of3).mp4");
-        std::fs::write(&other_hash, vec![0u8; 100]).unwrap();
-        let other_stem = dir.path().join("other (tamped 823f p1of3).mp4");
-        std::fs::write(&other_stem, vec![0u8; 100]).unwrap();
-        let in_flight = dir.path().join("clip (tamped 823f p1of3).mp4.part");
-        std::fs::write(&in_flight, vec![0u8; 100]).unwrap();
-
-        sweep_stale_parts(&base);
-        assert!(!mine.exists(), "this hash's part files must be swept");
-        assert!(!old_geometry.exists(), "old geometries must be swept too");
-        assert!(base.exists(), "the base output must survive");
-        assert!(numbered.exists(), "numbered siblings must survive");
-        assert!(other_hash.exists(), "other configurations must survive");
-        assert!(other_stem.exists(), "other inputs must survive");
-        assert!(in_flight.exists(), "in-flight temps must survive the sweep");
     }
 
     #[test]
