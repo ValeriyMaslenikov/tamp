@@ -7,6 +7,7 @@ import {
   type OutputFormat,
   type Preset,
   type Settings,
+  type VideosLayout,
 } from "../lib/ipc";
 import {
   field,
@@ -119,6 +120,7 @@ export function createPreferencesView(opts: {
       el.append(add);
     }
     el.append(sectionLabel("Behavior"), behaviorCard());
+    el.append(sectionLabel("Videos screen"), videosLayoutCard());
     el.append(sectionLabel("Shortcuts"), shortcutsCard());
     el.append(sectionLabel("Watched folders"), foldersCard());
     el.append(versionLine());
@@ -376,6 +378,53 @@ export function createPreferencesView(opts: {
     }
     row.append(label, group);
     return row;
+  }
+
+  /** Radio cards choosing how the Videos screen offers presets. */
+  function videosLayoutCard(): HTMLElement {
+    const s = current as Settings;
+    const card = document.createElement("div");
+    card.className = "card";
+    const options: { value: VideosLayout; title: string; desc: string }[] = [
+      {
+        value: "quick-pick",
+        title: "Pick a preset each time",
+        desc: "Clicking a video opens a quick menu — your default is preselected, or press 1–9 to choose another.",
+      },
+      {
+        value: "active-bar",
+        title: "Keep one preset active",
+        desc: "A bar holds one active preset; clicking a video applies it instantly. Switch it with ‹ › or [ ].",
+      },
+    ];
+    for (const opt of options) {
+      const row = document.createElement("label");
+      row.className = "option-row";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "videos-layout";
+      input.className = "option-radio";
+      input.checked = s.videosLayout === opt.value;
+      input.addEventListener("change", () => {
+        if (input.checked) {
+          void persist((d) => {
+            d.videosLayout = opt.value;
+          });
+        }
+      });
+      const text = document.createElement("div");
+      text.className = "option-text";
+      const title = document.createElement("div");
+      title.className = "option-title";
+      title.textContent = opt.title;
+      const desc = document.createElement("div");
+      desc.className = "option-desc";
+      desc.textContent = opt.desc;
+      text.append(title, desc);
+      row.append(input, text);
+      card.appendChild(row);
+    }
+    return card;
   }
 
   function behaviorCard(): HTMLElement {
