@@ -32,11 +32,25 @@ accept. tamp fixes that in one click:
   <img src="docs/panel.png" width="420" alt="tamp panel showing recent recordings" />
 </p>
 
+<p align="center">
+  <img src="docs/convert.gif" width="360" alt="compressing a recording in one click — click a video, watch it shrink under the target" />
+</p>
+
 ## Features
 
 - 🎯 **Size-first presets** — "fit under N MB" is the primary control, with optional FPS caps,
   downscaling, and audio stripping. Ships with a *Discord (10 MB)* preset; add your own for
   Slack, email, etc.
+- 🎚️ **Two ways to pick a preset** — pick the flow that fits how you work (Preferences →
+  *Videos screen*): a **quick-pick menu** that opens on click with your default preselected
+  (press <kbd>1</kbd>–<kbd>9</kbd> for the rest), or a persistent **active-preset bar** you set
+  once (<kbd>‹</kbd> <kbd>›</kbd> / <kbd>[</kbd> <kbd>]</kbd>) and apply to every clip with one click.
+
+  <p align="center">
+    <img src="docs/preset-quickpick.png" width="300" alt="quick-pick preset menu, default preselected" />
+    &nbsp;&nbsp;
+    <img src="docs/preset-active-bar.png" width="300" alt="active-preset bar above the recordings list" />
+  </p>
 - 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated — VideoToolbox on macOS;
   NVENC/QSV/AMF/Media Foundation on Windows), WebM (two-pass VP9 + Opus) for the web, and
   GIF (palette-optimized, size-targeted) for the messengers that still insist on it.
