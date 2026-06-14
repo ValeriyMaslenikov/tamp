@@ -1,0 +1,62 @@
+/* Shared look for the preset-selection mockups — approximates tamp's panel.
+   These are throwaway visual mockups, not production CSS. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #161618;
+  --panel: #1c1c1f;
+  --card: #232327;
+  --line: #2c2c31;
+  --text: #ececf0;
+  --dim: #9a9aa3;
+  --accent: #7c5cfc;
+}
+body {
+  background: #0b0b0d;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  display: flex; gap: 28px; flex-wrap: wrap;
+  padding: 28px; color: var(--text);
+}
+.panel {
+  width: 460px; height: 640px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 16px 40px rgba(0,0,0,.45);
+}
+.tabs { display: flex; gap: 6px; padding: 12px; }
+.tab {
+  flex: 1; text-align: center; padding: 9px; border-radius: 9px;
+  font-size: 13px; font-weight: 600; color: var(--dim);
+  background: var(--card);
+}
+.tab.active { background: var(--accent); color: #fff; }
+.content { flex: 1; overflow: hidden; padding: 0 12px; display: flex; flex-direction: column; }
+.filter {
+  border: 1px solid var(--accent); border-radius: 9px;
+  padding: 10px 12px; font-size: 12px; color: var(--dim);
+  background: #141416; margin-bottom: 10px;
+}
+.rows { display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+.row {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px;
+}
+.row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.thumb { width: 56px; height: 36px; border-radius: 5px; flex: none;
+  background: linear-gradient(90deg,#e23b3b,#37d05a,#2b8bff,#c14bff); }
+.meta { flex: 1; min-width: 0; }
+.name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 10.5px; color: var(--dim); margin-top: 3px; }
+.chev { color: var(--dim); font-size: 16px; }
+.footer { padding: 10px 12px; font-size: 10.5px; color: var(--dim); text-align: center; border-top: 1px solid var(--line); }
+.caption { width: 460px; color: #cfcfd6; font-size: 13px; line-height: 1.5; }
+.caption h2 { font-size: 15px; margin-bottom: 6px; color: #fff; }
+.caption .tag { color: var(--accent); font-weight: 600; }
+/* shared bits the individual mockups extend */
+.pill { font-size: 11px; padding: 5px 11px; border-radius: 999px; background: var(--card); color: var(--dim); border: 1px solid var(--line); white-space: nowrap; }
+.pill.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn { font-size: 11px; font-weight: 600; padding: 6px 12px; border-radius: 8px; background: var(--accent); color: #fff; }
+.btn.ghost { background: var(--card); color: var(--text); border: 1px solid var(--line); }
