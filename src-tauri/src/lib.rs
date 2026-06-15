@@ -61,6 +61,34 @@ fn migrate_legacy_data(app: &AppHandle) {
     }
 }
 
+/// First argument (after argv[0]) that names a video by extension. Pure — does
+/// not touch the filesystem — so it's unit-testable.
+fn first_video_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| crate::scanner::has_video_ext(std::path::Path::new(a)))
+        .cloned()
+}
+
+/// Compresses the first existing video among `args` with the default preset and
+/// surfaces the panel. Returns `true` when a file was handled. Powers the
+/// Explorer "Compress with tamp" entry (single-instance forwards args) and
+/// `tamp <file>` from a shell.
+fn compress_file_args(app: &AppHandle, args: &[String]) -> bool {
+    let Some(arg) = first_video_arg(args) else {
+        return false;
+    };
+    if !std::path::Path::new(&arg).is_file() {
+        return false;
+    }
+    match crate::commands::enqueue_default(app, arg.clone()) {
+        Ok(_) => log_info!("compressing \"{arg}\" (from CLI / context menu)"),
+        Err(e) => log_warn!("cannot compress \"{arg}\": {e}"),
+    }
+    show_panel_fallback(app);
+    true
+}
+
 /// Shows the panel when there is no tray-click rect to position against
 /// (app relaunch, Dock/Finder reopen).
 fn show_panel_fallback(app: &AppHandle) {
@@ -96,8 +124,13 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_panel_fallback(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch (e.g. the Explorer "Compress with tamp" entry,
+            // which runs `tamp.exe "<file>"`) forwards its args here. Compress
+            // the file if one was passed; otherwise just surface the panel.
+            if !compress_file_args(app, &args) {
+                show_panel_fallback(app);
+            }
         }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -189,6 +222,11 @@ pub fn run() {
                     log_warn!("failed to configure panel: {e}");
                 }
             }
+
+            // First launch may itself carry a file (the context menu launching
+            // tamp for the first time, or `tamp <file>` from a shell).
+            let argv: Vec<String> = std::env::args().collect();
+            compress_file_args(app.handle(), &argv);
             Ok(())
         })
         .on_window_event(|_window, _event| {
@@ -249,4 +287,26 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use super::first_video_arg;
+
+    #[test]
+    fn picks_the_first_video_arg_skipping_argv0() {
+        let args = vec![
+            "tamp.exe".to_string(),
+            "--flag".to_string(),
+            "C:\\a\\clip.MP4".to_string(),
+            "C:\\a\\other.mkv".to_string(),
+        ];
+        assert_eq!(first_video_arg(&args), Some("C:\\a\\clip.MP4".to_string()));
+    }
+
+    #[test]
+    fn returns_none_without_a_video_arg() {
+        let args = vec!["tamp.exe".to_string(), "--toggle".to_string()];
+        assert_eq!(first_video_arg(&args), None);
+    }
 }
