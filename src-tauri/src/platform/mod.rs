@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "windows")]
+pub mod context_menu;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(target_os = "macos", test))]

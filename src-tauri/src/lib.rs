@@ -217,6 +217,11 @@ pub fn run() {
                 log_warn!("failed to register global shortcuts: {e}");
             }
 
+            #[cfg(target_os = "windows")]
+            if let Err(e) = platform::context_menu::apply(loaded.context_menu_enabled) {
+                log_warn!("failed to apply context-menu setting at startup: {e}");
+            }
+
             if let Some(panel) = app.get_webview_window("panel") {
                 if let Err(e) = platform::native().configure_panel(&panel) {
                     log_warn!("failed to configure panel: {e}");
@@ -263,7 +268,8 @@ pub fn run() {
             commands::copy_file,
             commands::reveal,
             commands::os_info,
-            commands::list_conversions
+            commands::list_conversions,
+            commands::set_context_menu
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");

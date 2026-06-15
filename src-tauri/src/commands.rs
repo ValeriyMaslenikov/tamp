@@ -369,6 +369,21 @@ pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord>
         .unwrap_or_default()
 }
 
+/// Registers/removes the Windows Explorer "Compress with tamp" entry and
+/// persists the choice. No-op (Ok) on non-Windows.
+#[tauri::command]
+pub fn set_context_menu(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    crate::platform::context_menu::apply(enabled)?;
+    {
+        let state = app.state::<SettingsState>();
+        let mut guard = lock_settings(&state);
+        guard.context_menu_enabled = enabled;
+        settings::save(&app, &guard)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

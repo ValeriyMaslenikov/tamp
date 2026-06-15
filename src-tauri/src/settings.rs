@@ -187,6 +187,10 @@ pub struct Settings {
     /// Color theme for the panel (system / light / dark).
     #[serde(default)]
     pub theme: Theme,
+    /// Windows: whether the Explorer "Compress with tamp" right-click entry is
+    /// registered. Ignored on other platforms.
+    #[serde(default = "default_true")]
+    pub context_menu_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -241,6 +245,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         open_after_convert: OpenAfterConvert::default(),
         videos_layout: VideosLayout::default(),
         theme: Theme::default(),
+        context_menu_enabled: true,
     }
 }
 
