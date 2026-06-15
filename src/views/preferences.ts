@@ -428,6 +428,24 @@ export function createPreferencesView(opts: {
       row.append(input, text);
       card.appendChild(row);
     }
+
+    const limitInput = numberInput(s.recentsLimit, "50");
+    limitInput.min = "1";
+    limitInput.max = "200";
+    limitInput.step = "1";
+    limitInput.addEventListener("change", () => {
+      const n = Math.round(Number(limitInput.value));
+      if (!Number.isFinite(n) || n < 1 || n > 200) {
+        showToast("Recent videos shown must be a whole number from 1 to 200");
+        limitInput.value = String((current as Settings).recentsLimit);
+        return;
+      }
+      void persist((d) => {
+        d.recentsLimit = n;
+      });
+    });
+    card.append(field("Recent videos shown", limitInput));
+
     return card;
   }
 
