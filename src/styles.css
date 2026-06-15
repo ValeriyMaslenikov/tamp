@@ -130,10 +130,14 @@ textarea {
 .panel-header {
   padding: 12px 12px 8px;
   flex: none;
+  display: flex;
+  align-items: center;
 }
 
 .seg {
   display: flex;
+  flex: 1;
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -190,7 +194,26 @@ textarea {
 
 .filter-row {
   flex: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
   padding: 0 12px 8px;
+}
+.add-file-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 0 10px;
+  height: 30px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-file-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .list-scroll {
@@ -1526,4 +1549,50 @@ select.input {
   color: var(--text-dim);
   margin-top: 3px;
   line-height: 1.45;
+}
+
+.pin-btn {
+  flex: none;
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.pin-btn.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-deep);
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  pointer-events: none;
+}
+.drop-inner {
+  text-align: center;
+  color: var(--text);
+}
+.drop-arrow {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.drop-big {
+  font-size: 14px;
+  font-weight: 600;
 }

@@ -204,6 +204,16 @@ impl Platform for Windows {
         ]
     }
 
+    fn primary_mouse_button_down(&self) -> bool {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetAsyncKeyState(v_key: i32) -> i16;
+        }
+        const VK_LBUTTON: i32 = 0x01;
+        // High-order bit set ⇒ key is currently down.
+        (unsafe { GetAsyncKeyState(VK_LBUTTON) } as u16 & 0x8000) != 0
+    }
+
     fn resolve_accelerator(&self, accelerator: &str) -> String {
         // Windows hotkeys go through the active layout already (RegisterHotKey
         // is virtual-key based), so the configured character works as typed.

@@ -20,3 +20,8 @@ export async function initPlatform(): Promise<void> {
 export function revealLabel(): string {
   return os === "macos" ? "Reveal in Finder" : "Show in Explorer";
 }
+
+/** Whether the backend OS is Windows (gates Windows-only Preferences). */
+export function isWindows(): boolean {
+  return os === "windows";
+}

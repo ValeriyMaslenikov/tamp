@@ -24,6 +24,9 @@ const LEGACY_IDENTIFIER: &str = "com.joystudios.tamp";
 /// hide-on-blur handler must not close the panel when the dialog takes focus.
 pub struct DialogOpen(pub AtomicBool);
 
+/// Session-only "keep the panel open" flag, toggled by the pin button.
+pub struct Pinned(pub AtomicBool);
+
 /// One-time, best-effort migration of settings and the conversion journal
 /// from the pre-rebrand app-data dir. Must run before `settings::load`: a
 /// rebranded install starts with an empty app-data dir and would otherwise
@@ -61,6 +64,34 @@ fn migrate_legacy_data(app: &AppHandle) {
     }
 }
 
+/// First argument (after argv[0]) that names a video by extension. Pure — does
+/// not touch the filesystem — so it's unit-testable.
+fn first_video_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| crate::scanner::has_video_ext(std::path::Path::new(a)))
+        .cloned()
+}
+
+/// Compresses the first existing video among `args` with the default preset and
+/// surfaces the panel. Returns `true` when a file was handled. Powers the
+/// Explorer "Compress with tamp" entry (single-instance forwards args) and
+/// `tamp <file>` from a shell.
+fn compress_file_args(app: &AppHandle, args: &[String]) -> bool {
+    let Some(arg) = first_video_arg(args) else {
+        return false;
+    };
+    if !std::path::Path::new(&arg).is_file() {
+        return false;
+    }
+    match crate::commands::enqueue_default(app, arg.clone()) {
+        Ok(_) => log_info!("compressing \"{arg}\" (from CLI / context menu)"),
+        Err(e) => log_warn!("cannot compress \"{arg}\": {e}"),
+    }
+    show_panel_fallback(app);
+    true
+}
+
 /// Shows the panel when there is no tray-click rect to position against
 /// (app relaunch, Dock/Finder reopen).
 fn show_panel_fallback(app: &AppHandle) {
@@ -93,11 +124,26 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
     show_panel_fallback(app);
 }
 
+/// Whether the panel should hide when it loses focus. It stays open while a
+/// native dialog is up, while pinned, or while the primary mouse button is held
+/// (a drag is in flight and may be heading to us). Only the release-only
+/// hide-on-blur handler (and tests) call it, so it's dead code in a debug lib
+/// build where that handler is compiled out.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+fn should_hide_on_blur(dialog_open: bool, pinned: bool, mouse_button_down: bool) -> bool {
+    !dialog_open && !pinned && !mouse_button_down
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_panel_fallback(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A second launch (e.g. the Explorer "Compress with tamp" entry,
+            // which runs `tamp.exe "<file>"`) forwards its args here. Compress
+            // the file if one was passed; otherwise just surface the panel.
+            if !compress_file_args(app, &args) {
+                show_panel_fallback(app);
+            }
         }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -165,6 +211,7 @@ pub fn run() {
                 loaded.clone(),
             )));
             app.manage(DialogOpen(AtomicBool::new(false)));
+            app.manage(Pinned(AtomicBool::new(false)));
             app.manage(journal::Journal::load(app.handle()));
             app.manage(durations::Durations::load(app.handle()));
             app.manage(previews::Previews::default());
@@ -184,11 +231,21 @@ pub fn run() {
                 log_warn!("failed to register global shortcuts: {e}");
             }
 
+            #[cfg(target_os = "windows")]
+            if let Err(e) = platform::context_menu::apply(loaded.context_menu_enabled) {
+                log_warn!("failed to apply context-menu setting at startup: {e}");
+            }
+
             if let Some(panel) = app.get_webview_window("panel") {
                 if let Err(e) = platform::native().configure_panel(&panel) {
                     log_warn!("failed to configure panel: {e}");
                 }
             }
+
+            // First launch may itself carry a file (the context menu launching
+            // tamp for the first time, or `tamp <file>` from a shell).
+            let argv: Vec<String> = std::env::args().collect();
+            compress_file_args(app.handle(), &argv);
             Ok(())
         })
         .on_window_event(|_window, _event| {
@@ -197,17 +254,21 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             if let tauri::WindowEvent::Focused(false) = _event {
                 if _window.label() == "panel" {
-                    // A native dialog (folder picker) taking focus must not
-                    // close the panel out from under it.
-                    let dialog_open = _window
-                        .app_handle()
+                    let app = _window.app_handle();
+                    // A native dialog (folder picker) taking focus, the pin, or
+                    // an in-flight drag (mouse button held) must each keep the
+                    // panel open out from under them.
+                    let dialog_open = app
                         .try_state::<DialogOpen>()
                         .is_some_and(|s| s.0.load(std::sync::atomic::Ordering::SeqCst));
-                    if dialog_open {
-                        return;
-                    }
-                    if let Err(e) = _window.hide() {
-                        log_warn!("failed to hide panel on focus loss: {e}");
+                    let pinned = app
+                        .try_state::<Pinned>()
+                        .is_some_and(|s| s.0.load(std::sync::atomic::Ordering::SeqCst));
+                    let mouse_down = platform::native().primary_mouse_button_down();
+                    if should_hide_on_blur(dialog_open, pinned, mouse_down) {
+                        if let Err(e) = _window.hide() {
+                            log_warn!("failed to hide panel on focus loss: {e}");
+                        }
                     }
                 }
             }
@@ -225,7 +286,10 @@ pub fn run() {
             commands::copy_file,
             commands::reveal,
             commands::os_info,
-            commands::list_conversions
+            commands::list_conversions,
+            commands::set_context_menu,
+            commands::set_pin,
+            commands::pick_videos
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
@@ -249,4 +313,46 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use super::first_video_arg;
+
+    #[test]
+    fn picks_the_first_video_arg_skipping_argv0() {
+        let args = vec![
+            "tamp.exe".to_string(),
+            "--flag".to_string(),
+            "C:\\a\\clip.MP4".to_string(),
+            "C:\\a\\other.mkv".to_string(),
+        ];
+        assert_eq!(first_video_arg(&args), Some("C:\\a\\clip.MP4".to_string()));
+    }
+
+    #[test]
+    fn returns_none_without_a_video_arg() {
+        let args = vec!["tamp.exe".to_string(), "--toggle".to_string()];
+        assert_eq!(first_video_arg(&args), None);
+    }
+}
+
+#[cfg(test)]
+mod hide_tests {
+    use super::should_hide_on_blur;
+
+    #[test]
+    fn hides_when_idle() {
+        assert!(should_hide_on_blur(false, false, false));
+    }
+
+    #[test]
+    fn keeps_open_during_a_dialog_pin_or_drag() {
+        assert!(!should_hide_on_blur(true, false, false), "dialog open");
+        assert!(!should_hide_on_blur(false, true, false), "pinned");
+        assert!(
+            !should_hide_on_blur(false, false, true),
+            "mouse button held (drag)"
+        );
+    }
 }

@@ -31,7 +31,7 @@ pub struct RecentVideo {
 
 const VIDEO_EXTS: [&str; 6] = ["mov", "mp4", "m4v", "webm", "mkv", "avi"];
 
-fn has_video_ext(path: &Path) -> bool {
+pub(crate) fn has_video_ext(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| VIDEO_EXTS.iter().any(|v| ext.eq_ignore_ascii_case(v)))

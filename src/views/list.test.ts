@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminal, videoListSignature } from "./list";
+import { isTerminal, shouldPickPreset, videoListSignature } from "./list";
 import type { RecentVideo } from "../lib/ipc";
 
 const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
@@ -26,6 +26,18 @@ describe("isTerminal", () => {
     expect(isTerminal("pass1")).toBe(false);
     expect(isTerminal("pass2")).toBe(false);
     expect(isTerminal("verifying")).toBe(false);
+  });
+});
+
+describe("shouldPickPreset", () => {
+  it("opens the chooser in quick-pick mode", () => {
+    expect(shouldPickPreset("quick-pick", false)).toBe(true);
+  });
+  it("uses the active preset in active-bar mode", () => {
+    expect(shouldPickPreset("active-bar", false)).toBe(false);
+  });
+  it("opens the chooser on Alt-drop even in active-bar mode", () => {
+    expect(shouldPickPreset("active-bar", true)).toBe(true);
   });
 });
 

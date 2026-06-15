@@ -93,6 +93,11 @@ impl Platform for MacOs {
         }]
     }
 
+    fn primary_mouse_button_down(&self) -> bool {
+        // Bit 0 of the pressed-button mask is the left button.
+        (unsafe { objc2_app_kit::NSEvent::pressedMouseButtons() } & 1) != 0
+    }
+
     fn resolve_accelerator(&self, accelerator: &str) -> String {
         // macOS hotkeys are positional; rewrite the key token to the position
         // that types the configured character in the active layout.

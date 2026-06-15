@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "windows")]
+pub mod context_menu;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(target_os = "macos", test))]
@@ -138,6 +140,11 @@ pub trait Platform {
     /// Hardware H.264 encoders this OS can offer, in preference order.
     /// Empty means hardware encoding is never attempted.
     fn hw_candidates(&self) -> &'static [HwCandidate];
+
+    /// Whether the primary (left) mouse button is currently held — used to keep
+    /// the panel open while a file is being dragged in from the OS file manager
+    /// (the drag starts, blurring us, before any dragenter reaches the webview).
+    fn primary_mouse_button_down(&self) -> bool;
 
     /// Rewrites a global-shortcut accelerator so it fires on the key that
     /// PRODUCES the configured character in the user's current keyboard

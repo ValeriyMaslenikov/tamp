@@ -4,7 +4,7 @@
     "targets": ["nsis"],
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "nsis-hooks.nsh" }
     }
   }
 }

@@ -193,10 +193,34 @@ fn trash_conflicts<'a>(
     })
 }
 
+/// The directory to grant asset-protocol access to for `path`, or `None` when
+/// it already sits inside a watched folder (whose dir is allowed at startup).
+/// Lets thumbnails/previews load for files dropped or added from anywhere.
+fn dir_to_allow(path: &std::path::Path, watched: &[String]) -> Option<std::path::PathBuf> {
+    let parent = path.parent()?;
+    let inside = watched
+        .iter()
+        .any(|w| path.starts_with(std::path::Path::new(w)));
+    if inside {
+        None
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
 /// The single enqueue path shared by `enqueue`, `custom_convert` and the
 /// compress-latest global shortcut: applies the trash-original multi-preset
 /// guard and the user's post-action/encoder settings.
 fn enqueue_preset(app: &AppHandle, path: String, preset: Preset) -> Result<String, String> {
+    {
+        let state = app.state::<SettingsState>();
+        let watched = lock_settings(&state).watched_folders.clone();
+        if let Some(dir) = dir_to_allow(std::path::Path::new(&path), &watched) {
+            if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, false) {
+                crate::log_warn!("failed to widen asset scope to {}: {e}", dir.display());
+            }
+        }
+    }
     let (post, use_hardware) = {
         let state = app.state::<SettingsState>();
         let guard = lock_settings(&state);
@@ -345,6 +369,71 @@ pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord>
         .unwrap_or_default()
 }
 
+/// Registers/removes the Windows Explorer "Compress with tamp" entry and
+/// persists the choice. No-op (Ok) on non-Windows.
+#[tauri::command]
+pub fn set_context_menu(app: AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    crate::platform::context_menu::apply(enabled)?;
+    {
+        let state = app.state::<SettingsState>();
+        let mut guard = lock_settings(&state);
+        guard.context_menu_enabled = enabled;
+        settings::save(&app, &guard)?;
+    }
+    Ok(())
+}
+
+/// Opens a native multi-select dialog filtered to video files; returns the
+/// chosen paths (empty if cancelled). Mirrors `pick_folder`'s dialog guard so
+/// the release-only hide-on-blur handler doesn't close the panel.
+#[tauri::command]
+pub async fn pick_videos(app: AppHandle) -> Vec<String> {
+    struct DialogGuard<'a>(&'a crate::DialogOpen);
+    impl Drop for DialogGuard<'_> {
+        fn drop(&mut self) {
+            self.0 .0.store(false, Ordering::SeqCst);
+        }
+    }
+    let dialog_open = app.state::<crate::DialogOpen>();
+    dialog_open.0.store(true, Ordering::SeqCst);
+    let guard = DialogGuard(dialog_open.inner());
+
+    let dialog_app = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .add_filter("Video", &["mov", "mp4", "m4v", "webm", "mkv", "avi"])
+            .blocking_pick_files()
+    })
+    .await;
+    drop(guard);
+
+    if let Some(panel) = app.get_webview_window("panel") {
+        if !panel.is_visible().unwrap_or(true) {
+            let _ = panel.show();
+        }
+        let _ = panel.set_focus();
+    }
+
+    match picked {
+        Ok(Some(files)) => files
+            .into_iter()
+            .filter_map(|f| f.into_path().ok().map(|p| p.to_string_lossy().into_owned()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Toggles the session-only "keep the panel open" pin.
+#[tauri::command]
+pub fn set_pin(app: AppHandle, pinned: bool) {
+    if let Some(state) = app.try_state::<crate::Pinned>() {
+        state.0.store(pinned, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +519,25 @@ mod tests {
                 "phase must conflict"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::dir_to_allow;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn allows_parent_of_a_file_outside_watched_folders() {
+        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
+        let got = dir_to_allow(Path::new("C:\\Downloads\\clip.mp4"), &watched);
+        assert_eq!(got, Some(PathBuf::from("C:\\Downloads")));
+    }
+
+    #[test]
+    fn skips_files_already_inside_a_watched_folder() {
+        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
+        let got = dir_to_allow(Path::new("C:\\Users\\me\\Videos\\rec.mp4"), &watched);
+        assert_eq!(got, None);
     }
 }
