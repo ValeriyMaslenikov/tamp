@@ -8,6 +8,7 @@ import {
   type Settings,
 } from "./lib/ipc";
 import { createDrawer } from "./lib/drawer";
+import { initDragDrop } from "./lib/dragdrop";
 import { initPlatform } from "./lib/platform";
 import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
@@ -86,6 +87,11 @@ function main(): void {
   for (const b of segButtons) {
     b.addEventListener("click", () => setTab(b.dataset.tab as Tab));
   }
+
+  initDragDrop({
+    compressPaths: (paths, altHeld) => listView.compressPaths(paths, altHeld),
+    currentDropHint: () => listView.currentDropHint(),
+  });
 
   void onPanelShown(() => {
     void listView.refresh();

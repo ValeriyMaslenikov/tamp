@@ -1550,3 +1550,30 @@ select.input {
   border-color: var(--accent);
   background: var(--accent-deep);
 }
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  pointer-events: none;
+}
+.drop-inner {
+  text-align: center;
+  color: var(--text);
+}
+.drop-arrow {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.drop-big {
+  font-size: 14px;
+  font-weight: 600;
+}
