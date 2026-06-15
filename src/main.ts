@@ -7,6 +7,7 @@ import {
   type Settings,
 } from "./lib/ipc";
 import { initPlatform } from "./lib/platform";
+import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
@@ -38,6 +39,7 @@ function main(): void {
   const prefsView = createPreferencesView({
     onSettings: (s) => {
       settings = s;
+      applyTheme(s.theme);
       listView.onSettingsChanged();
     },
   });
@@ -74,6 +76,7 @@ function main(): void {
   });
   void onSettingsChanged((s) => {
     settings = s;
+    applyTheme(s.theme);
     prefsView.render(s);
     listView.onSettingsChanged();
   });
@@ -85,6 +88,7 @@ function main(): void {
     setTab("videos");
     try {
       settings = await getSettings();
+      applyTheme(settings.theme);
       prefsView.render(settings);
       listView.onSettingsChanged();
     } catch (e) {
