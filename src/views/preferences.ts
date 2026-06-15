@@ -3,6 +3,7 @@ import {
   getSettings,
   pickFolder,
   saveSettings,
+  setContextMenu,
   type OpenAfterConvert,
   type OutputFormat,
   type Preset,
@@ -10,6 +11,7 @@ import {
   type Theme,
   type VideosLayout,
 } from "../lib/ipc";
+import { isWindows } from "../lib/platform";
 import {
   field,
   formatSelect,
@@ -494,6 +496,28 @@ export function createPreferencesView(opts: {
           }),
       ),
     );
+    // Windows-only: register/remove the Explorer "Compress with tamp" entry.
+    // The backend command both updates the registry and persists the setting,
+    // so we reflect the choice locally rather than via persist()/saveSettings.
+    if (isWindows()) {
+      card.append(
+        toggleRow(
+          "Add “Compress with tamp” to Explorer’s right-click menu",
+          s.contextMenuEnabled,
+          (v) => {
+            void setContextMenu(v)
+              .then(() => {
+                if (current) current.contextMenuEnabled = v;
+                lastJson = JSON.stringify(current);
+              })
+              .catch((e) => {
+                showToast(String(e));
+                paint(); // revert the switch to the persisted state
+              });
+          },
+        ),
+      );
+    }
     return card;
   }
 

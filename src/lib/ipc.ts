@@ -51,6 +51,8 @@ export interface Settings {
   videosLayout: VideosLayout;
   /** Color theme for the panel. */
   theme: Theme;
+  /** Windows: Explorer "Compress with tamp" right-click entry registered. */
+  contextMenuEnabled: boolean;
 }
 
 /** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
@@ -146,6 +148,9 @@ export const getSettings = (): Promise<Settings> =>
 
 export const saveSettings = (settings: Settings): Promise<Settings> =>
   invoke<Settings>("save_settings", { settings });
+
+export const setContextMenu = (enabled: boolean): Promise<void> =>
+  invoke<void>("set_context_menu", { enabled });
 
 export const pickFolder = (): Promise<string | null> =>
   invoke<string | null>("pick_folder");
