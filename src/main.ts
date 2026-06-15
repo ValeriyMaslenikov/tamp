@@ -6,13 +6,15 @@ import {
   onSettingsChanged,
   type Settings,
 } from "./lib/ipc";
+import { createDrawer } from "./lib/drawer";
 import { initPlatform } from "./lib/platform";
 import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
+import { createConvertedView } from "./views/converted";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
 
-type Tab = "videos" | "prefs";
+type Tab = "videos" | "converted" | "prefs";
 
 function main(): void {
   const app = document.getElementById("app");
@@ -23,6 +25,7 @@ function main(): void {
       <header class="panel-header">
         <div class="seg" role="tablist">
           <button type="button" class="seg-btn is-active" data-tab="videos" role="tab">Videos</button>
+          <button type="button" class="seg-btn" data-tab="converted" role="tab">Converted</button>
           <button type="button" class="seg-btn" data-tab="prefs" role="tab">Preferences</button>
         </div>
       </header>
@@ -36,6 +39,7 @@ function main(): void {
   let settings: Settings | null = null;
 
   const listView = createListView(() => settings);
+  const convertedView = createConvertedView();
   const prefsView = createPreferencesView({
     onSettings: (s) => {
       settings = s;
@@ -45,7 +49,9 @@ function main(): void {
   });
 
   const content = document.getElementById("content") as HTMLElement;
-  content.append(listView.el, prefsView.el);
+  content.append(listView.el, convertedView.el, prefsView.el);
+
+  const drawer = createDrawer(app.querySelector(".panel") as HTMLElement);
 
   const segButtons = Array.from(
     app.querySelectorAll<HTMLButtonElement>(".seg-btn"),
@@ -53,6 +59,7 @@ function main(): void {
 
   function setTab(tab: Tab): void {
     listView.el.hidden = tab !== "videos";
+    convertedView.el.hidden = tab !== "converted";
     prefsView.el.hidden = tab !== "prefs";
     for (const b of segButtons) {
       b.classList.toggle("is-active", b.dataset.tab === tab);
@@ -60,6 +67,8 @@ function main(): void {
     if (tab === "videos") {
       void listView.refresh();
       listView.focusFilter();
+    } else if (tab === "converted") {
+      void convertedView.refresh();
     }
   }
 
@@ -73,6 +82,11 @@ function main(): void {
   });
   void onEncodeState((state) => {
     listView.updateJob(state);
+    drawer.updateJob(state);
+    // A finished conversion is a new history entry; refresh if that tab is open.
+    if (state.phase === "done" && !convertedView.el.hidden) {
+      void convertedView.refresh();
+    }
   });
   void onSettingsChanged((s) => {
     settings = s;

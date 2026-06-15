@@ -224,7 +224,8 @@ pub fn run() {
             commands::ensure_preview,
             commands::copy_file,
             commands::reveal,
-            commands::os_info
+            commands::os_info,
+            commands::list_conversions
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
