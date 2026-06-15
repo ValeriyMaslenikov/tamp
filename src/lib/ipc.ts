@@ -53,6 +53,8 @@ export interface Settings {
   theme: Theme;
   /** Windows: Explorer "Compress with tamp" right-click entry registered. */
   contextMenuEnabled: boolean;
+  /** How many recent videos the Videos tab lists (1–200). */
+  recentsLimit: number;
 }
 
 /** off = never; multipart = open the folder after a split; all = also reveal single outputs. */

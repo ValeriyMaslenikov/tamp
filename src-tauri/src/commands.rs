@@ -8,8 +8,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 
-const RECENTS_LIMIT: usize = 8;
-
 const TRASH_MULTI_PRESET_ERR: &str = "'Move original to Trash' is on, so the original disappears after the first conversion — only one preset per video. Turn the toggle off in Preferences to export several formats.";
 
 fn lock_settings(state: &SettingsState) -> MutexGuard<'_, Settings> {
@@ -20,15 +18,17 @@ fn lock_settings(state: &SettingsState) -> MutexGuard<'_, Settings> {
 
 #[tauri::command]
 pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
-    let folders: Vec<PathBuf> = {
+    let (folders, limit): (Vec<PathBuf>, usize) = {
         let state = app.state::<SettingsState>();
         let guard = lock_settings(&state);
-        guard.watched_folders.iter().map(PathBuf::from).collect()
+        (
+            guard.watched_folders.iter().map(PathBuf::from).collect(),
+            guard.recents_limit,
+        )
     };
-    let mut videos =
-        tauri::async_runtime::spawn_blocking(move || scanner::scan(&folders, RECENTS_LIMIT))
-            .await
-            .map_err(|e| format!("recents scan failed: {e}"))?;
+    let mut videos = tauri::async_runtime::spawn_blocking(move || scanner::scan(&folders, limit))
+        .await
+        .map_err(|e| format!("recents scan failed: {e}"))?;
     // Orphaned outputs only know their on-disk size; the journal remembers
     // what they were compressed from and with which preset.
     if let Some(journal) = app.try_state::<crate::journal::Journal>() {

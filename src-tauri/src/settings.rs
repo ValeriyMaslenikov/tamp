@@ -191,6 +191,9 @@ pub struct Settings {
     /// registered. Ignored on other platforms.
     #[serde(default = "default_true")]
     pub context_menu_enabled: bool,
+    /// How many recent videos the Videos tab lists. 1..=200.
+    #[serde(default = "default_recents_limit")]
+    pub recents_limit: usize,
 }
 
 fn default_true() -> bool {
@@ -207,6 +210,10 @@ fn default_shortcut_toggle_panel() -> Option<String> {
 
 fn default_stale_warn_minutes() -> u32 {
     10
+}
+
+fn default_recents_limit() -> usize {
+    50
 }
 
 pub struct SettingsState(pub Mutex<Settings>);
@@ -246,6 +253,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         videos_layout: VideosLayout::default(),
         theme: Theme::default(),
         context_menu_enabled: true,
+        recents_limit: 50,
     }
 }
 
@@ -355,6 +363,9 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
         if let Err(e) = validate_split(&preset.split) {
             return Err(format!("preset \"{}\": {e}", preset.name));
         }
+    }
+    if !(1..=200).contains(&settings.recents_limit) {
+        return Err("recent videos shown must be between 1 and 200".into());
     }
     Ok(())
 }
@@ -587,6 +598,27 @@ mod tests {
             seconds: 15,
         };
         assert!(validate(&settings_with_split(split)).is_ok());
+    }
+
+    #[test]
+    fn recents_limit_defaults_to_50_and_is_bounded() {
+        let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.recents_limit, 50);
+    }
+
+    #[test]
+    fn validate_bounds_recents_limit() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.recents_limit = 0;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        settings.recents_limit = 201;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        for limit in [1, 50, 200] {
+            settings.recents_limit = limit;
+            assert!(validate(&settings).is_ok(), "{limit}");
+        }
     }
 
     #[test]
