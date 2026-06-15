@@ -384,6 +384,14 @@ pub fn set_context_menu(app: AppHandle, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Toggles the session-only "keep the panel open" pin.
+#[tauri::command]
+pub fn set_pin(app: AppHandle, pinned: bool) {
+    if let Some(state) = app.try_state::<crate::Pinned>() {
+        state.0.store(pinned, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

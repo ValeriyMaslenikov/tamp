@@ -152,6 +152,9 @@ export const saveSettings = (settings: Settings): Promise<Settings> =>
 export const setContextMenu = (enabled: boolean): Promise<void> =>
   invoke<void>("set_context_menu", { enabled });
 
+export const setPin = (pinned: boolean): Promise<void> =>
+  invoke<void>("set_pin", { pinned });
+
 export const pickFolder = (): Promise<string | null> =>
   invoke<string | null>("pick_folder");
 

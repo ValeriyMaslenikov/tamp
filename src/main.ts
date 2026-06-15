@@ -4,6 +4,7 @@ import {
   onEncodeState,
   onPanelShown,
   onSettingsChanged,
+  setPin,
   type Settings,
 } from "./lib/ipc";
 import { createDrawer } from "./lib/drawer";
@@ -28,6 +29,7 @@ function main(): void {
           <button type="button" class="seg-btn" data-tab="converted" role="tab">Converted</button>
           <button type="button" class="seg-btn" data-tab="prefs" role="tab">Preferences</button>
         </div>
+        <button type="button" class="pin-btn" id="pin-btn" aria-pressed="false" title="Keep panel open">📌</button>
       </header>
       <main class="content" id="content"></main>
       <footer class="panel-footer">↑↓ select · ⏎/d default · e expand · esc back</footer>
@@ -35,6 +37,15 @@ function main(): void {
     </div>`;
 
   initToast(document.getElementById("toast") as HTMLElement);
+
+  const pinBtn = document.getElementById("pin-btn") as HTMLButtonElement;
+  let pinned = false;
+  pinBtn.addEventListener("click", () => {
+    pinned = !pinned;
+    pinBtn.classList.toggle("is-on", pinned);
+    pinBtn.setAttribute("aria-pressed", String(pinned));
+    void setPin(pinned);
+  });
 
   let settings: Settings | null = null;
 

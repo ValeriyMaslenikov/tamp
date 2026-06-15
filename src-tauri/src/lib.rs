@@ -24,6 +24,9 @@ const LEGACY_IDENTIFIER: &str = "com.joystudios.tamp";
 /// hide-on-blur handler must not close the panel when the dialog takes focus.
 pub struct DialogOpen(pub AtomicBool);
 
+/// Session-only "keep the panel open" flag, toggled by the pin button.
+pub struct Pinned(pub AtomicBool);
+
 /// One-time, best-effort migration of settings and the conversion journal
 /// from the pre-rebrand app-data dir. Must run before `settings::load`: a
 /// rebranded install starts with an empty app-data dir and would otherwise
@@ -121,6 +124,16 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
     show_panel_fallback(app);
 }
 
+/// Whether the panel should hide when it loses focus. It stays open while a
+/// native dialog is up, while pinned, or while the primary mouse button is held
+/// (a drag is in flight and may be heading to us). Only the release-only
+/// hide-on-blur handler (and tests) call it, so it's dead code in a debug lib
+/// build where that handler is compiled out.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+fn should_hide_on_blur(dialog_open: bool, pinned: bool, mouse_button_down: bool) -> bool {
+    !dialog_open && !pinned && !mouse_button_down
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -198,6 +211,7 @@ pub fn run() {
                 loaded.clone(),
             )));
             app.manage(DialogOpen(AtomicBool::new(false)));
+            app.manage(Pinned(AtomicBool::new(false)));
             app.manage(journal::Journal::load(app.handle()));
             app.manage(durations::Durations::load(app.handle()));
             app.manage(previews::Previews::default());
@@ -240,17 +254,21 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             if let tauri::WindowEvent::Focused(false) = _event {
                 if _window.label() == "panel" {
-                    // A native dialog (folder picker) taking focus must not
-                    // close the panel out from under it.
-                    let dialog_open = _window
-                        .app_handle()
+                    let app = _window.app_handle();
+                    // A native dialog (folder picker) taking focus, the pin, or
+                    // an in-flight drag (mouse button held) must each keep the
+                    // panel open out from under them.
+                    let dialog_open = app
                         .try_state::<DialogOpen>()
                         .is_some_and(|s| s.0.load(std::sync::atomic::Ordering::SeqCst));
-                    if dialog_open {
-                        return;
-                    }
-                    if let Err(e) = _window.hide() {
-                        log_warn!("failed to hide panel on focus loss: {e}");
+                    let pinned = app
+                        .try_state::<Pinned>()
+                        .is_some_and(|s| s.0.load(std::sync::atomic::Ordering::SeqCst));
+                    let mouse_down = platform::native().primary_mouse_button_down();
+                    if should_hide_on_blur(dialog_open, pinned, mouse_down) {
+                        if let Err(e) = _window.hide() {
+                            log_warn!("failed to hide panel on focus loss: {e}");
+                        }
                     }
                 }
             }
@@ -269,7 +287,8 @@ pub fn run() {
             commands::reveal,
             commands::os_info,
             commands::list_conversions,
-            commands::set_context_menu
+            commands::set_context_menu,
+            commands::set_pin
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
@@ -314,5 +333,25 @@ mod arg_tests {
     fn returns_none_without_a_video_arg() {
         let args = vec!["tamp.exe".to_string(), "--toggle".to_string()];
         assert_eq!(first_video_arg(&args), None);
+    }
+}
+
+#[cfg(test)]
+mod hide_tests {
+    use super::should_hide_on_blur;
+
+    #[test]
+    fn hides_when_idle() {
+        assert!(should_hide_on_blur(false, false, false));
+    }
+
+    #[test]
+    fn keeps_open_during_a_dialog_pin_or_drag() {
+        assert!(!should_hide_on_blur(true, false, false), "dialog open");
+        assert!(!should_hide_on_blur(false, true, false), "pinned");
+        assert!(
+            !should_hide_on_blur(false, false, true),
+            "mouse button held (drag)"
+        );
     }
 }
