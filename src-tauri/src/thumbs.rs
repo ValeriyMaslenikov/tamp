@@ -84,18 +84,48 @@ fn apply(videos: &mut [RecentVideo], idx: usize, thumb: Option<PathBuf>) {
     }
 }
 
-pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
-    let thumbs_dir = match app.path().app_cache_dir() {
+/// Resolves (creating it) the thumbnail cache directory.
+fn thumbs_dir(app: &AppHandle) -> Option<PathBuf> {
+    let dir = match app.path().app_cache_dir() {
         Ok(dir) => dir.join("thumbs"),
         Err(e) => {
             crate::log_warn!("cannot resolve cache dir for thumbnails: {e}");
-            return;
+            return None;
         }
     };
-    if let Err(e) = std::fs::create_dir_all(&thumbs_dir) {
+    if let Err(e) = std::fs::create_dir_all(&dir) {
         crate::log_warn!("cannot create thumbnail cache dir: {e}");
-        return;
+        return None;
     }
+    Some(dir)
+}
+
+/// The cached thumbnail path for `path` (keyed over path|mtime|size).
+fn thumb_out(dir: &Path, path: &str) -> PathBuf {
+    let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    dir.join(format!("{}.jpg", cache_key(path, size_bytes)))
+}
+
+/// Ensures (generating on miss) a thumbnail for a single video and returns its
+/// cached path, or `None` on failure. Shared by `ensure_thumbs` and the
+/// Converted tab's `conversion_thumb` command.
+pub async fn ensure_one(app: &AppHandle, path: &Path) -> Option<String> {
+    let dir = thumbs_dir(app)?;
+    let out = thumb_out(&dir, &path.to_string_lossy());
+    if is_valid_thumb(&out) {
+        return Some(out.to_string_lossy().into_owned());
+    }
+    let ffmpeg = crate::encoder::bin::ffmpeg_path();
+    generate(&ffmpeg, path, &out)
+        .await
+        .then(|| out.to_string_lossy().into_owned())
+}
+
+pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
+    let thumbs_dir = match thumbs_dir(app) {
+        Some(dir) => dir,
+        None => return,
+    };
     let ffmpeg = crate::encoder::bin::ffmpeg_path();
 
     let mut pending: Vec<(usize, PathBuf, PathBuf)> = Vec::new();

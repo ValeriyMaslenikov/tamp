@@ -189,6 +189,12 @@ export const ensurePreview = (path: string): Promise<string> =>
 export const copyFile = (path: string): Promise<void> =>
   invoke<void>("copy_file", { path });
 
+export const openFile = (path: string): Promise<void> =>
+  invoke<void>("open_file", { path });
+
+export const conversionThumb = (path: string): Promise<string | null> =>
+  invoke<string | null>("conversion_thumb", { path });
+
 export const onPanelShown = (cb: () => void): Promise<UnlistenFn> =>
   listen("panel:shown", () => cb());
 

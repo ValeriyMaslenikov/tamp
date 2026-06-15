@@ -434,6 +434,24 @@ pub fn set_pin(app: AppHandle, pinned: bool) {
     }
 }
 
+/// Opens `path` in the OS default application (used by the Converted tab's
+/// ▶ play button to preview an output).
+#[tauri::command]
+pub fn open_file(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt as _;
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| format!("couldn't open {path}: {e}"))
+}
+
+/// Ensures (generating on miss) a thumbnail for a single video and returns its
+/// cached path, or None on failure. Backs the Converted tab's per-row preview.
+#[tauri::command]
+pub async fn conversion_thumb(app: AppHandle, path: String) -> Option<String> {
+    // Reuse the same single-frame thumbnail generation ensure_thumbs uses.
+    crate::thumbs::ensure_one(&app, Path::new(&path)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
