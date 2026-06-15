@@ -61,6 +61,23 @@ export function formatRelativeTime(ms: number, now: number = Date.now()): string
   return `${datePart}, ${d.getFullYear()}`;
 }
 
+/** "Jun 12, 2026 · 23:41" for a tooltip; em dash when the time is unknown (0). */
+export function formatAbsolute(ms: number): string {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const date = d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const time = d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return `${date} · ${time}`;
+}
+
 /** Video length: "0:42", "12:05", "1:05:03". Invalid/negative -> "0:00". */
 export function formatDuration(secs: number): string {
   const total = Number.isFinite(secs) && secs > 0 ? Math.round(secs) : 0;

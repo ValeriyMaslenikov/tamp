@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatAbsolute,
   formatBytes,
   formatClock,
   formatDuration,
@@ -182,6 +183,18 @@ describe("formatClock", () => {
 
   it("formats midnight", () => {
     expect(formatClock(new Date(2026, 0, 1, 0, 0).getTime())).toBe("00:00");
+  });
+});
+
+describe("formatAbsolute", () => {
+  it("formatAbsolute shows a date and time", () => {
+    const s = formatAbsolute(1_700_000_000_000);
+    expect(s).toMatch(/\d{4}/); // a year
+    expect(s).toContain("·");
+  });
+
+  it("formatAbsolute returns em dash for unknown (0)", () => {
+    expect(formatAbsolute(0)).toBe("—");
   });
 });
 
