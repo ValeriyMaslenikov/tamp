@@ -48,6 +48,16 @@ export function isTerminal(phase: Phase): boolean {
   return TERMINAL.has(phase);
 }
 
+/** Whether a drop/pick should open the preset chooser (vs. use the active
+ *  preset). Quick-pick always chooses; active-bar uses the active preset unless
+ *  Alt is held (a one-off override). */
+export function shouldPickPreset(
+  layout: "quick-pick" | "active-bar",
+  altHeld: boolean,
+): boolean {
+  return layout === "quick-pick" || altHeld;
+}
+
 /** Identity of the visible video list; job statuses are painted separately. */
 export function videoListSignature(videos: RecentVideo[]): string {
   return JSON.stringify(
@@ -70,6 +80,10 @@ export interface ListView {
   onSettingsChanged(): void;
   /** Put the cursor in the filter input (panel shown / tab switched). */
   focusFilter(): void;
+  /** Compress arbitrary paths, honoring the layout + Alt override. */
+  compressPaths(paths: string[], altHeld: boolean): void;
+  /** Overlay text for the current layout / active preset. */
+  currentDropHint(): string;
 }
 
 export function createListView(getSettings: () => Settings | null): ListView {
@@ -113,7 +127,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
   // the default preset whenever the panel opens (focusFilter).
   let activePresetId: string | null = null;
   // "quick-pick" mode: the open picker overlay (null when closed).
-  let quickPick: { el: HTMLElement; video: RecentVideo; presets: Preset[]; index: number } | null =
+  let quickPick: { el: HTMLElement; paths: string[]; presets: Preset[]; index: number } | null =
     null;
 
   function jobForPath(path: string): JobState | undefined {
@@ -352,8 +366,11 @@ export function createListView(getSettings: () => Settings | null): ListView {
         e.preventDefault();
         moveQuick(-1);
       } else if (e.key === "c" || e.key === "C") {
+        // Custom is single-file only; ignore the shortcut for multi-path drops.
+        if (quickPick.paths.length !== 1) return;
+        const v = videos.find((x) => x.path === quickPick?.paths[0]);
+        if (!v) return;
         e.preventDefault();
-        const v = quickPick.video;
         closeQuickPick();
         openCustom(v);
       } else if (e.key >= "1" && e.key <= "9") {
@@ -474,6 +491,36 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
+  function basename(p: string): string {
+    return p.split(/[\\/]/).pop() ?? p;
+  }
+
+  async function doEnqueuePath(path: string, presetId: string): Promise<void> {
+    try {
+      const id = await enqueue(path, presetId);
+      if (!jobs.has(id)) {
+        updateJob({
+          id,
+          inputPath: path,
+          inputName: basename(path),
+          outputPath: null,
+          presetId,
+          presetHash: "",
+          phase: "queued",
+          progress: 0,
+          inputBytes: 0,
+          outputBytes: null,
+          reused: false,
+          part: null,
+          error: null,
+          postError: null,
+        });
+      }
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
+
   // ----- preset selection (videos-layout modes) --------------------------
 
   function layoutMode(): "quick-pick" | "active-bar" {
@@ -574,14 +621,17 @@ export function createListView(getSettings: () => Settings | null): ListView {
   function applyQuickPick(i: number): void {
     if (!quickPick) return;
     const p = quickPick.presets[i];
-    const v = quickPick.video;
+    const paths = quickPick.paths;
     closeQuickPick();
-    if (p) void doEnqueue(v, p.id);
+    if (p) for (const path of paths) void doEnqueuePath(path, p.id);
   }
 
-  /** Opens the per-video preset picker (quick-pick mode). */
-  function openQuickPick(v: RecentVideo): void {
+  /** Opens the preset picker (quick-pick mode) for one or more paths. The chosen
+   *  preset is applied to every path. Custom (single-file only) is shown just for
+   *  a single-path pick. */
+  function openQuickPickForPaths(paths: string[]): void {
     closeQuickPick();
+    if (paths.length === 0) return;
     const presets = orderedPresets();
     if (presets.length === 0) return;
 
@@ -595,7 +645,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     card.className = "quickpick";
     const title = document.createElement("div");
     title.className = "quickpick-title";
-    title.textContent = `Compress with…`;
+    title.textContent =
+      paths.length > 1 ? `Compress ${paths.length} files with…` : `Compress with…`;
     card.appendChild(title);
 
     presets.forEach((p, i) => {
@@ -616,17 +667,22 @@ export function createListView(getSettings: () => Settings | null): ListView {
       card.appendChild(item);
     });
 
-    const custom = document.createElement("button");
-    custom.type = "button";
-    custom.className = "quickpick-item quickpick-custom";
-    custom.innerHTML =
-      `<span class="quickpick-num">C</span>` +
-      `<span class="quickpick-name">Custom…</span>`;
-    custom.addEventListener("click", () => {
-      closeQuickPick();
-      openCustom(v);
-    });
-    card.appendChild(custom);
+    // Custom is a single-file one-off; offer it only for a single-path pick.
+    const customVideo =
+      paths.length === 1 ? videos.find((x) => x.path === paths[0]) : undefined;
+    if (customVideo) {
+      const custom = document.createElement("button");
+      custom.type = "button";
+      custom.className = "quickpick-item quickpick-custom";
+      custom.innerHTML =
+        `<span class="quickpick-num">C</span>` +
+        `<span class="quickpick-name">Custom…</span>`;
+      custom.addEventListener("click", () => {
+        closeQuickPick();
+        openCustom(customVideo);
+      });
+      card.appendChild(custom);
+    }
 
     const hint = document.createElement("div");
     hint.className = "quickpick-hint";
@@ -635,7 +691,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     overlay.appendChild(card);
     el.appendChild(overlay);
-    quickPick = { el: overlay, video: v, presets, index: 0 };
+    quickPick = { el: overlay, paths, presets, index: 0 };
     highlightQuick();
   }
 
@@ -663,7 +719,28 @@ export function createListView(getSettings: () => Settings | null): ListView {
       if (ap) void doEnqueue(v, ap.id);
       return;
     }
-    openQuickPick(v);
+    openQuickPickForPaths([v.path]);
+  }
+
+  /** Compress arbitrary paths (drop / picker), honoring the Videos-layout
+   *  setting: active-bar uses the active preset (unless Alt forces the chooser),
+   *  quick-pick always opens the chooser. */
+  function compressPaths(paths: string[], altHeld: boolean): void {
+    if (paths.length === 0) return;
+    if (shouldPickPreset(layoutMode(), altHeld)) {
+      openQuickPickForPaths(paths);
+    } else {
+      const ap = activePreset();
+      if (ap) for (const path of paths) void doEnqueuePath(path, ap.id);
+    }
+  }
+
+  function currentDropHint(): string {
+    if (layoutMode() === "active-bar") {
+      const ap = activePreset();
+      return ap ? `Drop to compress with ${ap.name}` : "Drop to pick a preset";
+    }
+    return "Drop to pick a preset";
   }
 
   function openCustom(v: RecentVideo): void {
@@ -1085,5 +1162,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
-  return { el, refresh, updateJob, onSettingsChanged, focusFilter };
+  return {
+    el,
+    refresh,
+    updateJob,
+    onSettingsChanged,
+    focusFilter,
+    compressPaths,
+    currentDropHint,
+  };
 }
