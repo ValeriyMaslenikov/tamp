@@ -45,6 +45,10 @@ fs4 = "0.13"
 [target.'cfg(target_os = "windows")'.dependencies]
 # CF_HDROP file lists — pasting outputs as files into Explorer/chat apps.
 clipboard-win = "5"
+# Reads the taskbar light/dark theme (SystemUsesLightTheme) so the tray icon
+# is drawn in a contrasting ink rather than a fixed white that vanishes on a
+# light taskbar.
+winreg = "0.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

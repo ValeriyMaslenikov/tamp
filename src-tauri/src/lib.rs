@@ -170,6 +170,11 @@ pub fn run() {
             app.manage(previews::Previews::default());
             app.manage(encoder::Encoder::start(app.handle().clone()));
             tray::create(app.handle())?;
+            // Repaint the tray to its idle state so platforms that recolor the
+            // icon per system theme (Windows, where the bundled template glyph
+            // isn't auto-inverted) show a contrasting icon from launch, not
+            // just once an encode starts. No-op beyond a title clear on macOS.
+            platform::native().tray_progress(app.handle(), None);
 
             // After the managed state the handlers rely on. Startup
             // registration is best-effort: a stored accelerator another app

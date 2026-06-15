@@ -4,6 +4,47 @@ use tauri_plugin_positioner::{Position, WindowExt as _};
 
 use super::{HwCandidate, Platform, TrayProgress};
 
+/// True when the user runs a LIGHT taskbar (Settings → Personalization →
+/// Colors → "Choose your mode" set to Light, or "Windows mode" Light). The
+/// notification area follows this, not the apps theme, so it's the right
+/// signal for tray-icon contrast. Absent/unreadable (older builds, locked-down
+/// registry) ⇒ assume dark, tamp's historical default.
+fn taskbar_is_light() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_value::<u32, _>("SystemUsesLightTheme"))
+        .map(|v| v == 1)
+        .unwrap_or(false)
+}
+
+/// Ink for the tray glyph, contrasting with the current taskbar: white on the
+/// default dark taskbar, near-black on a light one (where white would vanish).
+fn tray_ink() -> [u8; 3] {
+    const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
+    const NEAR_BLACK: [u8; 3] = [0x26, 0x26, 0x2b];
+    if taskbar_is_light() {
+        NEAR_BLACK
+    } else {
+        WHITE
+    }
+}
+
+/// The idle glyph recolored to `ink`. The bundled PNG is authored black for
+/// macOS template inversion; Windows has no template support, so we recolor it
+/// ourselves. Alpha is preserved, so anti-aliased edges stay smooth.
+fn idle_icon(ink: [u8; 3]) -> tauri::image::Image<'static> {
+    let base = tauri::include_image!("icons/trayicon.png");
+    let mut px = base.rgba().to_vec();
+    for p in px.chunks_exact_mut(4) {
+        p[0] = ink[0];
+        p[1] = ink[1];
+        p[2] = ink[2];
+    }
+    tauri::image::Image::new_owned(px, base.width(), base.height())
+}
+
 pub struct Windows;
 
 impl Platform for Windows {
@@ -92,12 +133,15 @@ impl Platform for Windows {
     /// icon plus the exact percentage in the tooltip.
     fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
         // ffmpeg reports progress every few hundred ms; re-rasterizing the
-        // ring and poking the shell is only worth it when the DISPLAYED
-        // state (whole percent + queue depth) actually changed. u64::MAX
-        // marks idle so the first report after it always draws.
-        static LAST_SHOWN: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(u64::MAX);
-        let shown = progress.map_or(u64::MAX, |p| {
+        // ring and poking the shell is only worth it when the DISPLAYED state
+        // (whole percent + queue depth) actually changed. IDLE marks the
+        // cleared state; NEVER is the pre-first-paint seed so the very first
+        // call — including the startup idle paint — always draws the
+        // theme-aware icon (the tray was built with the unrecolored template).
+        const IDLE: u64 = u64::MAX;
+        const NEVER: u64 = u64::MAX - 1;
+        static LAST_SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NEVER);
+        let shown = progress.map_or(IDLE, |p| {
             (p.percent() as u64) << 32 | p.queued.min(u32::MAX as usize) as u64
         });
         if LAST_SHOWN.swap(shown, std::sync::atomic::Ordering::Relaxed) == shown {
@@ -107,6 +151,7 @@ impl Platform for Windows {
         let Some(tray) = app.tray_by_id("main") else {
             return;
         };
+        let ink = tray_ink();
         let result = match progress {
             Some(p) => {
                 let pct = p.percent();
@@ -117,7 +162,7 @@ impl Platform for Windows {
                 };
                 const SIZE: u32 = 32;
                 let icon = tauri::image::Image::new_owned(
-                    super::windows_ring::render(p.fraction, SIZE),
+                    super::windows_ring::render(p.fraction, SIZE, ink),
                     SIZE,
                     SIZE,
                 );
@@ -125,7 +170,7 @@ impl Platform for Windows {
                     .and_then(|()| tray.set_tooltip(Some(&tooltip)))
             }
             None => tray
-                .set_icon(Some(tauri::include_image!("icons/trayicon.png")))
+                .set_icon(Some(idle_icon(ink)))
                 .and_then(|()| tray.set_tooltip(Some("tamp"))),
         };
         if let Err(e) = result {
