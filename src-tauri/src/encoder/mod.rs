@@ -1294,7 +1294,17 @@ fn append_journal(
         preset_name: job.preset.name.clone(),
         target_mb: job.preset.target_mb,
         completed_at_ms,
+        input_created_ms: input_created_ms(&job.input),
     });
+}
+
+fn input_created_ms(input: &std::path::Path) -> u64 {
+    std::fs::metadata(input)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Runs both software encode passes for `plan` — libx264 for mp4, libvpx-vp9

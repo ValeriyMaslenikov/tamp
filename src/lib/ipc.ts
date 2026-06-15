@@ -140,6 +140,7 @@ export interface ConversionRecord {
   presetName: string;
   targetMb: number;
   completedAtMs: number;
+  inputCreatedMs: number;
 }
 
 export const listConversions = (): Promise<ConversionRecord[]> =>

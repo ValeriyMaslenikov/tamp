@@ -27,6 +27,10 @@ pub struct ConversionRecord {
     #[serde(default)]
     pub target_mb: f64,
     pub completed_at_ms: u64,
+    /// The source file's creation time (ms since epoch); 0 when unknown
+    /// (older records, or the time couldn't be read).
+    #[serde(default)]
+    pub input_created_ms: u64,
 }
 
 pub struct Journal {
@@ -148,7 +152,15 @@ mod tests {
             preset_name: "Discord (10MB)".to_string(),
             target_mb: 10.0,
             completed_at_ms,
+            input_created_ms: 0,
         }
+    }
+
+    #[test]
+    fn input_created_ms_defaults_to_zero_when_absent() {
+        let json = r#"{"inputPath":"/i","inputBytes":1,"outputPath":"/o","outputBytes":1,"presetHash":"h","presetName":"p","completedAtMs":2}"#;
+        let rec: ConversionRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.input_created_ms, 0);
     }
 
     #[test]
@@ -212,6 +224,7 @@ mod tests {
             "presetName",
             "targetMb",
             "completedAtMs",
+            "inputCreatedMs",
         ] {
             assert!(json.get(key).is_some(), "missing key {key}");
         }
