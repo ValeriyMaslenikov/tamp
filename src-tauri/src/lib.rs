@@ -288,7 +288,8 @@ pub fn run() {
             commands::os_info,
             commands::list_conversions,
             commands::set_context_menu,
-            commands::set_pin
+            commands::set_pin,
+            commands::pick_videos
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");

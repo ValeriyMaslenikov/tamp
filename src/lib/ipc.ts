@@ -158,6 +158,9 @@ export const setPin = (pinned: boolean): Promise<void> =>
 export const pickFolder = (): Promise<string | null> =>
   invoke<string | null>("pick_folder");
 
+export const pickVideos = (): Promise<string[]> =>
+  invoke<string[]>("pick_videos");
+
 export const enqueue = (path: string, presetId: string): Promise<string> =>
   invoke<string>("enqueue", { path, presetId });
 

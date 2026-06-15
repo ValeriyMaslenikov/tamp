@@ -384,6 +384,48 @@ pub fn set_context_menu(app: AppHandle, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Opens a native multi-select dialog filtered to video files; returns the
+/// chosen paths (empty if cancelled). Mirrors `pick_folder`'s dialog guard so
+/// the release-only hide-on-blur handler doesn't close the panel.
+#[tauri::command]
+pub async fn pick_videos(app: AppHandle) -> Vec<String> {
+    struct DialogGuard<'a>(&'a crate::DialogOpen);
+    impl Drop for DialogGuard<'_> {
+        fn drop(&mut self) {
+            self.0 .0.store(false, Ordering::SeqCst);
+        }
+    }
+    let dialog_open = app.state::<crate::DialogOpen>();
+    dialog_open.0.store(true, Ordering::SeqCst);
+    let guard = DialogGuard(dialog_open.inner());
+
+    let dialog_app = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .add_filter("Video", &["mov", "mp4", "m4v", "webm", "mkv", "avi"])
+            .blocking_pick_files()
+    })
+    .await;
+    drop(guard);
+
+    if let Some(panel) = app.get_webview_window("panel") {
+        if !panel.is_visible().unwrap_or(true) {
+            let _ = panel.show();
+        }
+        let _ = panel.set_focus();
+    }
+
+    match picked {
+        Ok(Some(files)) => files
+            .into_iter()
+            .filter_map(|f| f.into_path().ok().map(|p| p.to_string_lossy().into_owned()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Toggles the session-only "keep the panel open" pin.
 #[tauri::command]
 pub fn set_pin(app: AppHandle, pinned: bool) {

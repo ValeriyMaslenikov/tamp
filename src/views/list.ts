@@ -6,6 +6,7 @@ import {
   enqueue,
   ensurePreview,
   listRecents,
+  pickVideos,
   queueState,
   reveal,
   type JobState,
@@ -97,6 +98,17 @@ export function createListView(getSettings: () => Settings | null): ListView {
   filterInput.className = "input filter-input";
   filterInput.placeholder = "Filter recordings…";
   filterRow.appendChild(filterInput);
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "add-file-btn";
+  addBtn.textContent = "＋ Add file…";
+  addBtn.title = "Compress a video from anywhere";
+  addBtn.addEventListener("click", async () => {
+    const paths = await pickVideos();
+    if (paths.length) compressPaths(paths, false);
+  });
+  filterRow.appendChild(addBtn);
 
   // Active-preset bar (videos-layout "active-bar" mode). Hidden in quick-pick
   // mode; rebuilt by updateActiveBar().
