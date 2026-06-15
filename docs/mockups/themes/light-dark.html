@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>tamp — light theme: soft vs crisp</title>
+<style>
+  /* ---- OPTION A: SOFT OFF-WHITE ---- */
+  .soft {
+    --bg: #f4f4f7;
+    --surface: #ffffff;
+    --surface-2: #ececef;
+    --overlay: #ffffff;
+    --border: #e3e3e9;
+    --text: #1b1b20;
+    --text-dim: #6c6c77;
+    --accent: #7c5cfc;
+    --accent-hover: #6a45f5;
+    --accent-deep: #ece8ff;
+    --row-hover: #f1eefc;
+    --chip-bg: #f1ecff;
+    --chip-active-bg: #e4dcff;
+    --chip-text: #6a45f5;
+    --success: #12a37e;
+    --danger: #dc4f4f;
+    --scrim: rgba(24, 24, 32, 0.30);
+    --shadow: rgba(30, 30, 50, 0.18);
+  }
+  /* ---- OPTION B: CRISP WHITE ---- */
+  .crisp {
+    --bg: #ffffff;
+    --surface: #f5f5f7;
+    --surface-2: #e9e9ec;
+    --overlay: #ffffff;
+    --border: #e6e6ea;
+    --text: #16161a;
+    --text-dim: #6c6c77;
+    --accent: #7c5cfc;
+    --accent-hover: #6a45f5;
+    --accent-deep: #f1edff;
+    --row-hover: #f3f1fe;
+    --chip-bg: #f2eeff;
+    --chip-active-bg: #e6dfff;
+    --chip-text: #6a45f5;
+    --success: #12a37e;
+    --danger: #dc4f4f;
+    --scrim: rgba(20, 20, 28, 0.42);
+    --shadow: rgba(30, 30, 50, 0.22);
+  }
+  /* ---- DARK (current, for reference) ---- */
+  .dark {
+    --bg: #0e0e10;
+    --surface: #1a1a1e;
+    --surface-2: #222226;
+    --overlay: #202024;
+    --border: #2e2e33;
+    --text: #f4f4f6;
+    --text-dim: #8a8a93;
+    --accent: #7c5cfc;
+    --accent-hover: #9277ff;
+    --accent-deep: #2b2350;
+    --row-hover: #1e1e23;
+    --chip-bg: #221d3a;
+    --chip-active-bg: #352a64;
+    --chip-text: #c9bdfd;
+    --success: #2dd4a7;
+    --danger: #f87171;
+    --scrim: rgba(8, 8, 10, 0.55);
+    --shadow: rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: #5f5f69;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 12px; color: #fff;
+    display: flex; flex-wrap: wrap; gap: 40px; align-items: flex-start;
+  }
+  .col { display: flex; flex-direction: column; gap: 16px; align-items: center; width: 380px; }
+  .col h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .9; }
+  .col .tag { font-size: 11px; opacity: .65; margin-top: -10px; text-align: center; }
+
+  .panel {
+    width: 380px; border-radius: 14px; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); box-shadow: 0 18px 50px var(--shadow);
+    display: flex; flex-direction: column;
+  }
+  .filter { display: flex; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .filter input {
+    flex: 1; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); border-radius: 8px; padding: 7px 10px; font: inherit; outline: none;
+  }
+  .filter input::placeholder { color: var(--text-dim); }
+  .activebar {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 9px; margin: 8px; border-radius: 10px;
+    background: var(--accent-deep); color: var(--text);
+    border: 1px solid var(--border); font-weight: 600; font-size: 11px; letter-spacing: .03em;
+  }
+  .activebar .arrow { color: var(--accent); font-size: 15px; }
+  .activebar .pname { color: var(--chip-text); }
+  .list { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; }
+  .row.hover { background: var(--row-hover); }
+  .thumb {
+    width: 64px; height: 40px; border-radius: 6px; flex: none; position: relative; overflow: hidden;
+    background: linear-gradient(135deg, #3a2d6b, #1a1f3d);
+  }
+  .thumb .dur { position: absolute; right: 3px; bottom: 3px; background: rgba(0,0,0,.7); color: #fff; font-size: 9px; padding: 1px 4px; border-radius: 4px; }
+  .meta { flex: 1; min-width: 0; }
+  .name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+  .chev { color: var(--text-dim); font-size: 14px; padding: 0 4px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 8px 10px 84px; }
+  .chip { border: 1px solid var(--border); background: var(--chip-bg); color: var(--chip-text); border-radius: 999px; padding: 4px 10px; font-size: 11px; }
+  .chip.active { background: var(--chip-active-bg); border-color: var(--accent); }
+  .chip.custom { background: var(--surface); color: var(--text-dim); }
+  .prog { padding: 4px 8px 10px 84px; }
+  .prog .lbl { color: var(--accent); font-size: 11px; margin-bottom: 5px; }
+  .bar { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 38%; background: var(--accent); }
+  .footer { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-top: 1px solid var(--border); color: var(--text-dim); }
+  .footer .gear { font-size: 14px; }
+
+  .qp-wrap { position: relative; }
+  .scrim { position: absolute; inset: 0; background: var(--scrim); border-radius: 14px; display: flex; align-items: center; justify-content: center; }
+  .qp { width: 250px; background: var(--overlay); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 18px 50px var(--shadow); overflow: hidden; }
+  .qp .qhead { padding: 9px 12px; color: var(--text-dim); border-bottom: 1px solid var(--border); font-size: 11px; }
+  .qp .qi { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+  .qp .qi.sel { background: var(--accent-deep); }
+  .qp .num { width: 18px; height: 18px; border-radius: 5px; background: var(--surface-2); color: var(--text-dim); display: flex; align-items: center; justify-content: center; font-size: 10px; }
+  .qp .qi.sel .num { background: var(--accent); color: #fff; }
+  .qp .qn { flex: 1; font-weight: 500; }
+  .qp .qsz { color: var(--text-dim); font-size: 11px; }
+
+  .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; width: 380px; }
+  .sw { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.08); padding: 5px 8px; border-radius: 8px; font-size: 11px; }
+  .sw .dot { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(255,255,255,.25); flex: none; }
+  .sw code { opacity: .85; font-size: 10px; margin-left: auto; }
+</style>
+</head>
+<body>
+<script>
+  function panel(cls) {
+    return `
+    <div class="col ${cls.k}">
+      <h2>${cls.title}</h2>
+      <div class="tag">${cls.tag}</div>
+      <div class="panel">
+        <div class="filter"><input placeholder="Filter recordings…" /></div>
+        <div class="activebar">COMPRESS WITH <span class="arrow">‹</span> <span class="pname">Discord (10 MB)</span> <span class="arrow">›</span></div>
+        <div class="list">
+          <div class="row hover">
+            <div class="thumb"><span class="dur">0:42</span></div>
+            <div class="meta"><div class="name">Screen Recording 2026-06-15.mov</div><div class="sub">128 MB · just now</div></div>
+            <div class="chev">▸</div>
+          </div>
+          <div class="chips">
+            <span class="chip active">Discord (10 MB)</span>
+            <span class="chip">Slack (25 MB)</span>
+            <span class="chip custom">Custom…</span>
+          </div>
+          <div class="row">
+            <div class="thumb"><span class="dur">2:13</span></div>
+            <div class="meta"><div class="name">Bug repro.mp4</div><div class="sub">340 MB · 5 min ago</div></div>
+            <div class="chev">▸</div>
+          </div>
+          <div class="prog"><div class="lbl">Pass 1 · 38%</div><div class="bar"><i></i></div></div>
+        </div>
+        <div class="footer"><span>tamp 0.3.0</span><span class="gear">⚙</span></div>
+      </div>
+
+      <div class="qp-wrap">
+        <div class="panel" style="height:160px">
+          <div class="filter"><input placeholder="Filter recordings…" /></div>
+          <div class="list"><div class="row"><div class="thumb"></div><div class="meta"><div class="name">Screen Recording…</div><div class="sub">128 MB</div></div></div></div>
+        </div>
+        <div class="scrim">
+          <div class="qp">
+            <div class="qhead">Pick a preset</div>
+            <div class="qi sel"><span class="num">1</span><span class="qn">Discord (10 MB)</span><span class="qsz">⏎</span></div>
+            <div class="qi"><span class="num">2</span><span class="qn">Slack (25 MB)</span></div>
+            <div class="qi"><span class="num">C</span><span class="qn">Custom…</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="swatches ${cls.k}">
+        ${cls.sw.map(s => `<div class="sw"><span class="dot" style="background:${s[1]}"></span> ${s[0]} <code>${s[1]}</code></div>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  const COLS = [
+    { k:"soft", title:"A · Soft off-white", tag:"warm gray panel, white cards — less glare",
+      sw:[["bg","#f4f4f7"],["surface","#ffffff"],["surface-2","#ececef"],["border","#e3e3e9"],["text","#1b1b20"],["text-dim","#6c6c77"],["accent","#7c5cfc"],["accent-deep","#ece8ff"],["chip-text","#6a45f5"],["success","#12a37e"]] },
+    { k:"crisp", title:"B · Crisp white", tag:"white panel, soft-gray cards — brighter",
+      sw:[["bg","#ffffff"],["surface","#f5f5f7"],["surface-2","#e9e9ec"],["border","#e6e6ea"],["text","#16161a"],["text-dim","#6c6c77"],["accent","#7c5cfc"],["accent-deep","#f1edff"],["chip-text","#6a45f5"],["success","#12a37e"]] },
+    { k:"dark", title:"Dark (current)", tag:"for reference",
+      sw:[["bg","#0e0e10"],["surface","#1a1a1e"],["surface-2","#222226"],["border","#2e2e33"],["text","#f4f4f6"],["text-dim","#8a8a93"],["accent","#7c5cfc"],["accent-deep","#2b2350"],["chip-text","#c9bdfd"],["success","#2dd4a7"]] },
+  ];
+  document.body.innerHTML = COLS.map(panel).join("");
+</script>
+</body>
+</html>

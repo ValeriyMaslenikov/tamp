@@ -122,6 +122,17 @@ pub enum OpenAfterConvert {
     All,
 }
 
+/// Which color theme the panel renders in. `System` follows the OS
+/// light/dark setting (and tracks live changes); `Light`/`Dark` pin it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// How the Videos screen offers presets when compressing a recording.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -173,6 +184,9 @@ pub struct Settings {
     /// Which preset-selection UI the Videos screen shows.
     #[serde(default)]
     pub videos_layout: VideosLayout,
+    /// Color theme for the panel (system / light / dark).
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 fn default_true() -> bool {
@@ -226,6 +240,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         stale_warn_minutes: default_stale_warn_minutes(),
         open_after_convert: OpenAfterConvert::default(),
         videos_layout: VideosLayout::default(),
+        theme: Theme::default(),
     }
 }
 
@@ -395,6 +410,26 @@ mod tests {
             serde_json::json!("gif")
         );
         assert_eq!(OutputFormat::default(), OutputFormat::Mp4);
+    }
+
+    #[test]
+    fn theme_serializes_lowercase_and_defaults_to_system() {
+        assert_eq!(Theme::default(), Theme::System);
+        assert_eq!(
+            serde_json::to_value(Theme::System).unwrap(),
+            serde_json::json!("system")
+        );
+        assert_eq!(
+            serde_json::to_value(Theme::Light).unwrap(),
+            serde_json::json!("light")
+        );
+        assert_eq!(
+            serde_json::to_value(Theme::Dark).unwrap(),
+            serde_json::json!("dark")
+        );
+        // Stores written before the field existed default to System.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert_eq!(settings.theme, Theme::System);
     }
 
     #[test]

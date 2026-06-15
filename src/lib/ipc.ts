@@ -49,6 +49,8 @@ export interface Settings {
   openAfterConvert: OpenAfterConvert;
   /** Which preset-selection UI the Videos screen shows. */
   videosLayout: VideosLayout;
+  /** Color theme for the panel. */
+  theme: Theme;
 }
 
 /** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
@@ -56,6 +58,9 @@ export type OpenAfterConvert = "off" | "multipart" | "all";
 
 /** quick-pick = picker per video (default); active-bar = one active preset. */
 export type VideosLayout = "quick-pick" | "active-bar";
+
+/** system = follow OS light/dark (tracks live changes); light/dark pin it. */
+export type Theme = "system" | "light" | "dark";
 
 /** One-off conversion settings for custom_convert. */
 export interface CustomConfig {

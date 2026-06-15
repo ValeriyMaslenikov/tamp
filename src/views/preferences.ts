@@ -7,6 +7,7 @@ import {
   type OutputFormat,
   type Preset,
   type Settings,
+  type Theme,
   type VideosLayout,
 } from "../lib/ipc";
 import {
@@ -123,6 +124,7 @@ export function createPreferencesView(opts: {
     el.append(sectionLabel("Videos screen"), videosLayoutCard());
     el.append(sectionLabel("Shortcuts"), shortcutsCard());
     el.append(sectionLabel("Watched folders"), foldersCard());
+    el.append(sectionLabel("Appearance"), appearanceCard());
     el.append(versionLine());
   }
 
@@ -424,6 +426,29 @@ export function createPreferencesView(opts: {
       row.append(input, text);
       card.appendChild(row);
     }
+    return card;
+  }
+
+  /** Theme picker (system / light / dark). */
+  function appearanceCard(): HTMLElement {
+    const s = current as Settings;
+    const card = document.createElement("div");
+    card.className = "card";
+    card.append(
+      radioRow<Theme>(
+        "Theme",
+        s.theme,
+        [
+          { value: "system", label: "System" },
+          { value: "light", label: "Light" },
+          { value: "dark", label: "Dark" },
+        ],
+        (v) =>
+          void persist((d) => {
+            d.theme = v;
+          }),
+      ),
+    );
     return card;
   }
 
