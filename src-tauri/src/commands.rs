@@ -193,10 +193,34 @@ fn trash_conflicts<'a>(
     })
 }
 
+/// The directory to grant asset-protocol access to for `path`, or `None` when
+/// it already sits inside a watched folder (whose dir is allowed at startup).
+/// Lets thumbnails/previews load for files dropped or added from anywhere.
+fn dir_to_allow(path: &std::path::Path, watched: &[String]) -> Option<std::path::PathBuf> {
+    let parent = path.parent()?;
+    let inside = watched
+        .iter()
+        .any(|w| path.starts_with(std::path::Path::new(w)));
+    if inside {
+        None
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
 /// The single enqueue path shared by `enqueue`, `custom_convert` and the
 /// compress-latest global shortcut: applies the trash-original multi-preset
 /// guard and the user's post-action/encoder settings.
 fn enqueue_preset(app: &AppHandle, path: String, preset: Preset) -> Result<String, String> {
+    {
+        let state = app.state::<SettingsState>();
+        let watched = lock_settings(&state).watched_folders.clone();
+        if let Some(dir) = dir_to_allow(std::path::Path::new(&path), &watched) {
+            if let Err(e) = app.asset_protocol_scope().allow_directory(&dir, false) {
+                crate::log_warn!("failed to widen asset scope to {}: {e}", dir.display());
+            }
+        }
+    }
     let (post, use_hardware) = {
         let state = app.state::<SettingsState>();
         let guard = lock_settings(&state);
@@ -430,5 +454,25 @@ mod tests {
                 "phase must conflict"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::dir_to_allow;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn allows_parent_of_a_file_outside_watched_folders() {
+        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
+        let got = dir_to_allow(Path::new("C:\\Downloads\\clip.mp4"), &watched);
+        assert_eq!(got, Some(PathBuf::from("C:\\Downloads")));
+    }
+
+    #[test]
+    fn skips_files_already_inside_a_watched_folder() {
+        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
+        let got = dir_to_allow(Path::new("C:\\Users\\me\\Videos\\rec.mp4"), &watched);
+        assert_eq!(got, None);
     }
 }
