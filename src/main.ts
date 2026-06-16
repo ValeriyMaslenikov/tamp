@@ -26,9 +26,9 @@ function main(): void {
     <div class="panel">
       <header class="panel-header">
         <div class="seg" role="tablist">
-          <button type="button" class="seg-btn is-active" data-tab="videos" role="tab">Videos</button>
-          <button type="button" class="seg-btn" data-tab="converted" role="tab">Converted</button>
-          <button type="button" class="seg-btn" data-tab="prefs" role="tab">Preferences</button>
+          <button type="button" class="seg-btn is-active" data-tab="videos" role="tab" id="tab-videos" aria-controls="panel-videos" aria-selected="true" tabindex="0">Videos</button>
+          <button type="button" class="seg-btn" data-tab="converted" role="tab" id="tab-converted" aria-controls="panel-converted" aria-selected="false" tabindex="-1">Converted</button>
+          <button type="button" class="seg-btn" data-tab="prefs" role="tab" id="tab-prefs" aria-controls="panel-prefs" aria-selected="false" tabindex="-1">Preferences</button>
         </div>
         <button type="button" class="pin-btn" id="pin-btn" aria-pressed="false" title="Keep panel open">📌</button>
       </header>
@@ -63,6 +63,17 @@ function main(): void {
   const content = document.getElementById("content") as HTMLElement;
   content.append(listView.el, convertedView.el, prefsView.el);
 
+  // Tie each tabpanel to its controlling tab so AT announces the relationship.
+  listView.el.id = "panel-videos";
+  listView.el.setAttribute("role", "tabpanel");
+  listView.el.setAttribute("aria-labelledby", "tab-videos");
+  convertedView.el.id = "panel-converted";
+  convertedView.el.setAttribute("role", "tabpanel");
+  convertedView.el.setAttribute("aria-labelledby", "tab-converted");
+  prefsView.el.id = "panel-prefs";
+  prefsView.el.setAttribute("role", "tabpanel");
+  prefsView.el.setAttribute("aria-labelledby", "tab-prefs");
+
   const drawer = createDrawer(app.querySelector(".panel") as HTMLElement);
 
   const footer = app.querySelector(".panel-footer") as HTMLElement;
@@ -79,7 +90,12 @@ function main(): void {
     convertedView.el.hidden = tab !== "converted";
     prefsView.el.hidden = tab !== "prefs";
     for (const b of segButtons) {
-      b.classList.toggle("is-active", b.dataset.tab === tab);
+      const selected = b.dataset.tab === tab;
+      b.classList.toggle("is-active", selected);
+      b.setAttribute("aria-selected", String(selected));
+      // Roving tabindex: only the active tab is in the Tab order; arrow keys
+      // move between the rest.
+      b.tabIndex = selected ? 0 : -1;
     }
     if (tab === "videos") {
       footer.textContent = listView.footerHint();
@@ -93,9 +109,53 @@ function main(): void {
     }
   }
 
+  // Move to the tab at `index` (wrapping): focus it AND activate it, per the
+  // ARIA tabs "automatic activation" pattern.
+  function activateTabAt(index: number): void {
+    const count = segButtons.length;
+    const b = segButtons[((index % count) + count) % count];
+    setTab(b.dataset.tab as Tab);
+    b.focus();
+  }
+
   for (const b of segButtons) {
     b.addEventListener("click", () => setTab(b.dataset.tab as Tab));
+    // The keydown handler lives on the buttons (not document) so it can't fight
+    // the views' own document-level key handlers.
+    b.addEventListener("keydown", (e) => {
+      const i = segButtons.indexOf(b);
+      // Stop the keys we consume from bubbling to the views' document-level
+      // keydown handlers (list.ts / converted.ts). activateTabAt() runs
+      // setTab() synchronously, so without this the same event keeps bubbling
+      // and, once the target tab is visible, would trigger that view's own
+      // arrow handling (e.g. active-bar cycleActive, group expand).
+      switch (e.key) {
+        case "ArrowRight":
+          e.preventDefault();
+          e.stopPropagation();
+          activateTabAt(i + 1);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          e.stopPropagation();
+          activateTabAt(i - 1);
+          break;
+        case "Home":
+          e.preventDefault();
+          e.stopPropagation();
+          activateTabAt(0);
+          break;
+        case "End":
+          e.preventDefault();
+          e.stopPropagation();
+          activateTabAt(segButtons.length - 1);
+          break;
+      }
+    });
   }
+
+  // manual: with a screen reader, the active tab announces "selected"; Left/Right
+  // (and Home/End) move between tabs, both moving focus and switching panels.
 
   initDragDrop({
     compressPaths: (paths, altHeld) => listView.compressPaths(paths, altHeld),
