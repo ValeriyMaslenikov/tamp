@@ -90,6 +90,8 @@ export interface ListView {
   focusFilter(): void;
   /** Compress arbitrary paths, honoring the layout + Alt override. */
   compressPaths(paths: string[], altHeld: boolean): void;
+  /** Close an open preset picker (e.g. a drop-opened one) on tab switch. */
+  closeQuickPick(): void;
   /** Overlay text for the current layout / active preset. */
   currentDropHint(): string;
   /** Footer hint reflecting the hotkeys available in the current layout mode. */
@@ -373,18 +375,25 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     if (quickPick) {
       // The picker captures keys: numbers apply, Enter takes the default,
-      // arrows move the highlight, C goes to Custom, Esc cancels.
+      // arrows move the highlight, C goes to Custom, Esc cancels. Each handled
+      // key also calls stopImmediatePropagation() so the Converted view's
+      // document keydown listener (registered after this one) doesn't act on the
+      // same key while the picker floats over its tab.
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         closeQuickPick();
       } else if (e.key === "Enter") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         applyQuickPick(quickPick.index);
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         moveQuick(1);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         moveQuick(-1);
       } else if (e.key === "c" || e.key === "C") {
         // Custom is single-file only; ignore the shortcut for multi-path drops.
@@ -392,12 +401,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
         const v = videos.find((x) => x.path === quickPick?.paths[0]);
         if (!v) return;
         e.preventDefault();
+        e.stopImmediatePropagation();
         closeQuickPick();
         openCustom(v);
       } else if (e.key >= "1" && e.key <= "9") {
         const n = Number(e.key) - 1;
         if (n < quickPick.presets.length) {
           e.preventDefault();
+          e.stopImmediatePropagation();
           applyQuickPick(n);
         }
       }
@@ -727,7 +738,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
     card.appendChild(hint);
 
     overlay.appendChild(card);
-    el.appendChild(overlay);
+    // Mount on the always-visible panel host (like the Custom modal) rather than
+    // the per-tab view root, which setTab hides on other tabs — otherwise a drop
+    // opened from another tab would place the picker inside a display:none
+    // subtree and never show. The overlay is position:absolute; inset:0, so it
+    // covers the whole panel (.panel is position:relative).
+    (document.querySelector(".panel") ?? document.body).appendChild(overlay);
     quickPick = { el: overlay, paths, presets, index: 0 };
     highlightQuick();
   }
@@ -1212,6 +1228,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     onSettingsChanged,
     focusFilter,
     compressPaths,
+    closeQuickPick,
     currentDropHint,
     footerHint,
   };

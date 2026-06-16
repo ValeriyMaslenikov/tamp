@@ -72,6 +72,9 @@ function main(): void {
   );
 
   function setTab(tab: Tab): void {
+    // A drop can float the preset picker over any tab; close a stale one on
+    // every tab change so it can't linger or resurface on the wrong tab.
+    listView.closeQuickPick();
     listView.el.hidden = tab !== "videos";
     convertedView.el.hidden = tab !== "converted";
     prefsView.el.hidden = tab !== "prefs";
