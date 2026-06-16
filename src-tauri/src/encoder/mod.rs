@@ -1344,8 +1344,10 @@ fn append_journal(
     journal.append(crate::journal::ConversionRecord {
         input_path: job.input.to_string_lossy().into_owned(),
         input_bytes,
-        output_path: output.to_string_lossy().into_owned(),
-        output_bytes,
+        outputs: vec![crate::journal::Output {
+            path: output.to_string_lossy().into_owned(),
+            bytes: output_bytes,
+        }],
         preset_hash: preset_hash.to_string(),
         preset_name: job.preset.name.clone(),
         target_mb: job.preset.target_mb,
