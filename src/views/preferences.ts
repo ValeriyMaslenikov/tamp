@@ -22,6 +22,7 @@ import {
 } from "../lib/forms";
 import { splitSummaryLabel } from "../lib/format";
 import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
 
 export interface PreferencesView {
   el: HTMLElement;
@@ -83,7 +84,7 @@ export function createPreferencesView(opts: {
       adopt(await saveSettings(draft));
       return true;
     } catch (e) {
-      showToast(String(e));
+      showToast(friendlyError(e), "error");
       // Part of the change may have been persisted (e.g. everything except
       // launch-at-login); re-fetch and repaint from the canonical state.
       try {
@@ -539,7 +540,7 @@ export function createPreferencesView(opts: {
                 lastJson = JSON.stringify(current);
               })
               .catch((e) => {
-                showToast(String(e));
+                showToast(friendlyError(e), "error");
                 paint(); // revert the switch to the persisted state
               });
           },
@@ -657,7 +658,7 @@ export function createPreferencesView(opts: {
           d.watchedFolders.push(picked);
         });
       } catch (e) {
-        showToast(String(e));
+        showToast(friendlyError(e), "error");
       }
     });
     card.append(add);

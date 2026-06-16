@@ -4,6 +4,7 @@
 import { copyFile, reveal, type JobState, type Phase } from "./ipc";
 import { formatBytes } from "./format";
 import { showToast } from "./toast";
+import { friendlyError } from "./errors";
 
 const RUNNING: ReadonlySet<Phase> = new Set(["queued", "pass1", "pass2", "verifying"]);
 /** Phases that are actively encoding (a queued job hasn't started yet). */
@@ -184,13 +185,13 @@ export function createDrawer(panel: HTMLElement): Drawer {
         const out = j.outputPath;
         const revealBtn = actionBtn(REVEAL, "Show in file manager", () => {
           pressFeedback(revealBtn);
-          reveal(out).catch((e) => showToast(String(e), "error"));
+          reveal(out).catch((e) => showToast(friendlyError(e), "error"));
         });
         r.append(
           actionBtn(COPY, "Copy compressed file", () =>
             copyFile(out)
               .then(() => showToast("Copied to clipboard", "success"))
-              .catch((e) => showToast(String(e), "error")),
+              .catch((e) => showToast(friendlyError(e), "error")),
           ),
           revealBtn,
         );

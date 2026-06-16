@@ -10,6 +10,7 @@ import {
 import { formatAbsolute, formatBytes, formatRelativeTime, pluralParts } from "../lib/format";
 import { groupConversions, type ConvNode, type ConvPart } from "../lib/convgroup";
 import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface ConvertedView {
@@ -115,12 +116,12 @@ export function createConvertedView(): ConvertedView {
     }, 220);
   }
 
-  const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e), "error"));
+  const doPlay = (p: string) => openFile(p).catch((e) => showToast(friendlyError(e), "error"));
   const doCopy = (p: string) =>
     copyFile(p)
       .then(() => showToast("Copied to clipboard", "success"))
-      .catch((e) => showToast(String(e), "error"));
-  const doReveal = (p: string) => reveal(p).catch((e) => showToast(String(e), "error"));
+      .catch((e) => showToast(friendlyError(e), "error"));
+  const doReveal = (p: string) => reveal(p).catch((e) => showToast(friendlyError(e), "error"));
 
   function actionButton(
     label: string,
@@ -156,7 +157,7 @@ export function createConvertedView(): ConvertedView {
     play.addEventListener("click", (e) => {
       e.stopPropagation();
       pressFeedback(play);
-      openFile(outputPath).catch((err) => showToast(String(err), "error"));
+      openFile(outputPath).catch((err) => showToast(friendlyError(err), "error"));
     });
     return play;
   }
@@ -167,7 +168,7 @@ export function createConvertedView(): ConvertedView {
       e.stopPropagation();
       copyFile(outputPath)
         .then(() => showToast("Copied to clipboard", "success"))
-        .catch((err) => showToast(String(err), "error"));
+        .catch((err) => showToast(friendlyError(err), "error"));
     });
     return copy;
   }
@@ -177,7 +178,7 @@ export function createConvertedView(): ConvertedView {
     rev.addEventListener("click", (e) => {
       e.stopPropagation();
       pressFeedback(rev);
-      reveal(path).catch((err) => showToast(String(err), "error"));
+      reveal(path).catch((err) => showToast(friendlyError(err), "error"));
     });
     return rev;
   }
@@ -334,7 +335,7 @@ export function createConvertedView(): ConvertedView {
       e.stopPropagation();
       Promise.all(node.parts.map((p) => copyFile(p.path)))
         .then(() => showToast("Copied to clipboard", "success"))
-        .catch((err) => showToast(String(err), "error"));
+        .catch((err) => showToast(friendlyError(err), "error"));
     });
 
     parent.append(meta, copyAll, revealButton(node.folder, "Open output folder"));
@@ -353,7 +354,7 @@ export function createConvertedView(): ConvertedView {
     rowActions.set(parent, {
       kind: "group",
       copy: () => Promise.all(node.parts.map((p) => copyFile(p.path)))
-        .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(String(e), "error")),
+        .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(friendlyError(e), "error")),
       reveal: () => doReveal(node.folder),
       expand, collapse, isOpen,
     });
@@ -467,7 +468,7 @@ export function createConvertedView(): ConvertedView {
       // "Loading…" forever; later refreshes leave the prior content untouched.
       if (firstLoad) scroll.innerHTML = "";
       firstLoad = false;
-      showToast(String(e), "error");
+      showToast(friendlyError(e), "error");
       return;
     }
     firstLoad = false;

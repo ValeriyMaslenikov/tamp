@@ -25,6 +25,7 @@ import {
 import { stripOutputSuffix } from "../lib/naming";
 import { revealLabel } from "../lib/platform";
 import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
 import { openCustomModal, type CustomModal } from "./custom";
 
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
@@ -267,7 +268,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       lastSignature = sig;
       render();
     } catch (e) {
-      showToast(String(e), "error");
+      showToast(friendlyError(e), "error");
     }
   }
 
@@ -371,7 +372,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     getCurrentWindow()
       .hide()
-      .catch((e) => showToast(String(e), "error"));
+      .catch((e) => showToast(friendlyError(e), "error"));
   }
 
   function isEditable(t: EventTarget | null): boolean {
@@ -552,7 +553,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         });
       }
     } catch (e) {
-      showToast(String(e), "error");
+      showToast(friendlyError(e), "error");
     }
   }
 
@@ -582,7 +583,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         });
       }
     } catch (e) {
-      showToast(String(e), "error");
+      showToast(friendlyError(e), "error");
     }
   }
 
@@ -814,7 +815,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       // Orphaned output: the original is gone, so a click just copies the file.
       copyFile(v.path)
         .then(() => showToast("Copied to clipboard", "success"))
-        .catch((e) => showToast(String(e), "error"));
+        .catch((e) => showToast(friendlyError(e), "error"));
       return;
     }
     const j = jobForPath(v.path);
@@ -1086,7 +1087,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       // manual: revealing a moved/deleted output now toasts "File no longer
       // exists at …" (reveal returns a Result); pressing it flashes a pressed
       // state even as the panel hides on blur.
-      reveal(path).catch((err) => showToast(String(err), "error"));
+      reveal(path).catch((err) => showToast(friendlyError(err), "error"));
     });
     return btn;
   }
@@ -1170,7 +1171,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     cancelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const j = jobForPath(v.path);
-      if (j && isBusy(j)) cancelJob(j.id).catch((err) => showToast(String(err), "error"));
+      if (j && isBusy(j)) cancelJob(j.id).catch((err) => showToast(friendlyError(err), "error"));
     });
 
     const chevron = document.createElement("button");
