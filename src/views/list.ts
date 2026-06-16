@@ -30,6 +30,23 @@ import { openCustomModal, type CustomModal } from "./custom";
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
 const TERMINAL = new Set<Phase>(["done", "failed", "cancelled"]);
 
+/** Brief pressed/active flash on a Reveal button so a slow or backgrounded
+ *  launch is acknowledged even as the panel hides on blur. Applied synchronously
+ *  on activate (inline styles, no stylesheet dependency) and reverted after a
+ *  beat; success stays silent (a toast on every reveal would be too noisy). */
+function pressFeedback(btn: HTMLElement): void {
+  btn.classList.add("is-pressed");
+  const prevColor = btn.style.color;
+  const prevTransform = btn.style.transform;
+  btn.style.color = "var(--accent, rgba(124, 92, 252, 1))";
+  btn.style.transform = "scale(0.85)";
+  window.setTimeout(() => {
+    btn.classList.remove("is-pressed");
+    btn.style.color = prevColor;
+    btn.style.transform = prevTransform;
+  }, 220);
+}
+
 const PHASE_LABELS: Partial<Record<Phase, string>> = {
   pass1: "Pass 1",
   pass2: "Pass 2",
@@ -1065,6 +1082,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
       `<circle cx="7" cy="7" r="4.25"/><path d="M10.3 10.3 13.5 13.5"/></svg>`;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
+      pressFeedback(btn);
+      // manual: revealing a moved/deleted output now toasts "File no longer
+      // exists at …" (reveal returns a Result); pressing it flashes a pressed
+      // state even as the panel hides on blur.
       reveal(path).catch((err) => showToast(String(err), "error"));
     });
     return btn;

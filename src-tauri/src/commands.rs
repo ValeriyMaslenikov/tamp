@@ -352,12 +352,19 @@ pub async fn copy_file(app: AppHandle, path: String) -> Result<(), String> {
     .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
+/// Reveals `path` in the OS file manager (Finder/Explorer/…). Returns an error
+/// the frontend can toast: a moved/deleted output is caught by the existence
+/// pre-check (the opener would otherwise fail or silently no-op), mirroring
+/// `open_file`/`copy_file` so a real failure surfaces instead of only logging.
 #[tauri::command]
-pub fn reveal(app: AppHandle, path: String) {
+pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt as _;
-    if let Err(e) = app.opener().reveal_item_in_dir(&path) {
-        crate::log_error!("failed to reveal {path}: {e}");
+    if !Path::new(&path).exists() {
+        return Err(format!("File no longer exists at {path}"));
     }
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| format!("couldn't reveal {path}: {e}"))
 }
 
 /// The backend OS ("macos" | "windows" | "linux") for per-platform UI labels.

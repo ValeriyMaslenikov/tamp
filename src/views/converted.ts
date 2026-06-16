@@ -94,6 +94,27 @@ export function createConvertedView(): ConvertedView {
     return null;
   }
 
+  // Brief pressed/active flash on Play/Reveal so a slow or backgrounded launch
+  // is acknowledged even as the panel hides on blur. Applied synchronously on
+  // activate (inline styles, no stylesheet dependency) and reverted after a beat;
+  // success itself stays silent (a toast on every reveal/play would be too noisy).
+  function pressFeedback(btn: HTMLElement | null): void {
+    if (!btn) return;
+    btn.classList.add("is-pressed");
+    const prevColor = btn.style.color;
+    const prevBorder = btn.style.borderColor;
+    const prevTransform = btn.style.transform;
+    btn.style.color = "var(--accent, rgba(124, 92, 252, 1))";
+    btn.style.borderColor = "rgba(124, 92, 252, 0.7)";
+    btn.style.transform = "scale(0.9)";
+    window.setTimeout(() => {
+      btn.classList.remove("is-pressed");
+      btn.style.color = prevColor;
+      btn.style.borderColor = prevBorder;
+      btn.style.transform = prevTransform;
+    }, 220);
+  }
+
   const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e), "error"));
   const doCopy = (p: string) =>
     copyFile(p)
@@ -134,6 +155,7 @@ export function createConvertedView(): ConvertedView {
     const play = actionButton("Play", "Play the converted video", PLAY_SVG, "conv-play");
     play.addEventListener("click", (e) => {
       e.stopPropagation();
+      pressFeedback(play);
       openFile(outputPath).catch((err) => showToast(String(err), "error"));
     });
     return play;
@@ -154,6 +176,7 @@ export function createConvertedView(): ConvertedView {
     const rev = actionButton("Reveal", title, REVEAL_SVG);
     rev.addEventListener("click", (e) => {
       e.stopPropagation();
+      pressFeedback(rev);
       reveal(path).catch((err) => showToast(String(err), "error"));
     });
     return rev;
@@ -371,7 +394,11 @@ export function createConvertedView(): ConvertedView {
       case " ":
         e.preventDefault();
         if (a.kind === "group") (a.isOpen?.() ? a.collapse : a.expand)?.();
-        else a.play?.();
+        else {
+          // Flash the row's Play button so a keyboard launch is acknowledged too.
+          pressFeedback(selEl.querySelector<HTMLElement>(".conv-play"));
+          a.play?.();
+        }
         return;
       case "ArrowRight":
       case "e":
@@ -381,7 +408,12 @@ export function createConvertedView(): ConvertedView {
         if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); }
         return;
       case "c": e.preventDefault(); a.copy(); return;
-      case "r": e.preventDefault(); a.reveal(); return;
+      case "r":
+        e.preventDefault();
+        // Flash the row's Reveal button so a keyboard reveal is acknowledged too.
+        pressFeedback(selEl.querySelector<HTMLElement>('[aria-label="Reveal"]'));
+        a.reveal();
+        return;
       case "Escape":
         if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); return; }
         e.preventDefault();

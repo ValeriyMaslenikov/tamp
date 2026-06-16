@@ -64,6 +64,26 @@ export function createDrawer(panel: HTMLElement): Drawer {
     return b;
   }
 
+  // Brief pressed/active flash on Reveal so a slow or backgrounded launch is
+  // acknowledged even as the panel hides on blur. Applied synchronously on
+  // activate (inline styles, no stylesheet dependency) and reverted after a beat;
+  // success stays silent (a toast on every reveal would be too noisy).
+  function pressFeedback(btn: HTMLElement): void {
+    btn.classList.add("is-pressed");
+    const prevColor = btn.style.color;
+    const prevBorder = btn.style.borderColor;
+    const prevTransform = btn.style.transform;
+    btn.style.color = "var(--accent, rgba(124, 92, 252, 1))";
+    btn.style.borderColor = "rgba(124, 92, 252, 0.7)";
+    btn.style.transform = "scale(0.9)";
+    window.setTimeout(() => {
+      btn.classList.remove("is-pressed");
+      btn.style.color = prevColor;
+      btn.style.borderColor = prevBorder;
+      btn.style.transform = prevTransform;
+    }, 220);
+  }
+
   const COPY =
     `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>`;
   const REVEAL =
@@ -100,15 +120,17 @@ export function createDrawer(panel: HTMLElement): Drawer {
       r.append(meta);
       if (j.outputPath) {
         const out = j.outputPath;
+        const revealBtn = actionBtn(REVEAL, "Show in file manager", () => {
+          pressFeedback(revealBtn);
+          reveal(out).catch((e) => showToast(String(e), "error"));
+        });
         r.append(
           actionBtn(COPY, "Copy compressed file", () =>
             copyFile(out)
               .then(() => showToast("Copied to clipboard", "success"))
               .catch((e) => showToast(String(e), "error")),
           ),
-          actionBtn(REVEAL, "Show in file manager", () =>
-            reveal(out).catch((e) => showToast(String(e), "error")),
-          ),
+          revealBtn,
         );
       }
     } else {
