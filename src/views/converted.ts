@@ -63,6 +63,36 @@ export function createConvertedView(): ConvertedView {
   };
   const rowActions = new WeakMap<HTMLElement, RowActions>();
   let selEl: HTMLElement | null = null;
+  // True until the first listConversions() resolves, so refresh() can show a
+  // loading affordance only on the very first load (not on later refreshes,
+  // where the prior content stays put until results arrive).
+  let firstLoad = true;
+  // The Created/Converted tooltip is attached to <body> on hover (see timeEl);
+  // tracking the live one lets refresh()/teardown remove it so a rebuild while
+  // hovering can't orphan it permanently (the row vanishes without a mouseleave).
+  let activeTip: HTMLElement | null = null;
+  function clearActiveTip(): void {
+    if (activeTip) {
+      activeTip.remove();
+      activeTip = null;
+    }
+  }
+
+  // A nav row's stable identity across rebuilds: a single's output path or a
+  // group's folder. Stored on the element so refresh() can re-select by value
+  // rather than by a now-stale DOM node.
+  function rowKey(el: HTMLElement): string | null {
+    return el.dataset.navKey ?? null;
+  }
+  /** The nav row carrying `key`, or null. (Parts of a collapsed group are kept
+   *  out of the keyboard order by navRows() but still exist in the DOM, so a
+   *  group is re-expanded before this runs to surface a selected part.) */
+  function findRowByKey(key: string): HTMLElement | null {
+    for (const el of scroll.querySelectorAll<HTMLElement>(".conv-nav")) {
+      if (rowKey(el) === key) return el;
+    }
+    return null;
+  }
 
   const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e), "error"));
   const doCopy = (p: string) =>
@@ -149,9 +179,16 @@ export function createConvertedView(): ConvertedView {
       const r = wrap.getBoundingClientRect();
       tip.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
       tip.style.bottom = `${window.innerHeight - r.top + 6}px`;
+      // Drop any previously-tracked tip (e.g. a rebuild orphaned it) before
+      // showing — and ours becomes the tracked one for refresh()/teardown.
+      clearActiveTip();
       document.body.appendChild(tip);
+      activeTip = tip;
     });
-    wrap.addEventListener("mouseleave", () => tip.remove());
+    wrap.addEventListener("mouseleave", () => {
+      tip.remove();
+      if (activeTip === tip) activeTip = null;
+    });
     return wrap;
   }
 
@@ -160,6 +197,7 @@ export function createConvertedView(): ConvertedView {
     const r = document.createElement("div");
     r.className = "conv-row";
     r.classList.add("conv-nav");
+    r.dataset.navKey = `single:${outputPath}`;
     rowActions.set(r, {
       kind: "single",
       play: () => doPlay(outputPath),
@@ -201,6 +239,7 @@ export function createConvertedView(): ConvertedView {
     const r = document.createElement("div");
     r.className = "conv-part";
     r.classList.add("conv-nav");
+    r.dataset.navKey = `part:${part.path}`;
     rowActions.set(r, {
       kind: "part",
       play: () => doPlay(part.path),
@@ -287,6 +326,7 @@ export function createConvertedView(): ConvertedView {
     const isOpen = () => wrap.classList.contains("is-open");
     parent.addEventListener("click", () => (isOpen() ? collapse() : expand()));
     parent.classList.add("conv-nav");
+    parent.dataset.navKey = `group:${node.folder}`;
     rowActions.set(parent, {
       kind: "group",
       copy: () => Promise.all(node.parts.map((p) => copyFile(p.path)))
@@ -350,16 +390,65 @@ export function createConvertedView(): ConvertedView {
     }
   }
   document.addEventListener("keydown", onKeyDown);
+  // manual: the view lives for the app's lifetime (main.ts never tears it down),
+  // so the only place a body-attached tip can be orphaned is a rebuild — handled
+  // at the top of refresh() via clearActiveTip(). If a destroy() path is ever
+  // added, call clearActiveTip() and removeEventListener there too.
+
+  /** The folders of every currently-expanded group (DOM state, pre-rebuild). */
+  function expandedFolders(): Set<string> {
+    const open = new Set<string>();
+    for (const parent of scroll.querySelectorAll<HTMLElement>(".conv-tree.is-open > .conv-tree-parent")) {
+      const key = rowKey(parent);
+      if (key) open.add(key);
+    }
+    return open;
+  }
+  /** Re-expand the groups whose folder key was open before the rebuild. */
+  function restoreExpanded(open: Set<string>): void {
+    if (open.size === 0) return;
+    for (const parent of scroll.querySelectorAll<HTMLElement>(".conv-tree > .conv-tree-parent")) {
+      const key = rowKey(parent);
+      if (key && open.has(key)) rowActions.get(parent)?.expand?.();
+    }
+  }
 
   async function refresh(): Promise<void> {
+    // A rebuild removes the hovered row without firing mouseleave, so drop any
+    // body-attached tooltip first — otherwise it floats over the panel forever.
+    clearActiveTip();
+
+    // On the very first load, show a placeholder instead of a blank scroll while
+    // listConversions() is in flight. Later refreshes keep the prior content.
+    if (firstLoad && scroll.childElementCount === 0) {
+      const loading = document.createElement("div");
+      loading.className = "empty";
+      loading.textContent = "Loading…";
+      scroll.append(loading);
+    }
+
     let records: ConversionRecord[];
     try {
       records = await listConversions();
     } catch (e) {
+      // Drop the first-load placeholder so a failed first load doesn't stick on
+      // "Loading…" forever; later refreshes leave the prior content untouched.
+      if (firstLoad) scroll.innerHTML = "";
+      firstLoad = false;
       showToast(String(e), "error");
       return;
     }
+    firstLoad = false;
+
+    // Remember the user's place before wiping the DOM: which row was selected
+    // (by stable key) and which groups were expanded, so a background refresh
+    // (tab switch / a finished encode) doesn't yank them to the top.
+    const hadSelection = selEl !== null;
+    const selectedKey = selEl ? rowKey(selEl) : null;
+    const open = expandedFolders();
+
     scroll.innerHTML = "";
+    selEl = null;
     if (records.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -371,8 +460,20 @@ export function createConvertedView(): ConvertedView {
     for (const node of groupConversions(records)) {
       scroll.append(node.kind === "single" ? singleRow(node) : groupNode(node));
     }
-    selEl = null;
-    setSelected(navRows()[0] ?? null);
+
+    restoreExpanded(open);
+
+    // Re-select the previously-selected row if it still exists; otherwise only
+    // fall back to the first row on a true first load (no prior selection). Match
+    // by stored key rather than a CSS attribute selector to sidestep escaping the
+    // path characters (\, /, etc.) the keys contain.
+    const restored = selectedKey ? findRowByKey(selectedKey) : null;
+    if (restored) setSelected(restored);
+    else if (!hadSelection) setSelected(navRows()[0] ?? null);
+    // manual: scroll down, select a row, expand a split group, then trigger a
+    // refresh (tab away/back, or let a queued conversion finish) — the selection
+    // and the expanded group are preserved, and no stray time tooltip is left
+    // floating over the panel.
   }
 
   return { el, refresh };
