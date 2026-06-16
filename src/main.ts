@@ -34,7 +34,7 @@ function main(): void {
       </header>
       <main class="content" id="content"></main>
       <footer class="panel-footer">↑↓ select · ⏎/d default · e expand · esc back</footer>
-      <div class="toast" id="toast" hidden></div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </div>`;
 
   initToast(document.getElementById("toast") as HTMLElement);
@@ -196,7 +196,7 @@ function main(): void {
       // refresh it now that the real videos-layout is known.
       if (!listView.el.hidden) footer.textContent = listView.footerHint();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     }
     await listView.refresh();
     listView.focusFilter();

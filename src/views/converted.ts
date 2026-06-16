@@ -64,10 +64,12 @@ export function createConvertedView(): ConvertedView {
   const rowActions = new WeakMap<HTMLElement, RowActions>();
   let selEl: HTMLElement | null = null;
 
-  const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e)));
+  const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e), "error"));
   const doCopy = (p: string) =>
-    copyFile(p).then(() => showToast("Copied to clipboard")).catch((e) => showToast(String(e)));
-  const doReveal = (p: string) => reveal(p).catch((e) => showToast(String(e)));
+    copyFile(p)
+      .then(() => showToast("Copied to clipboard", "success"))
+      .catch((e) => showToast(String(e), "error"));
+  const doReveal = (p: string) => reveal(p).catch((e) => showToast(String(e), "error"));
 
   function actionButton(
     label: string,
@@ -102,7 +104,7 @@ export function createConvertedView(): ConvertedView {
     const play = actionButton("Play", "Play the converted video", PLAY_SVG, "conv-play");
     play.addEventListener("click", (e) => {
       e.stopPropagation();
-      openFile(outputPath).catch((err) => showToast(String(err)));
+      openFile(outputPath).catch((err) => showToast(String(err), "error"));
     });
     return play;
   }
@@ -112,8 +114,8 @@ export function createConvertedView(): ConvertedView {
     copy.addEventListener("click", (e) => {
       e.stopPropagation();
       copyFile(outputPath)
-        .then(() => showToast("Copied to clipboard"))
-        .catch((err) => showToast(String(err)));
+        .then(() => showToast("Copied to clipboard", "success"))
+        .catch((err) => showToast(String(err), "error"));
     });
     return copy;
   }
@@ -122,7 +124,7 @@ export function createConvertedView(): ConvertedView {
     const rev = actionButton("Reveal", title, REVEAL_SVG);
     rev.addEventListener("click", (e) => {
       e.stopPropagation();
-      reveal(path).catch((err) => showToast(String(err)));
+      reveal(path).catch((err) => showToast(String(err), "error"));
     });
     return rev;
   }
@@ -268,8 +270,8 @@ export function createConvertedView(): ConvertedView {
     copyAll.addEventListener("click", (e) => {
       e.stopPropagation();
       Promise.all(node.parts.map((p) => copyFile(p.outputPath)))
-        .then(() => showToast("Copied to clipboard"))
-        .catch((err) => showToast(String(err)));
+        .then(() => showToast("Copied to clipboard", "success"))
+        .catch((err) => showToast(String(err), "error"));
     });
 
     parent.append(meta, copyAll, revealButton(node.folder, "Open output folder"));
@@ -287,7 +289,7 @@ export function createConvertedView(): ConvertedView {
     rowActions.set(parent, {
       kind: "group",
       copy: () => Promise.all(node.parts.map((p) => copyFile(p.outputPath)))
-        .then(() => showToast("Copied to clipboard")).catch((e) => showToast(String(e))),
+        .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(String(e), "error")),
       reveal: () => doReveal(node.folder),
       expand, collapse, isOpen,
     });
@@ -353,7 +355,7 @@ export function createConvertedView(): ConvertedView {
     try {
       records = await listConversions();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
       return;
     }
     scroll.innerHTML = "";

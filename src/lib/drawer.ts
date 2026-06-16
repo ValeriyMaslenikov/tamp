@@ -101,11 +101,11 @@ export function createDrawer(panel: HTMLElement): Drawer {
         r.append(
           actionBtn(COPY, "Copy compressed file", () =>
             copyFile(out)
-              .then(() => showToast("Copied to clipboard"))
-              .catch((e) => showToast(String(e))),
+              .then(() => showToast("Copied to clipboard", "success"))
+              .catch((e) => showToast(String(e), "error")),
           ),
           actionBtn(REVEAL, "Show in file manager", () =>
-            reveal(out).catch((e) => showToast(String(e))),
+            reveal(out).catch((e) => showToast(String(e), "error")),
           ),
         );
       }

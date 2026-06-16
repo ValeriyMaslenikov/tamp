@@ -197,7 +197,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (state.phase !== "done" || !state.postError) return;
     if (postErrorToasted.has(state.id)) return;
     postErrorToasted.add(state.id);
-    showToast(state.postError);
+    showToast(state.postError, "error");
   }
 
   function updateJob(state: JobState): void {
@@ -250,7 +250,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       lastSignature = sig;
       render();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     }
   }
 
@@ -354,7 +354,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     getCurrentWindow()
       .hide()
-      .catch((e) => showToast(String(e)));
+      .catch((e) => showToast(String(e), "error"));
   }
 
   function isEditable(t: EventTarget | null): boolean {
@@ -535,7 +535,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         });
       }
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     }
   }
 
@@ -565,7 +565,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         });
       }
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     }
   }
 
@@ -752,8 +752,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (v.isOutput) {
       // Orphaned output: the original is gone, so a click just copies the file.
       copyFile(v.path)
-        .then(() => showToast("Copied to clipboard"))
-        .catch((e) => showToast(String(e)));
+        .then(() => showToast("Copied to clipboard", "success"))
+        .catch((e) => showToast(String(e), "error"));
       return;
     }
     const j = jobForPath(v.path);
@@ -1003,7 +1003,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       `<circle cx="7" cy="7" r="4.25"/><path d="M10.3 10.3 13.5 13.5"/></svg>`;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      reveal(path).catch((err) => showToast(String(err)));
+      reveal(path).catch((err) => showToast(String(err), "error"));
     });
     return btn;
   }
@@ -1082,7 +1082,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     cancelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const j = jobForPath(v.path);
-      if (j && isBusy(j)) cancelJob(j.id).catch((err) => showToast(String(err)));
+      if (j && isBusy(j)) cancelJob(j.id).catch((err) => showToast(String(err), "error"));
     });
 
     const chevron = document.createElement("button");
