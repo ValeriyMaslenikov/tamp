@@ -249,6 +249,18 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|_window, _event| {
+            // A live system light/dark flip while idle must repaint the tray:
+            // platforms that recolor the glyph per taskbar theme (Windows) pick
+            // their ink at icon-update time, so without this the idle glyph can
+            // become invisible until the next encode. tray_progress(None) re-reads
+            // the current ink and repaints the idle icon; it's a no-op beyond a
+            // title clear on macOS, whose template icon auto-inverts. The
+            // app-theme event is the agreed best-effort proxy for the taskbar
+            // theme (the panel window pins no theme, so it's delivered).
+            if let tauri::WindowEvent::ThemeChanged(_) = _event {
+                platform::native().tray_progress(_window.app_handle(), None);
+            }
+
             // Hiding on focus loss is release-only: in dev the devtools window
             // steals focus and would close the panel the moment it opens.
             #[cfg(not(debug_assertions))]
