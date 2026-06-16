@@ -54,6 +54,25 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
     Ok(videos)
 }
 
+/// The watched folders that exist but can't be read right now (offline network
+/// drive, permission-denied), as display strings. Empty when every folder is
+/// reachable or merely not-yet-created. The Videos tab uses this to show a
+/// distinct "couldn't read <folder>" banner instead of the misleading
+/// "no recordings" empty state when a share is offline. `list_recents`' own
+/// return shape stays unchanged, so existing callers are unaffected.
+#[tauri::command]
+pub async fn unreachable_folders(app: AppHandle) -> Result<Vec<String>, String> {
+    let folders: Vec<PathBuf> = {
+        let state = app.state::<SettingsState>();
+        let guard = lock_settings(&state);
+        guard.watched_folders.iter().map(PathBuf::from).collect()
+    };
+    // read_dir on an offline UNC share can block, so probe off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || scanner::unreachable(&folders))
+        .await
+        .map_err(|e| format!("unreachable-folder probe failed: {e}"))
+}
+
 #[tauri::command]
 pub fn get_settings(app: AppHandle, state: State<'_, SettingsState>) -> Settings {
     let mut settings = lock_settings(&state).clone();

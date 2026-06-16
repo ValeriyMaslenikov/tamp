@@ -287,6 +287,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_recents,
+            commands::unreachable_folders,
             commands::get_settings,
             commands::save_settings,
             commands::pick_folder,

@@ -108,6 +108,22 @@ describe("videoListSignature", () => {
     ).not.toBe(orphan);
   });
 
+  it("changes when a watched folder becomes unreachable", () => {
+    const base = videoListSignature([video()]);
+    const offline = videoListSignature([video()], ["\\\\nas\\recordings"]);
+    expect(offline).not.toBe(base);
+    // and is stable for the same unreachable set
+    expect(offline).toBe(
+      videoListSignature([video()], ["\\\\nas\\recordings"]),
+    );
+  });
+
+  it("defaults to no unreachable folders (back-compat)", () => {
+    expect(videoListSignature([video()])).toBe(
+      videoListSignature([video()], []),
+    );
+  });
+
   it("is order-sensitive", () => {
     const a = video({ path: "/tmp/a.mov" });
     const b = video({ path: "/tmp/b.mov" });

@@ -130,6 +130,12 @@ export interface JobState {
 export const listRecents = (): Promise<RecentVideo[]> =>
   invoke<RecentVideo[]>("list_recents");
 
+/** Watched folders that exist but can't be read now (offline share /
+ *  permission-denied), as display strings — drives the Videos-tab "couldn't
+ *  read <folder>" banner. Empty when all folders are reachable or just missing. */
+export const unreachableFolders = (): Promise<string[]> =>
+  invoke<string[]>("unreachable_folders");
+
 /** One delivered output of a conversion job: a single has one, a split has N. */
 export interface ConversionOutput {
   path: string;

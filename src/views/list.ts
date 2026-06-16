@@ -11,6 +11,7 @@ import {
   recentDuration,
   recentThumb,
   reveal,
+  unreachableFolders,
   type JobState,
   type Phase,
   type Preset,
@@ -86,10 +87,16 @@ export function presetIndexForDigit(key: string, count: number): number | null {
   return Number.isInteger(n) && n >= 0 && n < count ? n : null;
 }
 
-/** Identity of the visible video list; job statuses are painted separately. */
-export function videoListSignature(videos: RecentVideo[]): string {
-  return JSON.stringify(
-    videos.map((v) => [
+/** Identity of the visible video list; job statuses are painted separately.
+ *  `unreachable` (the offline/permission-denied watched folders) folds in so the
+ *  Videos tab re-renders when a share goes offline or comes back even if the
+ *  video rows themselves are unchanged. */
+export function videoListSignature(
+  videos: RecentVideo[],
+  unreachable: string[] = [],
+): string {
+  return JSON.stringify({
+    videos: videos.map((v) => [
       v.path,
       v.sizeBytes,
       v.createdMs,
@@ -98,7 +105,8 @@ export function videoListSignature(videos: RecentVideo[]): string {
       v.conversion,
       v.durationSecs,
     ]),
-  );
+    unreachable,
+  });
 }
 
 export interface ListView {
@@ -152,6 +160,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
   el.append(activeBar, filterRow, listScroll);
 
   let videos: RecentVideo[] = [];
+  // Watched folders that exist but can't be read right now (offline share /
+  // permission-denied). Drives the inline banner, distinct from the empty state.
+  let unreachable: string[] = [];
   const jobs = new Map<string, JobState>(); // job id -> latest state
   const jobByPath = new Map<string, string>(); // input path -> job id shown on the row
   const dismissed = new Set<string>(); // job ids no longer shown on rows
@@ -257,7 +268,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   async function refresh(): Promise<void> {
     try {
-      const [vids, queue] = await Promise.all([listRecents(), queueState()]);
+      // A probe of an offline UNC share can be slow; tolerate its failure so a
+      // single unreachable folder never blocks listing the reachable ones.
+      const [vids, queue, unreach] = await Promise.all([
+        listRecents(),
+        queueState(),
+        unreachableFolders().catch(() => [] as string[]),
+      ]);
+      unreachable = unreach;
       // Carry forward thumbnails/durations resolved lazily this session: the
       // backend always returns these as null (filled per row on the frontend),
       // so re-merging keeps the in-memory model — and the list signature —
@@ -270,7 +288,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       }
       videos = vids;
       applySnapshot(queue);
-      const sig = videoListSignature(vids);
+      const sig = videoListSignature(vids, unreachable);
       if (sig === lastSignature) {
         // Same videos: repaint statuses in place so an open preview (and its
         // playing <video>) survives routine panel:shown refreshes.
@@ -593,6 +611,39 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   // ----- rendering --------------------------------------------------------
 
+  /** A non-alarming inline notice for any watched folders that exist but can't
+   *  be read right now (offline share / permission-denied). Returns null when
+   *  every folder is reachable. Separate from the empty state so an offline
+   *  share doesn't masquerade as "no recordings".
+   *  manual: add an offline UNC path as a watched folder → this banner shows
+   *  ("Couldn't read \\nas\… — it may be offline or you lack permission"),
+   *  not the empty-state message. */
+  function buildUnreachableBanner(): HTMLElement | null {
+    if (unreachable.length === 0) return null;
+    const banner = document.createElement("div");
+    banner.className = "folder-notice";
+    banner.setAttribute("role", "status");
+    const title = document.createElement("div");
+    title.className = "folder-notice-title";
+    title.textContent =
+      unreachable.length === 1
+        ? "Couldn't read a watched folder"
+        : `Couldn't read ${unreachable.length} watched folders`;
+    banner.appendChild(title);
+    for (const folder of unreachable) {
+      const line = document.createElement("div");
+      line.className = "folder-notice-path";
+      line.textContent = folder;
+      line.title = folder;
+      banner.appendChild(line);
+    }
+    const hint = document.createElement("div");
+    hint.className = "folder-notice-hint";
+    hint.textContent = "It may be offline or you may lack permission.";
+    banner.appendChild(hint);
+    return banner;
+  }
+
   function render(): void {
     // Tear down old rows first: stop preview videos before their elements
     // are dropped, so decoders don't leak.
@@ -604,6 +655,11 @@ export function createListView(getSettings: () => Settings | null): ListView {
     expandedPath = null;
     noMatch = null;
     listScroll.innerHTML = "";
+    // Unreachable watched folders get a distinct, non-alarming notice ABOVE the
+    // list (and above the empty state), so an offline share reads as "couldn't
+    // read that folder" rather than the misleading "no recordings".
+    const banner = buildUnreachableBanner();
+    if (banner) listScroll.appendChild(banner);
     if (videos.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";

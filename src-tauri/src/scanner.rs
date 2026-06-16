@@ -59,20 +59,52 @@ fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether a `read_dir` error means the folder is *unreachable* (offline UNC
+/// share, permission-denied, …) as opposed to legitimately missing. A
+/// not-yet-created watched folder (e.g. Windows' `Videos\Screen Recordings`
+/// before the first recording) returns `NotFound` and is NOT unreachable — it
+/// is just empty. Everything else (PermissionDenied, network errors, …) is.
+///
+/// `scan` and `unreachable` both route their `read_dir` error through this so
+/// the "empty vs. unreachable" classification can never drift between the list
+/// the panel renders and the banner it shows.
+fn is_unreachable_err(err: &std::io::Error) -> bool {
+    err.kind() != std::io::ErrorKind::NotFound
+}
+
+/// The watched folders that exist but can't be read right now (offline network
+/// drive, permission-denied), as display strings. A legitimately-missing
+/// (`NotFound`) folder is omitted: it's an empty source, not an error worth
+/// surfacing. Used by the `unreachable_folders` command to drive the Videos
+/// tab's "couldn't read <folder>" banner, distinct from the empty state.
+pub fn unreachable(folders: &[PathBuf]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for folder in folders {
+        if let Err(e) = std::fs::read_dir(folder) {
+            if is_unreachable_err(&e) {
+                crate::log_warn!("watched folder {} is unreachable: {e}", folder.display());
+                out.push(folder.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out
+}
+
 pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
     let mut videos: Vec<RecentVideo> = Vec::new();
     for folder in folders {
         let entries = match std::fs::read_dir(folder) {
             Ok(entries) => entries,
-            // A default watched folder (e.g. Windows' Videos\Screen
-            // Recordings) may not exist until the user first records there;
-            // that's expected, not worth a warning on every scan.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                crate::log_debug!("watched folder {} does not exist yet", folder.display());
-                continue;
-            }
+            // An unreachable folder (offline UNC, permission-denied) is
+            // surfaced separately by `unreachable()` and the Videos-tab
+            // banner; a not-yet-created default folder (NotFound) is expected
+            // and not worth a warning on every scan. Either way, skip it here.
             Err(e) => {
-                crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
+                if is_unreachable_err(&e) {
+                    crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
+                } else {
+                    crate::log_debug!("watched folder {} does not exist yet", folder.display());
+                }
                 continue;
             }
         };
@@ -448,6 +480,31 @@ mod tests {
         let mut got = names(&found);
         got.sort();
         assert_eq!(got, vec!["a.mov", "b.mp4"]);
+    }
+
+    #[test]
+    fn unreachable_reports_unreadable_but_not_missing_folders() {
+        // A folder that exists and is readable is reachable.
+        let ok = tempfile::tempdir().unwrap();
+        // A path that exists but can't be enumerated as a directory (here, a
+        // regular file) stands in for an offline/permission-denied folder:
+        // read_dir returns an error whose kind is NOT NotFound — exactly the
+        // class `is_unreachable_err` flags. (Cross-platform; no ACL fiddling.)
+        let blocked_dir = tempfile::tempdir().unwrap();
+        let blocked = blocked_dir.path().join("not-a-dir");
+        touch(blocked_dir.path(), "not-a-dir");
+        assert!(std::fs::read_dir(&blocked).unwrap_err().kind() != std::io::ErrorKind::NotFound);
+        // A simply-missing folder is NOT unreachable: it's an empty source.
+        let missing = PathBuf::from("/nonexistent/tamp-unreachable-test");
+        assert_eq!(
+            std::fs::read_dir(&missing).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        let got = unreachable(&[ok.path().to_path_buf(), blocked.clone(), missing]);
+        assert_eq!(got, vec![blocked.to_string_lossy().into_owned()]);
+        // manual: add an offline UNC path as a watched folder → the Videos tab
+        // shows the "couldn't read <folder>" banner, not "no recordings".
     }
 
     #[test]
