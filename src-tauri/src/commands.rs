@@ -361,12 +361,34 @@ pub fn os_info() -> &'static str {
     std::env::consts::OS
 }
 
-/// The conversion history (newest first) for the Converted tab.
+/// The original file's creation time (ms since epoch), or `None` if it can't be
+/// read (the source was moved/deleted, or the FS has no creation time).
+fn file_created_ms(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+}
+
+/// The conversion history (newest first) for the Converted tab. Records written
+/// before the recorded-time field existed have `input_created_ms == 0`; backfill
+/// those from the source file's live creation time when it still exists, so the
+/// Converted-tab tooltip can show when the original was made.
 #[tauri::command]
 pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord> {
-    app.try_state::<crate::journal::Journal>()
+    let mut records = app
+        .try_state::<crate::journal::Journal>()
         .map(|j| j.records())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for rec in &mut records {
+        if rec.input_created_ms == 0 {
+            if let Some(ms) = file_created_ms(std::path::Path::new(&rec.input_path)) {
+                rec.input_created_ms = ms;
+            }
+        }
+    }
+    records
 }
 
 /// Registers/removes the Windows Explorer "Compress with tamp" entry and
