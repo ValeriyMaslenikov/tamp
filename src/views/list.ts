@@ -626,6 +626,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     prev.className = "active-bar-arrow";
     prev.textContent = "‹";
     prev.title = "Previous preset ([)";
+    prev.setAttribute("aria-label", "Previous preset");
     prev.tabIndex = -1;
     prev.disabled = s.presets.length < 2;
     prev.addEventListener("click", () => cycleActive(-1));
@@ -637,6 +638,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     next.className = "active-bar-arrow";
     next.textContent = "›";
     next.title = "Next preset (])";
+    next.setAttribute("aria-label", "Next preset");
     next.tabIndex = -1;
     next.disabled = s.presets.length < 2;
     next.addEventListener("click", () => cycleActive(1));
@@ -996,7 +998,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
     btn.type = "button";
     btn.className = "row-reveal";
     btn.title = revealLabel();
-    btn.tabIndex = -1; // arrow-key selection owns keyboard focus
+    // Named + operable: in the Tab order with an accessible name, so keyboard /
+    // SR users can reach and trigger it (arrow keys still drive row selection).
+    btn.setAttribute("aria-label", revealLabel());
+    btn.tabIndex = 0;
+    // manual: Tab reaches the reveal button; SR reads it (e.g. "Show in
+    // File Explorer, button"); Enter/Space reveals the file.
     btn.innerHTML =
       `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ` +
       `stroke-width="1.5" stroke-linecap="round" aria-hidden="true">` +
@@ -1078,6 +1085,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     cancelBtn.type = "button";
     cancelBtn.className = "row-cancel";
     cancelBtn.title = "Cancel";
+    cancelBtn.setAttribute("aria-label", "Cancel conversion");
     cancelBtn.textContent = "✕";
     cancelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1089,6 +1097,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     chevron.type = "button";
     chevron.className = "row-chevron";
     chevron.title = "Details (e)";
+    chevron.setAttribute("aria-label", "Details");
     chevron.textContent = "›";
     chevron.addEventListener("click", (e) => {
       e.stopPropagation();

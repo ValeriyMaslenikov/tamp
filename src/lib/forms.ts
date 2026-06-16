@@ -8,13 +8,25 @@ import type {
   StaticSplitBy,
 } from "./ipc";
 
+let fieldSeq = 0; // unique ids so each label binds to its own control
+
+/**
+ * A labelled control: a `<label for>` bound to the input by a generated id so
+ * screen readers announce the field name. The `.field` flex column layout is
+ * unchanged (the styling keys off the `.field-label` class, not the tag).
+ */
 export function field(labelText: string, input: HTMLElement): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "field";
-  const label = document.createElement("span");
+  const label = document.createElement("label");
   label.className = "field-label";
   label.textContent = labelText;
+  // Bind the label to the control. <label for> needs an id; reuse an existing
+  // one if the caller set it, otherwise mint a unique one.
+  if (!input.id) input.id = `field-${++fieldSeq}`;
+  label.htmlFor = input.id;
   wrap.append(label, input);
+  // manual: SR focus on each field announces its label (e.g. "Target MB, edit").
   return wrap;
 }
 
@@ -121,12 +133,16 @@ export function parseSplitInputs(
 
 function radioRow<T extends string>(
   name: string,
+  groupLabel: string,
   options: ReadonlyArray<[T, string]>,
   value: T,
   onChange: (v: T) => void,
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = "radio-row";
+  // Name the set so AT announces it as a radio group, not loose radios.
+  row.setAttribute("role", "radiogroup");
+  row.setAttribute("aria-label", groupLabel);
   for (const [v, labelText] of options) {
     const label = document.createElement("label");
     label.className = "radio";
@@ -186,6 +202,7 @@ export function splitControl(initial?: SplitConfig): SplitControl {
 
   const modeRow = radioRow<SplitMode>(
     `split-mode-${seq}`,
+    "Split mode",
     [
       ["off", "Off"],
       ["smart", "Smart"],
@@ -199,6 +216,7 @@ export function splitControl(initial?: SplitConfig): SplitControl {
   );
   const byRow = radioRow<StaticSplitBy>(
     `split-by-${seq}`,
+    "Split by",
     [
       ["parts", "By parts"],
       ["seconds", "By duration"],

@@ -359,12 +359,16 @@ export function createPreferencesView(opts: {
   ): HTMLElement {
     const row = document.createElement("div");
     row.className = "radio-row";
+    const name = `radio-${labelText.replace(/\s+/g, "-").toLowerCase()}`;
     const label = document.createElement("span");
     label.className = "toggle-label";
+    label.id = `${name}-label`;
     label.textContent = labelText;
     const group = document.createElement("div");
     group.className = "radio-group";
-    const name = `radio-${labelText.replace(/\s+/g, "-").toLowerCase()}`;
+    // Name the option set so AT announces it as a group (Theme / Open after…).
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-labelledby", label.id);
     for (const opt of options) {
       const item = document.createElement("label");
       item.className = "radio-item";
@@ -401,6 +405,10 @@ export function createPreferencesView(opts: {
         desc: "A bar holds one active preset; clicking a video applies it instantly. Switch it with ‹ › or [ ].",
       },
     ];
+    // Group the layout radios so AT announces them as one named set.
+    const layoutGroup = document.createElement("div");
+    layoutGroup.setAttribute("role", "radiogroup");
+    layoutGroup.setAttribute("aria-label", "Videos screen layout");
     for (const opt of options) {
       const row = document.createElement("label");
       row.className = "option-row";
@@ -426,8 +434,10 @@ export function createPreferencesView(opts: {
       desc.textContent = opt.desc;
       text.append(title, desc);
       row.append(input, text);
-      card.appendChild(row);
+      layoutGroup.appendChild(row);
     }
+    // manual: SR announces "Videos screen layout, radio group" entering the set.
+    card.appendChild(layoutGroup);
 
     const limitInput = numberInput(s.recentsLimit, "50");
     limitInput.min = "1";
@@ -626,6 +636,7 @@ export function createPreferencesView(opts: {
       path.title = folder;
       const remove = button("✕", "folder-remove");
       remove.title = "Remove folder";
+      remove.setAttribute("aria-label", "Remove folder");
       remove.disabled = s.watchedFolders.length <= 1;
       remove.addEventListener("click", () => {
         void persist((d) => {

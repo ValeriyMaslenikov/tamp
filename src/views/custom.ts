@@ -48,6 +48,7 @@ export function openCustomModal(opts: {
   back.type = "button";
   back.className = "modal-back";
   back.title = "Back (Esc)";
+  back.setAttribute("aria-label", "Back");
   back.textContent = "‹";
   back.addEventListener("click", close);
   const titles = document.createElement("div");

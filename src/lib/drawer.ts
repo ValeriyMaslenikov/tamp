@@ -57,6 +57,8 @@ export function createDrawer(panel: HTMLElement): Drawer {
     b.type = "button";
     b.className = "drawer-act";
     b.title = title;
+    // Icon-only: name it for AT (the SVG is decorative / aria-hidden).
+    b.setAttribute("aria-label", title);
     b.innerHTML = svg;
     b.addEventListener("click", on);
     return b;
