@@ -124,6 +124,8 @@ export function createDrawer(panel: HTMLElement): Drawer {
     if (list.length === 0) {
       el.hidden = true;
       rowsEl.innerHTML = "";
+      // No drawer occupying the bottom slot: the toast sits at its normal spot.
+      panel.style.setProperty("--drawer-h", "0px");
       return;
     }
     el.hidden = false;
@@ -137,6 +139,13 @@ export function createDrawer(panel: HTMLElement): Drawer {
     list.sort((a, b) => Number(RUNNING.has(b.phase)) - Number(RUNNING.has(a.phase)));
     rowsEl.innerHTML = "";
     for (const j of list) rowsEl.append(rowFor(j));
+    // Publish the drawer's height (now that the rows are in the DOM) so the toast
+    // can offset itself above the drawer instead of overlapping it (styles.css
+    // reads --drawer-h on .panel via calc()).
+    // manual: start a conversion (drawer visible) then trigger a toast (the
+    // drawer's own Copy button, or a drop-error) → the toast sits just above the
+    // drawer and neither occludes the other; with no drawer it sits at bottom:12px.
+    panel.style.setProperty("--drawer-h", `${el.offsetHeight}px`);
   }
 
   return {
