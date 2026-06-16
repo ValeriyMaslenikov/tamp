@@ -1,59 +1,60 @@
 import type { ConversionRecord } from "./ipc";
 
+/** One output of a conversion: a single's lone output, or one split part. */
+export interface ConvPart {
+  path: string;
+  bytes: number;
+}
+
 export type ConvNode =
-  | { kind: "single"; rec: ConversionRecord; completedAtMs: number }
+  | {
+      kind: "single"; inputPath: string; inputBytes: number;
+      presetName: string; inputCreatedMs: number; completedAtMs: number;
+      output: ConvPart;
+    }
   | {
       kind: "group"; folder: string; inputPath: string; inputBytes: number;
       presetName: string; inputCreatedMs: number; completedAtMs: number;
-      totalBytes: number; parts: ConversionRecord[];
+      totalBytes: number; parts: ConvPart[];
     };
 
-// keep in lockstep with src-tauri/src/journal.rs (parent_dir/basename/is_part_path)
+/** The directory holding a path; "" when there is no separator. */
 function parentDir(p: string): string {
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   return i < 0 ? "" : p.slice(0, i);
 }
-function basename(p: string): string {
-  return p.split(/[\\/]/).pop() ?? p;
-}
-/** A directory whose name ends in "(tamped …)" — a split output folder. */
-const TAMPED_DIR = /\(tamped .+\)$/;
-/** A FILE that is itself a "(tamped …)" output, e.g.
- *  `clip (tamped Discord 10MB 9ca1).mp4` — a standalone conversion. */
-const TAMPED_FILE = /\(tamped [^)]+\)\.[^.]+$/;
 
-/** A split *part* is a bare part file (`name N.ext`) inside a "(tamped …)"
- *  output folder. A standalone output that merely sits inside a tamped folder —
- *  e.g. re-compressing a part — carries the "(tamped …)" suffix in its OWN name
- *  and is its own conversion (rendered as a single), not a part of the original.
- *  Decided purely from the stored output path: the journal is immutable history,
- *  not a live read of the folder. */
-export function isPartPath(outputPath: string): boolean {
-  return (
-    TAMPED_DIR.test(parentDir(outputPath)) && !TAMPED_FILE.test(basename(outputPath))
-  );
-}
-
-/** Flat journal records → singles + multi-part groups, newest-first. */
+/** Flat journal records → singles + multi-part groups, newest-first.
+ *  Structure comes straight from the record: one output is a single, N outputs
+ *  is a split group. (The old `(tamped …)` filename heuristic is gone — the
+ *  journal now stores the shape explicitly.) */
 export function groupConversions(records: ConversionRecord[]): ConvNode[] {
-  const groups = new Map<string, ConversionRecord[]>();
   const nodes: ConvNode[] = [];
   for (const r of records) {
-    if (isPartPath(r.outputPath)) {
-      const key = parentDir(r.outputPath);
-      (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
+    if (r.outputs.length > 1) {
+      nodes.push({
+        kind: "group",
+        folder: parentDir(r.outputs[0].path),
+        inputPath: r.inputPath,
+        inputBytes: r.inputBytes,
+        presetName: r.presetName,
+        inputCreatedMs: r.inputCreatedMs,
+        completedAtMs: r.completedAtMs,
+        totalBytes: r.outputs.reduce((s, o) => s + o.bytes, 0),
+        parts: r.outputs.map((o) => ({ path: o.path, bytes: o.bytes })),
+      });
     } else {
-      nodes.push({ kind: "single", rec: r, completedAtMs: r.completedAtMs });
+      const o = r.outputs[0];
+      nodes.push({
+        kind: "single",
+        inputPath: r.inputPath,
+        inputBytes: r.inputBytes,
+        presetName: r.presetName,
+        inputCreatedMs: r.inputCreatedMs,
+        completedAtMs: r.completedAtMs,
+        output: { path: o.path, bytes: o.bytes },
+      });
     }
-  }
-  for (const [folder, parts] of groups) {
-    parts.sort((a, b) => a.outputPath.localeCompare(b.outputPath, undefined, { numeric: true }));
-    const completedAtMs = Math.max(...parts.map((p) => p.completedAtMs));
-    nodes.push({
-      kind: "group", folder, inputPath: parts[0].inputPath, inputBytes: parts[0].inputBytes,
-      presetName: parts[0].presetName, inputCreatedMs: parts[0].inputCreatedMs,
-      completedAtMs, totalBytes: parts.reduce((s, p) => s + p.outputBytes, 0), parts,
-    });
   }
   return nodes.sort((a, b) => b.completedAtMs - a.completedAtMs);
 }

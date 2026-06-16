@@ -8,7 +8,7 @@ import {
   type ConversionRecord,
 } from "../lib/ipc";
 import { formatAbsolute, formatBytes, formatRelativeTime } from "../lib/format";
-import { groupConversions, type ConvNode } from "../lib/convgroup";
+import { groupConversions, type ConvNode, type ConvPart } from "../lib/convgroup";
 import { showToast } from "../lib/toast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -155,15 +155,16 @@ export function createConvertedView(): ConvertedView {
     return wrap;
   }
 
-  function singleRow(rec: ConversionRecord): HTMLElement {
+  function singleRow(node: Extract<ConvNode, { kind: "single" }>): HTMLElement {
+    const outputPath = node.output.path;
     const r = document.createElement("div");
     r.className = "conv-row";
     r.classList.add("conv-nav");
     rowActions.set(r, {
       kind: "single",
-      play: () => doPlay(rec.outputPath),
-      copy: () => doCopy(rec.outputPath),
-      reveal: () => doReveal(rec.outputPath),
+      play: () => doPlay(outputPath),
+      copy: () => doCopy(outputPath),
+      reveal: () => doReveal(outputPath),
     });
 
     // Empty toggle-gutter so the thumbnail lines up with multi-part rows, whose
@@ -171,40 +172,40 @@ export function createConvertedView(): ConvertedView {
     const gutter = document.createElement("span");
     gutter.className = "conv-gutter";
 
-    r.append(gutter, thumb(rec.outputPath));
+    r.append(gutter, thumb(outputPath));
 
     const meta = document.createElement("div");
     meta.className = "conv-meta";
     const name = document.createElement("div");
     name.className = "conv-name";
-    name.textContent = basename(rec.inputPath);
-    name.title = rec.inputPath;
+    name.textContent = basename(node.inputPath);
+    name.title = node.inputPath;
     const sub = document.createElement("div");
     sub.className = "conv-sub";
-    const before = rec.inputBytes ? formatBytes(rec.inputBytes) : "—";
-    const after = formatBytes(rec.outputBytes);
+    const before = node.inputBytes ? formatBytes(node.inputBytes) : "—";
+    const after = formatBytes(node.output.bytes);
     sub.innerHTML =
       `${before} → <b class="conv-after">${after}</b> · ` +
       `<span class="conv-where"></span> · `;
-    (sub.querySelector(".conv-where") as HTMLElement).textContent = rec.presetName;
-    sub.append(timeEl(rec.inputCreatedMs, rec.completedAtMs));
+    (sub.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
+    sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
 
-    r.append(meta, playButton(rec.outputPath), copyButton(rec.outputPath), revealButton(rec.outputPath, "Show in file manager"));
+    r.append(meta, playButton(outputPath), copyButton(outputPath), revealButton(outputPath, "Show in file manager"));
     return r;
   }
 
   /** One part of a split conversion: a compact text row inside the group block
    *  (no card, no thumbnail) with a thin tree connector — like the mockup. */
-  function partRow(part: ConversionRecord, index: number): HTMLElement {
+  function partRow(part: ConvPart, index: number): HTMLElement {
     const r = document.createElement("div");
     r.className = "conv-part";
     r.classList.add("conv-nav");
     rowActions.set(r, {
       kind: "part",
-      play: () => doPlay(part.outputPath),
-      copy: () => doCopy(part.outputPath),
-      reveal: () => doReveal(part.outputPath),
+      play: () => doPlay(part.path),
+      copy: () => doCopy(part.path),
+      reveal: () => doReveal(part.path),
     });
 
     const no = document.createElement("span");
@@ -213,20 +214,20 @@ export function createConvertedView(): ConvertedView {
 
     const name = document.createElement("span");
     name.className = "conv-cname";
-    name.textContent = basename(part.outputPath);
-    name.title = part.outputPath;
+    name.textContent = basename(part.path);
+    name.title = part.path;
 
     const size = document.createElement("span");
     size.className = "conv-csize";
-    size.textContent = formatBytes(part.outputBytes);
+    size.textContent = formatBytes(part.bytes);
 
     r.append(
       no,
       name,
       size,
-      playButton(part.outputPath),
-      copyButton(part.outputPath),
-      revealButton(part.outputPath, "Show in file manager"),
+      playButton(part.path),
+      copyButton(part.path),
+      revealButton(part.path, "Show in file manager"),
     );
     return r;
   }
@@ -244,7 +245,7 @@ export function createConvertedView(): ConvertedView {
     chevron.className = "conv-chevron";
     chevron.innerHTML = CHEVRON_SVG;
 
-    parent.append(chevron, thumb(node.parts[0].outputPath));
+    parent.append(chevron, thumb(node.parts[0].path));
 
     const meta = document.createElement("div");
     meta.className = "conv-meta";
@@ -269,7 +270,7 @@ export function createConvertedView(): ConvertedView {
     const copyAll = actionButton("Copy all", "Copy all parts", COPY_SVG);
     copyAll.addEventListener("click", (e) => {
       e.stopPropagation();
-      Promise.all(node.parts.map((p) => copyFile(p.outputPath)))
+      Promise.all(node.parts.map((p) => copyFile(p.path)))
         .then(() => showToast("Copied to clipboard", "success"))
         .catch((err) => showToast(String(err), "error"));
     });
@@ -288,7 +289,7 @@ export function createConvertedView(): ConvertedView {
     parent.classList.add("conv-nav");
     rowActions.set(parent, {
       kind: "group",
-      copy: () => Promise.all(node.parts.map((p) => copyFile(p.outputPath)))
+      copy: () => Promise.all(node.parts.map((p) => copyFile(p.path)))
         .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(String(e), "error")),
       reveal: () => doReveal(node.folder),
       expand, collapse, isOpen,
@@ -368,7 +369,7 @@ export function createConvertedView(): ConvertedView {
       return;
     }
     for (const node of groupConversions(records)) {
-      scroll.append(node.kind === "single" ? singleRow(node.rec) : groupNode(node));
+      scroll.append(node.kind === "single" ? singleRow(node) : groupNode(node));
     }
     selEl = null;
     setSelected(navRows()[0] ?? null);

@@ -37,6 +37,11 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
                 if let Some(meta) = video.conversion.as_mut() {
                     meta.original_bytes = Some(record.input_bytes);
                     meta.preset_name = Some(record.preset_name);
+                    // The record can hold several outputs (a split set); use the
+                    // size recorded for the specific part this row is.
+                    if let Some(out) = record.outputs.iter().find(|o| o.path == video.path) {
+                        meta.output_bytes = out.bytes;
+                    }
                 }
             }
         }
@@ -361,34 +366,15 @@ pub fn os_info() -> &'static str {
     std::env::consts::OS
 }
 
-/// The original file's creation time (ms since epoch), or `None` if it can't be
-/// read (the source was moved/deleted, or the FS has no creation time).
-fn file_created_ms(path: &std::path::Path) -> Option<u64> {
-    std::fs::metadata(path)
-        .and_then(|m| m.created().or_else(|_| m.modified()))
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-}
-
-/// The conversion history (newest first) for the Converted tab. Records written
-/// before the recorded-time field existed have `input_created_ms == 0`; backfill
-/// those from the source file's live creation time when it still exists, so the
-/// Converted-tab tooltip can show when the original was made.
+/// The conversion history (newest first) for the Converted tab. The source's
+/// creation time is frozen in the record: it's captured at encode time and
+/// backfilled once during the journal's one-time migration, never re-read live
+/// here (a moved/edited source must not change the recorded "Created" time).
 #[tauri::command]
 pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord> {
-    let mut records = app
-        .try_state::<crate::journal::Journal>()
+    app.try_state::<crate::journal::Journal>()
         .map(|j| j.records())
-        .unwrap_or_default();
-    for rec in &mut records {
-        if rec.input_created_ms == 0 {
-            if let Some(ms) = file_created_ms(std::path::Path::new(&rec.input_path)) {
-                rec.input_created_ms = ms;
-            }
-        }
-    }
-    records
+        .unwrap_or_default()
 }
 
 /// Registers/removes the Windows Explorer "Compress with tamp" entry and

@@ -130,12 +130,18 @@ export interface JobState {
 export const listRecents = (): Promise<RecentVideo[]> =>
   invoke<RecentVideo[]>("list_recents");
 
+/** One delivered output of a conversion job: a single has one, a split has N. */
+export interface ConversionOutput {
+  path: string;
+  bytes: number;
+}
+
 /** One past conversion, from the persistent journal. */
 export interface ConversionRecord {
   inputPath: string;
   inputBytes: number;
-  outputPath: string;
-  outputBytes: number;
+  /** The job's delivered outputs: one for a single, N for a split set. */
+  outputs: ConversionOutput[];
   presetHash: string;
   presetName: string;
   targetMb: number;
