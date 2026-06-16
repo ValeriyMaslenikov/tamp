@@ -43,7 +43,8 @@
   --chip-text: #c9bdfd;
   --accent-press: #352a64;
   --border-strong: #3f3f46;
-  --placeholder: #5b5b63;
+  /* >=4.5:1 on --surface-2 (#222226) for WCAG 1.4.3; ~5.0:1 */
+  --placeholder: #8a8a93;
   --scrollbar: #3a3a40;
   --scrim: rgba(8, 8, 10, 0.55);
   --shadow: rgba(0, 0, 0, 0.5);
@@ -70,7 +71,10 @@
   --chip-text: #6a45f5;
   --accent-press: #e6dfff;
   --border-strong: #d4d4dc;
-  --placeholder: #a0a0aa;
+  /* >=4.5:1 on --surface-2 (#e9e9ec) for WCAG 1.4.3; ~4.55:1.
+     Plan suggested #73737d but that is only 3.87:1 on the real --surface-2;
+     darkened to #686872 (same cool-gray hue) to clear AA. */
+  --placeholder: #686872;
   --scrollbar: #cfcfd6;
   --scrim: rgba(20, 20, 28, 0.42);
   --shadow: rgba(30, 30, 50, 0.2);
@@ -82,6 +86,21 @@
 
 [hidden] {
   display: none !important;
+}
+
+/* Uniform keyboard-focus ring across every control. :focus-visible (not
+   :focus) so mouse clicks don't ring; covers the custom-painted controls the
+   UA outline misses. manual: Tab through the app — every control incl. the
+   toggle shows the accent ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The toggle hides its native checkbox (opacity:0), so the outline lands on an
+   invisible box; ring the visible track instead. */
+.switch input:focus-visible + .track {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 html,
@@ -870,9 +889,14 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 7px 10px;
-  outline: none;
   width: 100%;
   transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+/* Suppress the UA outline only for non-keyboard (mouse) focus so the global
+   :focus-visible accent ring above is never swallowed. */
+.input:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .input::placeholder {
@@ -1801,4 +1825,22 @@ select.input {
   background: var(--row-hover);
   box-shadow: inset 0 0 0 1.5px var(--accent);
   border-radius: 8px;
+}
+
+/* ---------- Reduced motion ----------
+   Honor the OS "Reduce motion" setting: neutralize animations/transitions
+   globally and stop the looping preview shimmer (WCAG 2.3.3).
+   manual: enable OS Reduce-motion — the .preview-loading shimmer stops. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .preview-loading {
+    animation: none;
+  }
 }
