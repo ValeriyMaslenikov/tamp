@@ -12,11 +12,25 @@ function parentDir(p: string): string {
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   return i < 0 ? "" : p.slice(0, i);
 }
-const TAMPED = /\(tamped .+\)$/;
-/** A split part lives in a "(tamped …)" output folder; a single output sits
- *  directly in its source folder. */
+function basename(p: string): string {
+  return p.split(/[\\/]/).pop() ?? p;
+}
+/** A directory whose name ends in "(tamped …)" — a split output folder. */
+const TAMPED_DIR = /\(tamped .+\)$/;
+/** A FILE that is itself a "(tamped …)" output, e.g.
+ *  `clip (tamped Discord 10MB 9ca1).mp4` — a standalone conversion. */
+const TAMPED_FILE = /\(tamped [^)]+\)\.[^.]+$/;
+
+/** A split *part* is a bare part file (`name N.ext`) inside a "(tamped …)"
+ *  output folder. A standalone output that merely sits inside a tamped folder —
+ *  e.g. re-compressing a part — carries the "(tamped …)" suffix in its OWN name
+ *  and is its own conversion (rendered as a single), not a part of the original.
+ *  Decided purely from the stored output path: the journal is immutable history,
+ *  not a live read of the folder. */
 export function isPartPath(outputPath: string): boolean {
-  return TAMPED.test(parentDir(outputPath));
+  return (
+    TAMPED_DIR.test(parentDir(outputPath)) && !TAMPED_FILE.test(basename(outputPath))
+  );
 }
 
 /** Flat journal records → singles + multi-part groups, newest-first. */
