@@ -1,20 +1,17 @@
 //! Per-file video duration cache ({app_cache_dir}/durations.json): the
 //! thumbs-style cache key (path|mtime|size hash, see `thumbs::cache_key`)
-//! mapped to the duration in seconds. `commands::list_recents` fills
-//! `RecentVideo::duration_secs` from here, probing misses with ffprobe.
+//! mapped to the duration in seconds. The Videos tab lazy-fills each row's
+//! `RecentVideo::duration_secs` from here (the `recent_duration` command via
+//! `ensure_one`), probing misses with ffprobe.
 
-use crate::scanner::RecentVideo;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
-use tokio::task::JoinSet;
 
 const CACHE_FILE: &str = "durations.json";
 /// The map keeps at most this many entries; extras are evicted on persist.
 const MAX_ENTRIES: usize = 500;
-/// At most this many ffprobe duration probes run at once.
-const MAX_CONCURRENT: usize = 4;
 
 /// Managed state (see `lib.rs`) holding the cache, loaded from disk once.
 pub struct Durations {
@@ -64,6 +61,13 @@ impl Durations {
 
     fn get(&self, key: &str) -> Option<f64> {
         self.map.lock().unwrap().get(key).copied()
+    }
+
+    /// Inserts one probed duration and persists, without the `current_keys`
+    /// eviction preference `fill` applies (a single lazy probe has no list of
+    /// currently-visible videos to favor). Best-effort: failures only log.
+    fn insert_one(&self, key: String, secs: f64) {
+        self.store(&[(key, secs)], &HashSet::new());
     }
 
     /// Records the probed durations, caps the map at `MAX_ENTRIES` (entries
@@ -119,69 +123,27 @@ fn cap(map: &mut HashMap<String, f64>, max: usize, keep: &HashSet<String>) {
     }
 }
 
-/// Fills `duration_secs` for every video: cache hits immediately, misses by
-/// probing with ffprobe (at most `MAX_CONCURRENT` at a time). Probe failures
-/// are tolerated (the duration stays `None` and is retried next listing).
-pub async fn fill(app: &AppHandle, videos: &mut [RecentVideo]) {
-    let Some(state) = app.try_state::<Durations>() else {
-        return;
-    };
-
-    let mut current_keys: HashSet<String> = HashSet::new();
-    let mut pending: Vec<(usize, String, PathBuf)> = Vec::new();
-    for (idx, video) in videos.iter_mut().enumerate() {
-        let key = crate::thumbs::cache_key(&video.path, video.size_bytes);
-        current_keys.insert(key.clone());
-        match state.get(&key) {
-            Some(secs) => video.duration_secs = Some(secs),
-            None => pending.push((idx, key, PathBuf::from(&video.path))),
-        }
+/// Resolves the duration for a single video: a cache hit returns immediately, a
+/// miss probes once with ffprobe and caches the result. Backs the Videos tab's
+/// per-row lazy `recent_duration` command (mirrors `thumbs::ensure_one`).
+/// Returns `None` when the cache state is unavailable or the probe fails (the
+/// failure is not cached, so it's retried on the next request).
+pub async fn ensure_one(app: &AppHandle, path: &Path) -> Option<f64> {
+    let state = app.try_state::<Durations>()?;
+    let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let key = crate::thumbs::cache_key(&path.to_string_lossy(), size_bytes);
+    if let Some(secs) = state.get(&key) {
+        return Some(secs);
     }
-    if pending.is_empty() {
-        return;
-    }
-
-    let mut probed: Vec<(String, f64)> = Vec::new();
-    let apply = |videos: &mut [RecentVideo],
-                 probed: &mut Vec<(String, f64)>,
-                 (idx, key, secs): (usize, String, Option<f64>)| {
-        if let (Some(video), Some(secs)) = (videos.get_mut(idx), secs) {
-            video.duration_secs = Some(secs);
-            probed.push((key, secs));
+    match crate::encoder::probe::probe(path).await {
+        Ok(info) => {
+            state.insert_one(key, info.duration_secs);
+            Some(info.duration_secs)
         }
-    };
-
-    let mut tasks: JoinSet<(usize, String, Option<f64>)> = JoinSet::new();
-    for (idx, key, input) in pending {
-        while tasks.len() >= MAX_CONCURRENT {
-            match tasks.join_next().await {
-                Some(Ok(done)) => apply(videos, &mut probed, done),
-                Some(Err(e)) => crate::log_warn!("duration probe task failed: {e}"),
-                None => break,
-            }
+        Err(e) => {
+            crate::log_warn!("duration probe failed for {}: {e}", path.display());
+            None
         }
-        tasks.spawn(async move {
-            let secs = match crate::encoder::probe::probe(&input).await {
-                Ok(info) => Some(info.duration_secs),
-                Err(e) => {
-                    // Tolerated (retried on the next listing) but logged: a
-                    // video that never gets a duration is worth noticing.
-                    crate::log_warn!("duration probe failed for {}: {e}", input.display());
-                    None
-                }
-            };
-            (idx, key, secs)
-        });
-    }
-    while let Some(joined) = tasks.join_next().await {
-        match joined {
-            Ok(done) => apply(videos, &mut probed, done),
-            Err(e) => crate::log_warn!("duration probe task failed: {e}"),
-        }
-    }
-
-    if !probed.is_empty() {
-        state.store(&probed, &current_keys);
     }
 }
 

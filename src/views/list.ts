@@ -8,6 +8,8 @@ import {
   listRecents,
   pickVideos,
   queueState,
+  recentDuration,
+  recentThumb,
   reveal,
   type JobState,
   type Phase,
@@ -158,6 +160,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
   const rowCleanups = new Map<string, () => void>(); // path -> preview teardown
   const postErrorToasted = new Set<string>(); // job ids whose postError was toasted
   const previewPaths = new Map<string, string>(); // video path -> resolved proxy path
+  const thumbPaths = new Map<string, string>(); // video path -> resolved thumbnail path
+  const durationByPath = new Map<string, number>(); // video path -> resolved duration (secs)
+  const lazyLoaded = new Set<string>(); // paths whose thumb+duration load has started
   let previewSeq = 0; // staleness token for in-flight proxy resolutions
   let lastSignature: string | null = null;
   let noMatch: HTMLElement | null = null; // "no filter matches" note
@@ -253,6 +258,16 @@ export function createListView(getSettings: () => Settings | null): ListView {
   async function refresh(): Promise<void> {
     try {
       const [vids, queue] = await Promise.all([listRecents(), queueState()]);
+      // Carry forward thumbnails/durations resolved lazily this session: the
+      // backend always returns these as null (filled per row on the frontend),
+      // so re-merging keeps the in-memory model — and the list signature —
+      // stable across routine refreshes instead of resetting to null.
+      for (const v of vids) {
+        const known = durationByPath.get(v.path);
+        if (known != null) v.durationSecs = known;
+        const thumb = thumbPaths.get(v.path);
+        if (thumb && v.thumbPath == null) v.thumbPath = thumb;
+      }
       videos = vids;
       applySnapshot(queue);
       const sig = videoListSignature(vids);
@@ -501,6 +516,81 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
   document.addEventListener("keydown", onKeyDown);
 
+  // ----- lazy per-row thumbnails & durations ------------------------------
+
+  // list_recents returns rows immediately with thumb_path/duration_secs = None
+  // (a cold cache would otherwise block the panel for many seconds). Each row's
+  // thumbnail and duration are fetched lazily as it scrolls into view, so the
+  // panel opens instantly and media streams in (mirrors the Converted tab).
+  // manual: open the panel on a cold cache — rows appear at once with a
+  // placeholder thumbnail and "—" length; thumbnails and durations fill in as
+  // you scroll.
+  const lazyObserver =
+    typeof IntersectionObserver !== "undefined"
+      ? new IntersectionObserver(
+          (entries, obs) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const row = entry.target as HTMLElement;
+              obs.unobserve(row);
+              const path = row.dataset.path;
+              if (path) void lazyLoadRow(path, row);
+            }
+          },
+          // Start loading a little before a row reaches the viewport so media
+          // is usually ready by the time it's actually visible.
+          { root: listScroll, rootMargin: "200px" },
+        )
+      : null;
+
+  /** Fetch and fill one row's thumbnail and duration, once. */
+  async function lazyLoadRow(path: string, row: HTMLElement): Promise<void> {
+    if (lazyLoaded.has(path)) return;
+    lazyLoaded.add(path);
+
+    const img = row.querySelector<HTMLImageElement>(".thumb");
+    const cachedThumb = thumbPaths.get(path);
+    if (img) {
+      if (cachedThumb) {
+        img.src = convertFileSrc(cachedThumb);
+        img.classList.remove("thumb-placeholder");
+      } else {
+        recentThumb(path)
+          .then((thumb) => {
+            if (!thumb) return;
+            thumbPaths.set(path, thumb);
+            // The row may have been rebuilt; refetch the live img for this path.
+            const live = rowByPath.get(path)?.querySelector<HTMLImageElement>(".thumb");
+            if (live) {
+              live.src = convertFileSrc(thumb);
+              live.classList.remove("thumb-placeholder");
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
+    const fillLength = (secs: number): void => {
+      durationByPath.set(path, secs);
+      // Cache on the video too so expand/re-render and the signature reflect it.
+      const cur = videos.find((x) => x.path === path);
+      if (cur) cur.durationSecs = secs;
+      const lengthEl = rowByPath.get(path)?.querySelector<HTMLElement>(".meta-length");
+      if (lengthEl) lengthEl.textContent = formatDuration(secs);
+    };
+    const cachedDuration = durationByPath.get(path);
+    const v = videos.find((x) => x.path === path);
+    if (cachedDuration != null) {
+      fillLength(cachedDuration);
+    } else if (v && v.durationSecs == null) {
+      recentDuration(path)
+        .then((secs) => {
+          if (secs != null) fillLength(secs);
+        })
+        .catch(() => {});
+    }
+  }
+
   // ----- rendering --------------------------------------------------------
 
   function render(): void {
@@ -509,6 +599,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     for (const cleanup of rowCleanups.values()) cleanup();
     rowCleanups.clear();
     rowByPath.clear();
+    lazyObserver?.disconnect();
+    lazyLoaded.clear();
     expandedPath = null;
     noMatch = null;
     listScroll.innerHTML = "";
@@ -521,7 +613,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
       setSelected(null);
       return;
     }
-    for (const v of videos) listScroll.appendChild(buildRow(v));
+    for (const v of videos) {
+      const row = buildRow(v);
+      listScroll.appendChild(row);
+      // Observe for lazy thumbnail/duration loading. Without an observer
+      // (non-browser env / tests) load every row's media eagerly instead.
+      if (lazyObserver) lazyObserver.observe(row);
+      else void lazyLoadRow(v.path, row);
+    }
     noMatch = document.createElement("div");
     noMatch.className = "empty";
     noMatch.textContent = "No recordings match your filter.";
@@ -978,10 +1077,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
       stage.appendChild(proxyVideo(cached));
     } else {
       // Show the enlarged thumbnail with a shimmer while the proxy is built.
-      if (v.thumbPath) {
+      // thumb_path is no longer filled at list time (lazy per row), so prefer
+      // the thumbnail resolved for this row this session.
+      const knownThumb = thumbPaths.get(v.path) ?? v.thumbPath;
+      if (knownThumb) {
         const img = document.createElement("img");
         img.className = "preview-thumb";
-        img.src = convertFileSrc(v.thumbPath);
+        img.src = convertFileSrc(knownThumb);
         img.alt = "";
         img.draggable = false;
         stage.appendChild(img);
@@ -1095,23 +1197,27 @@ export function createListView(getSettings: () => Settings | null): ListView {
   function buildRow(v: RecentVideo): HTMLElement {
     const row = document.createElement("div");
     row.className = "row";
+    row.dataset.path = v.path; // the lazy observer reads this to load media
     rowByPath.set(v.path, row);
 
     const main = document.createElement("div");
     main.className = "row-main";
 
-    if (v.thumbPath) {
-      const img = document.createElement("img");
-      img.className = "thumb";
-      img.src = convertFileSrc(v.thumbPath);
-      img.alt = "";
-      img.draggable = false;
-      main.appendChild(img);
-    } else {
-      const ph = document.createElement("div");
-      ph.className = "thumb thumb-placeholder";
-      main.appendChild(ph);
+    // Always an <img> (lazily filled): the thumbnail is fetched per row as the
+    // row scrolls into view (see lazyLoadRow), so the panel opens instantly.
+    // A known thumb (cached this session, or rarely a pre-filled one) shows at
+    // once; otherwise the placeholder styling holds until the lazy load lands.
+    const img = document.createElement("img");
+    img.className = "thumb thumb-placeholder";
+    img.alt = "";
+    img.draggable = false;
+    img.loading = "lazy";
+    const knownThumb = thumbPaths.get(v.path) ?? v.thumbPath;
+    if (knownThumb) {
+      img.src = convertFileSrc(knownThumb);
+      img.classList.remove("thumb-placeholder");
     }
+    main.appendChild(img);
 
     const info = document.createElement("div");
     info.className = "row-info";
@@ -1153,7 +1259,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       `<div class="meta"><span class="meta-label">Size</span>` +
       `<span class="meta-value">${sizeText}</span></div>` +
       `<div class="meta"><span class="meta-label">Length</span>` +
-      `<span class="meta-value">${lengthText}</span></div>` +
+      `<span class="meta-value meta-length">${lengthText}</span></div>` +
       `<div class="meta"><span class="meta-label">Recorded</span>` +
       `<span class="meta-value">${formatRelativeTime(v.createdMs)}</span></div>`;
 

@@ -206,6 +206,14 @@ export const openFile = (path: string): Promise<void> =>
 export const conversionThumb = (path: string): Promise<string | null> =>
   invoke<string | null>("conversion_thumb", { path });
 
+/** Ensure (generating on miss) one recent video's thumbnail; lazy per row. */
+export const recentThumb = (path: string): Promise<string | null> =>
+  invoke<string | null>("recent_thumb", { path });
+
+/** Resolve (probing + caching on miss) one recent video's duration; lazy per row. */
+export const recentDuration = (path: string): Promise<number | null> =>
+  invoke<number | null>("recent_duration", { path });
+
 export const onPanelShown = (cb: () => void): Promise<UnlistenFn> =>
   listen("panel:shown", () => cb());
 

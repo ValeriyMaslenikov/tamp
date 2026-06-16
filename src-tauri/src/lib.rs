@@ -304,7 +304,9 @@ pub fn run() {
             commands::set_pin,
             commands::pick_videos,
             commands::open_file,
-            commands::conversion_thumb
+            commands::conversion_thumb,
+            commands::recent_thumb,
+            commands::recent_duration
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");

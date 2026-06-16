@@ -46,8 +46,11 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
             }
         }
     }
-    crate::thumbs::ensure_thumbs(&app, &mut videos).await;
-    crate::durations::fill(&app, &mut videos).await;
+    // Thumbnails and durations are NOT filled here: a cold cache would block the
+    // panel for many seconds (ffmpeg/ffprobe per miss, up to 200 videos). Rows
+    // return immediately with thumb_path/duration_secs = None; the frontend
+    // lazy-loads each row's thumbnail (`recent_thumb`) and duration
+    // (`recent_duration`) as it scrolls into view (mirrors the Converted tab).
     Ok(videos)
 }
 
@@ -480,6 +483,23 @@ pub fn open_file(app: AppHandle, path: String) -> Result<(), String> {
 pub async fn conversion_thumb(app: AppHandle, path: String) -> Option<String> {
     // Reuse the same single-frame thumbnail generation ensure_thumbs uses.
     crate::thumbs::ensure_one(&app, Path::new(&path)).await
+}
+
+/// Ensures (generating on miss) a thumbnail for one recent video, returning its
+/// cached path or None. The Videos tab calls this per row as it scrolls into
+/// view so the panel opens instantly instead of blocking on the whole list.
+#[tauri::command]
+pub async fn recent_thumb(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    Ok(crate::thumbs::ensure_one(&app, Path::new(&path)).await)
+}
+
+/// Resolves the duration (seconds) for one recent video: a cache hit returns
+/// immediately, a miss probes once with ffprobe and caches the result. The
+/// Videos tab calls this per row (lazy, like `recent_thumb`). None when the
+/// probe fails (retried on the next listing).
+#[tauri::command]
+pub async fn recent_duration(app: AppHandle, path: String) -> Result<Option<f64>, String> {
+    Ok(crate::durations::ensure_one(&app, Path::new(&path)).await)
 }
 
 #[cfg(test)]
