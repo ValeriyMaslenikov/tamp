@@ -109,7 +109,7 @@ export function createConvertedView(): ConvertedView {
     const tip = document.createElement("span");
     tip.className = "conv-tip";
     tip.innerHTML =
-      `<span class="conv-tip-row"><b class="rec">Recorded</b><span></span></span>` +
+      `<span class="conv-tip-row"><b class="rec">Created</b><span></span></span>` +
       `<span class="conv-tip-row"><b class="conv">Converted</b><span></span></span>`;
     const vals = tip.querySelectorAll("span span");
     (vals[0] as HTMLElement).textContent = formatAbsolute(recordedMs);
@@ -131,7 +131,12 @@ export function createConvertedView(): ConvertedView {
     const r = document.createElement("div");
     r.className = "conv-row";
 
-    r.append(thumb(rec.outputPath));
+    // Empty toggle-gutter so the thumbnail lines up with multi-part rows, whose
+    // chevron would otherwise push their thumbnail further right (jagged edge).
+    const gutter = document.createElement("span");
+    gutter.className = "conv-gutter";
+
+    r.append(gutter, thumb(rec.outputPath));
 
     const meta = document.createElement("div");
     meta.className = "conv-meta";

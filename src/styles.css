@@ -1251,13 +1251,17 @@ select.input {
   background: var(--row-hover);
 }
 
-.conv-chevron {
+.conv-chevron,
+.conv-gutter {
   flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.conv-chevron {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
   color: var(--text-dim);
   transition: transform 0.15s;
 }
