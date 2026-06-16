@@ -359,7 +359,7 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     // GOOD quality) falls through to the single-output path unchanged,
     // reusing the early probe.
     if job.preset.split.mode != SplitMode::Off {
-        let info = probe::probe(&job.input).await?;
+        let info = probe::probe_cached(&job.input).await?;
         let split = plan::plan_split(&info, &job.preset);
         if split.count > 1 {
             return run_split_set(inner, job, &info, split, &preset_hash, target_bytes).await;
@@ -426,7 +426,7 @@ async fn run_single(
 
     let info = match pre_probed {
         Some(info) => info,
-        None => probe::probe(&job.input).await?,
+        None => probe::probe_cached(&job.input).await?,
     };
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
     if plan.auto_fps.is_some() || plan.auto_width.is_some() {

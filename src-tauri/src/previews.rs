@@ -123,7 +123,7 @@ fn segments_for(duration_secs: f64) -> Vec<(f64, f64)> {
 }
 
 async fn generate(input: &Path, cached: &Path) -> Result<(), String> {
-    let info = crate::encoder::probe::probe(input).await?;
+    let info = crate::encoder::probe::probe_cached(input).await?;
     let segments = segments_for(info.duration_secs);
 
     let ffmpeg = crate::encoder::bin::ffmpeg_path();

@@ -123,11 +123,14 @@ fn cap(map: &mut HashMap<String, f64>, max: usize, keep: &HashSet<String>) {
     }
 }
 
-/// Resolves the duration for a single video: a cache hit returns immediately, a
-/// miss probes once with ffprobe and caches the result. Backs the Videos tab's
-/// per-row lazy `recent_duration` command (mirrors `thumbs::ensure_one`).
+/// Resolves the duration for a single video: a persisted-duration hit returns
+/// immediately, a miss goes through the shared in-memory probe cache
+/// (`probe::probe_cached`, so hovering/converting the same file reuses the one
+/// ffprobe) and persists the duration to `durations.json`. Backs the Videos
+/// tab's per-row lazy `recent_duration` command (mirrors `thumbs::ensure_one`).
 /// Returns `None` when the cache state is unavailable or the probe fails (the
 /// failure is not cached, so it's retried on the next request).
+// manual: opening → hovering → converting one file spawns one ffprobe, not three.
 pub async fn ensure_one(app: &AppHandle, path: &Path) -> Option<f64> {
     let state = app.try_state::<Durations>()?;
     let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -135,7 +138,7 @@ pub async fn ensure_one(app: &AppHandle, path: &Path) -> Option<f64> {
     if let Some(secs) = state.get(&key) {
         return Some(secs);
     }
-    match crate::encoder::probe::probe(path).await {
+    match crate::encoder::probe::probe_cached(path).await {
         Ok(info) => {
             state.insert_one(key, info.duration_secs);
             Some(info.duration_secs)
