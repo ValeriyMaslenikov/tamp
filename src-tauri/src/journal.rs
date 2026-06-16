@@ -272,7 +272,14 @@ fn migrate(mapped: Vec<(ConversionRecord, bool)>) -> (Vec<ConversionRecord>, boo
         match group_index.get(&folder).copied() {
             Some(idx) => {
                 let group = &mut out[idx];
-                group.outputs.push(rec.outputs.into_iter().next().unwrap());
+                let new_out = rec.outputs.into_iter().next().unwrap();
+                // The old per-part journal could re-record the same part path on
+                // a re-run of the split; collapse it (newest bytes win) instead
+                // of listing the part twice.
+                match group.outputs.iter_mut().find(|o| o.path == new_out.path) {
+                    Some(existing) => existing.bytes = new_out.bytes,
+                    None => group.outputs.push(new_out),
+                }
                 group.completed_at_ms = group.completed_at_ms.max(rec.completed_at_ms);
                 if group.input_created_ms == 0 {
                     group.input_created_ms = rec.input_created_ms;
@@ -297,7 +304,42 @@ fn migrate(mapped: Vec<(ConversionRecord, bool)>) -> (Vec<ConversionRecord>, boo
         }
     }
 
+    // Collapse whole records that share an identical output-path set — legacy
+    // duplicates from re-running the same conversion (e.g. a single output
+    // recorded twice). Newest by completed_at_ms wins. Mirrors append()'s dedup,
+    // applied once across the migrated batch.
+    let before_len = out.len();
+    let out = dedup_by_output_set(out);
+    let changed = changed || out.len() != before_len;
+
     (out, changed)
+}
+
+/// Drop records whose output-path set duplicates another's, keeping the newest
+/// by `completed_at_ms`. The kept record stays in its (chronological) position.
+fn dedup_by_output_set(records: Vec<ConversionRecord>) -> Vec<ConversionRecord> {
+    use std::collections::{BTreeSet, HashMap};
+    // Output-path set -> index of the newest record carrying it.
+    let mut winner: HashMap<BTreeSet<String>, usize> = HashMap::new();
+    let mut keep = vec![true; records.len()];
+    for (i, rec) in records.iter().enumerate() {
+        let set: BTreeSet<String> = rec.outputs.iter().map(|o| o.path.clone()).collect();
+        match winner.get(&set).copied() {
+            Some(j) if rec.completed_at_ms >= records[j].completed_at_ms => {
+                keep[j] = false;
+                winner.insert(set, i);
+            }
+            Some(_) => keep[i] = false,
+            None => {
+                winner.insert(set, i);
+            }
+        }
+    }
+    records
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(r, k)| k.then_some(r))
+        .collect()
 }
 
 pub struct Journal {
@@ -832,5 +874,65 @@ mod tests {
             .find_by_output("/out/source (tamped 823f).mp4")
             .unwrap();
         assert_eq!(rec2.input_created_ms, rec.input_created_ms);
+    }
+
+    #[test]
+    fn migration_dedups_duplicate_parts_in_a_group() {
+        // The old per-part journal could append the same part path twice (a
+        // re-run of the same split). Migration lists each part once, with the
+        // newest bytes, not a doubled part row.
+        let json = r#"[
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 1.mp4","outputBytes":100000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":40,"inputCreatedMs":7},
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 2.mp4","outputBytes":110000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":45,"inputCreatedMs":7},
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 1.mp4","outputBytes":101000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":90,"inputCreatedMs":7}
+        ]"#;
+        let recs = load_records(json);
+        assert_eq!(recs.len(), 1);
+        let g = &recs[0];
+        assert_eq!(
+            g.outputs.len(),
+            2,
+            "the duplicate part 1 collapses; two unique parts remain"
+        );
+        assert_eq!(g.outputs[0].path, "/out/clip (tamped 823f)/clip 1.mp4");
+        assert_eq!(
+            g.outputs[0].bytes, 101_000,
+            "newest bytes for the re-run part"
+        );
+        assert_eq!(g.outputs[1].path, "/out/clip (tamped 823f)/clip 2.mp4");
+        assert_eq!(g.completed_at_ms, 90);
+    }
+
+    #[test]
+    fn migration_dedups_duplicate_singles() {
+        // Two legacy single records for the SAME output path (re-running the
+        // same single conversion) collapse to one record, newest wins.
+        let json = r#"[
+            {"inputPath":"/in/a.mov","inputBytes":1000,
+             "outputPath":"/out/a (tamped 823f).mp4","outputBytes":500,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":10,"inputCreatedMs":0},
+            {"inputPath":"/in/a.mov","inputBytes":1000,
+             "outputPath":"/out/a (tamped 823f).mp4","outputBytes":480,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":20,"inputCreatedMs":0}
+        ]"#;
+        let recs = load_records(json);
+        assert_eq!(
+            recs.len(),
+            1,
+            "duplicate single output paths collapse to one"
+        );
+        assert_eq!(recs[0].completed_at_ms, 20, "newest record wins");
+        assert_eq!(recs[0].outputs[0].bytes, 480);
     }
 }
