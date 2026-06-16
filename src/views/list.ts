@@ -59,6 +59,13 @@ export function shouldPickPreset(
   return layout === "quick-pick" || altHeld;
 }
 
+/** Zero-based preset index a 1–9 key selects, or null if out of range / not a
+ *  digit. Used for the "press a number to convert with that preset" shortcut. */
+export function presetIndexForDigit(key: string, count: number): number | null {
+  const n = Number(key) - 1;
+  return Number.isInteger(n) && n >= 0 && n < count ? n : null;
+}
+
 /** Identity of the visible video list; job statuses are painted separately. */
 export function videoListSignature(videos: RecentVideo[]): string {
   return JSON.stringify(
@@ -414,11 +421,18 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     if (inFilter) return; // everything else types into the filter natively
 
-    // Active-bar mode: [ and ] cycle the active preset.
-    if (layoutMode() === "active-bar" && (e.key === "[" || e.key === "]")) {
-      e.preventDefault();
-      cycleActive(e.key === "]" ? 1 : -1);
-      return;
+    // Active-bar mode: [ ] and ← → cycle the active preset.
+    if (layoutMode() === "active-bar") {
+      if (e.key === "[" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        cycleActive(-1);
+        return;
+      }
+      if (e.key === "]" || e.key === "ArrowRight") {
+        e.preventDefault();
+        cycleActive(1);
+        return;
+      }
     }
 
     const selected = selectedPath
@@ -434,6 +448,15 @@ export function createListView(getSettings: () => Settings | null): ListView {
         e.preventDefault();
         toggleExpand(selected);
         return;
+      }
+      if (e.key >= "1" && e.key <= "9") {
+        const idx = presetIndexForDigit(e.key, orderedPresets().length);
+        if (idx !== null) {
+          e.preventDefault();
+          collapseExpanded();
+          void doEnqueue(selected, orderedPresets()[idx].id);
+          return;
+        }
       }
     }
     // Any other printable character goes to the filter.

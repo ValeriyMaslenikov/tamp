@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isTerminal, shouldPickPreset, videoListSignature } from "./list";
+import {
+  isTerminal,
+  presetIndexForDigit,
+  shouldPickPreset,
+  videoListSignature,
+} from "./list";
 import type { RecentVideo } from "../lib/ipc";
 
 const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
@@ -26,6 +31,21 @@ describe("isTerminal", () => {
     expect(isTerminal("pass1")).toBe(false);
     expect(isTerminal("pass2")).toBe(false);
     expect(isTerminal("verifying")).toBe(false);
+  });
+});
+
+describe("presetIndexForDigit", () => {
+  it("maps '1' to the first preset", () => {
+    expect(presetIndexForDigit("1", 3)).toBe(0);
+  });
+  it("maps '3' to index 2 when in range", () => {
+    expect(presetIndexForDigit("3", 3)).toBe(2);
+  });
+  it("returns null when the digit is past the preset count", () => {
+    expect(presetIndexForDigit("4", 3)).toBeNull();
+  });
+  it("returns null for a non-digit", () => {
+    expect(presetIndexForDigit("x", 3)).toBeNull();
   });
 });
 
