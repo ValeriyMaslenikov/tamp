@@ -1120,7 +1120,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
     name.title = v.name;
     if (v.isOutput) {
       // Orphaned output: show the original's stem with a "compressed" badge.
+      // The text span ellipsizes; the badge + reveal button are flex:none
+      // siblings outside it so they're never clipped (styles.css .row-name).
       const text = document.createElement("span");
+      text.className = "row-name-text";
       text.textContent = truncateMiddle(stripOutputSuffix(v.name), 28);
       const badge = document.createElement("span");
       badge.className = "badge-compressed";
@@ -1129,6 +1132,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       name.append(text, badge);
     } else {
       const text = document.createElement("span");
+      text.className = "row-name-text";
       text.textContent = truncateMiddle(v.name, 36);
       name.appendChild(text);
     }

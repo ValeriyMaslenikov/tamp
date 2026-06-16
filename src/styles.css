@@ -43,6 +43,10 @@
   --chip-text: #c9bdfd;
   --accent-press: #352a64;
   --border-strong: #3f3f46;
+  /* OFF toggle track/knob. Dark theme already separates well (light knob on a
+     dark track), so keep the existing look: track = --border, knob = #fff. */
+  --switch-track: #2e2e33;
+  --switch-knob: #fff;
   /* >=4.5:1 on --surface-2 (#222226) for WCAG 1.4.3; ~5.0:1 */
   --placeholder: #8a8a93;
   --scrollbar: #3a3a40;
@@ -71,6 +75,11 @@
   --chip-text: #6a45f5;
   --accent-press: #e6dfff;
   --border-strong: #d4d4dc;
+  /* OFF toggle in light mode: a #fff knob on the pale #e6e6ea --border track is
+     nearly invisible. Darken the OFF track so on vs off is unambiguous; the
+     knob keeps its border/shadow (below) to stay legible on the darker track. */
+  --switch-track: #b4b4bf;
+  --switch-knob: #fff;
   /* >=4.5:1 on --surface-2 (#e9e9ec) for WCAG 1.4.3; ~4.55:1.
      Plan suggested #73737d but that is only 3.87:1 on the real --surface-2;
      darkened to #686872 (same cool-gray hue) to clear AA. */
@@ -250,23 +259,31 @@ textarea {
 
 .list-scroll::-webkit-scrollbar,
 .view-prefs::-webkit-scrollbar,
-.modal-body::-webkit-scrollbar {
+.modal-body::-webkit-scrollbar,
+.drawer-rows::-webkit-scrollbar,
+.quickpick::-webkit-scrollbar {
   width: 6px;
 }
 .list-scroll::-webkit-scrollbar-track,
 .view-prefs::-webkit-scrollbar-track,
-.modal-body::-webkit-scrollbar-track {
+.modal-body::-webkit-scrollbar-track,
+.drawer-rows::-webkit-scrollbar-track,
+.quickpick::-webkit-scrollbar-track {
   background: transparent;
 }
 .list-scroll::-webkit-scrollbar-thumb,
 .view-prefs::-webkit-scrollbar-thumb,
-.modal-body::-webkit-scrollbar-thumb {
+.modal-body::-webkit-scrollbar-thumb,
+.drawer-rows::-webkit-scrollbar-thumb,
+.quickpick::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
 .list-scroll::-webkit-scrollbar-thumb:hover,
 .view-prefs::-webkit-scrollbar-thumb:hover,
-.modal-body::-webkit-scrollbar-thumb:hover {
+.modal-body::-webkit-scrollbar-thumb:hover,
+.drawer-rows::-webkit-scrollbar-thumb:hover,
+.quickpick::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar);
 }
 
@@ -367,11 +384,23 @@ textarea {
 }
 
 .row-name {
+  display: flex;
+  align-items: center;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* The ellipsizing portion only; the badge + reveal button sit outside it
+   (flex:none siblings) so they're never clipped by the ellipsis. */
+.row-name-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Magnifier next to the file name; reveals the file in the file manager. */
@@ -623,6 +652,7 @@ textarea {
 
 .badge-compressed {
   display: inline-block;
+  flex: none;
   vertical-align: 1px;
   margin-left: 6px;
   padding: 2px 6px;
@@ -1060,6 +1090,12 @@ select.input {
   cursor: pointer;
 }
 
+/* manual: light mode — an OFF toggle reads clearly off (darker --switch-track +
+   knob border/shadow) vs the accent ON state; dark mode toggle unchanged. Long
+   recording/preset names ellipsize (.row-name-text, .active-bar-name) with the
+   reveal button/badge and ‹ › arrows staying put. A 16+ preset quick-pick
+   scrolls with the slim 6px scrollbar, and the activity drawer scrollbar
+   (.drawer-rows) matches the rest of the app. */
 .switch {
   position: relative;
   width: 34px;
@@ -1077,7 +1113,7 @@ select.input {
 .switch .track {
   position: absolute;
   inset: 0;
-  background: var(--border);
+  background: var(--switch-track);
   border-radius: 999px;
   transition: background 0.15s;
 }
@@ -1090,7 +1126,10 @@ select.input {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--switch-knob);
+  /* Keeps the #fff knob legible against the darker light-mode OFF track. */
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s;
 }
 
@@ -1664,17 +1703,27 @@ select.input {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Allow the control (and the name inside) to shrink so long preset names
+     truncate instead of growing the bar; the arrows stay flex:none. */
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 .active-bar-name {
+  flex: 1;
+  min-width: 80px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text);
-  min-width: 80px;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .active-bar-arrow {
+  flex: none;
   width: 22px;
   height: 22px;
   border: 1px solid var(--border);
@@ -1714,6 +1763,11 @@ select.input {
 .quickpick {
   width: 100%;
   max-width: 320px;
+  /* Cap to the overlay's inner height (inset 0 minus its 18px top+bottom
+     padding) and scroll internally so arbitrarily many presets stay reachable
+     instead of clipping off the top/bottom. Stays centered for short lists. */
+  max-height: calc(100% - 36px);
+  overflow-y: auto;
   background: var(--overlay);
   border: 1px solid var(--accent);
   border-radius: 12px;
