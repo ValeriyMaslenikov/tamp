@@ -33,11 +33,42 @@ export function openCustomModal(opts: {
   const { video } = opts;
   const el = document.createElement("div");
   el.className = "modal-page";
+  // Modal dialog semantics: SR announces a labelled dialog on open, and the Tab
+  // trap below keeps focus inside so Tab can't walk behind to the covered tabs.
+  // manual: opening Custom announces "Custom conversion, dialog"; Tab cycles
+  // within the page and Shift+Tab from the first control wraps to the last.
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-label", "Custom conversion");
+
+  // The trap is registered on open and torn down on close. Capturing Tab inside
+  // the dialog cycles focus across its focusable controls (Shift+Tab reverses).
+  function onTrapKeyDown(e: KeyboardEvent): void {
+    if (e.key !== "Tab") return;
+    const focusable = el.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), ' +
+        'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || !el.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || !el.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 
   let open = true;
   function close(): void {
     if (!open) return;
     open = false;
+    el.removeEventListener("keydown", onTrapKeyDown);
     el.remove();
     opts.onClose();
   }
@@ -150,6 +181,9 @@ export function openCustomModal(opts: {
   body.append(grid1, grid2, hint, split.el, audio.row, convert);
   el.append(header, body);
   opts.host.appendChild(el);
+  el.addEventListener("keydown", onTrapKeyDown);
+  // Move DOM focus into the dialog so SR users land inside; onClose restores
+  // focus to the trigger via the caller's focusFilter().
   targetInput.focus();
 
   return { el, close };

@@ -651,6 +651,15 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (!quickPick) return;
     quickPick.el.remove();
     quickPick = null;
+    // Restore focus to the trigger context: the videos filter is the list's
+    // natural focus home, regardless of whether the picker was opened by a row
+    // click, the Add-file button, or a drop. Only steal focus if it's loose
+    // (still on the now-removed overlay / on <body>), so we don't yank it from
+    // another tab when onSettingsChanged closes a stale picker.
+    if (!el.hidden) {
+      const active = document.activeElement;
+      if (!active || active === document.body) focusFilterOnly();
+    }
   }
 
   function highlightQuick(): void {
@@ -690,9 +699,38 @@ export function createListView(getSettings: () => Settings | null): ListView {
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) closeQuickPick();
     });
+    // Tab focus trap: keep Tab/Shift+Tab cycling within the picker so it can't
+    // walk behind to the covered tabs/rows. Arrows/numbers/Enter/Esc are still
+    // handled by the document keydown handler (which calls
+    // stopImmediatePropagation), so this only governs Tab.
+    overlay.addEventListener("keydown", (e) => {
+      if (e.key !== "Tab" || !quickPick) return;
+      const focusable = overlay.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey) {
+        if (active === first || !overlay.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !overlay.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
 
     const card = document.createElement("div");
     card.className = "quickpick";
+    // Modal dialog semantics on the card: SR announces a labelled dialog on
+    // open. manual: opening the picker announces "Choose a preset, dialog";
+    // Tab stays inside; closing restores focus to the filter.
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
+    card.setAttribute("aria-label", "Choose a preset");
     const title = document.createElement("div");
     title.className = "quickpick-title";
     title.textContent =
@@ -748,6 +786,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
     (document.querySelector(".panel") ?? document.body).appendChild(overlay);
     quickPick = { el: overlay, paths, presets, index: 0 };
     highlightQuick();
+    // Move DOM focus into the dialog so SR users land inside it (the document
+    // key handler still drives arrows/numbers/Enter). Focusing the first item
+    // keeps Tab trapped within the picker from the first keystroke.
+    overlay.querySelector<HTMLElement>(".quickpick-item")?.focus();
   }
 
   function onRowClick(v: RecentVideo): void {
