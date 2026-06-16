@@ -1229,15 +1229,26 @@ select.input {
   border-color: var(--accent);
 }
 
-/* ---- Multi-part (split) group tree ---- */
+/* ---- Multi-part (split) group: ONE block; parts are compact text rows ---- */
 
 .conv-tree {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
   margin-bottom: 8px;
 }
 
 .conv-tree-parent {
-  margin-bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
   cursor: pointer;
+}
+
+.conv-tree-parent:hover {
+  background: var(--row-hover);
 }
 
 .conv-chevron {
@@ -1245,45 +1256,97 @@ select.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   color: var(--text-dim);
   transition: transform 0.15s;
 }
 
 .conv-chevron svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 .conv-tree.is-open .conv-chevron {
   transform: rotate(90deg);
 }
 
+/* Parts live inside the same block — a slim list under a divider, lightly
+   inset with a thin connector so they read as children, not separate cards. */
 .conv-children {
-  margin: 0 0 0 28px;
-  padding-left: 14px;
-  border-left: 1px solid var(--border);
+  padding: 2px 10px 6px 12px;
+  border-top: 1px solid var(--border);
 }
 
 .conv-part {
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px;
-  margin-top: 8px;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.conv-tline {
+  position: relative;
+  flex: none;
+  width: 16px;
+  align-self: stretch;
+}
+.conv-tline::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 0;
+  bottom: 50%;
+  width: 1.5px;
+  background: var(--border);
+}
+.conv-tline::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  width: 9px;
+  height: 1.5px;
+  background: var(--border);
 }
 
 .conv-partno {
   flex: none;
-  width: 18px;
-  text-align: center;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 9.5px;
+  font-weight: 700;
   color: var(--text-dim);
+  background: var(--surface-2);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.conv-cname {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-csize {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--success);
+}
+
+/* Slightly smaller action buttons on the compact part rows. */
+.conv-part .conv-act {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.conv-part .conv-act svg {
+  width: 13px;
+  height: 13px;
 }
 
 .badge-parts {

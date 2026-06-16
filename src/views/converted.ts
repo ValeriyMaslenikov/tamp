@@ -145,28 +145,37 @@ export function createConvertedView(): ConvertedView {
     return r;
   }
 
+  /** One part of a split conversion: a compact text row inside the group block
+   *  (no card, no thumbnail) with a thin tree connector — like the mockup. */
   function partRow(part: ConversionRecord, index: number): HTMLElement {
     const r = document.createElement("div");
     r.className = "conv-part";
 
-    const no = document.createElement("div");
+    const line = document.createElement("span");
+    line.className = "conv-tline";
+
+    const no = document.createElement("span");
     no.className = "conv-partno";
     no.textContent = String(index + 1);
 
-    r.append(no, thumb(part.outputPath));
-
-    const meta = document.createElement("div");
-    meta.className = "conv-meta";
-    const name = document.createElement("div");
-    name.className = "conv-name";
+    const name = document.createElement("span");
+    name.className = "conv-cname";
     name.textContent = basename(part.outputPath);
     name.title = part.outputPath;
-    const sub = document.createElement("div");
-    sub.className = "conv-sub";
-    sub.textContent = formatBytes(part.outputBytes);
-    meta.append(name, sub);
 
-    r.append(meta, playButton(part.outputPath), copyButton(part.outputPath), revealButton(part.outputPath, "Show in file manager"));
+    const size = document.createElement("span");
+    size.className = "conv-csize";
+    size.textContent = formatBytes(part.outputBytes);
+
+    r.append(
+      line,
+      no,
+      name,
+      size,
+      playButton(part.outputPath),
+      copyButton(part.outputPath),
+      revealButton(part.outputPath, "Show in file manager"),
+    );
     return r;
   }
 
@@ -177,7 +186,7 @@ export function createConvertedView(): ConvertedView {
     wrap.className = "conv-tree";
 
     const parent = document.createElement("div");
-    parent.className = "conv-row conv-tree-parent";
+    parent.className = "conv-tree-parent";
 
     const chevron = document.createElement("span");
     chevron.className = "conv-chevron";
