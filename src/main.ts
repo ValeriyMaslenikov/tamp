@@ -65,6 +65,8 @@ function main(): void {
 
   const drawer = createDrawer(app.querySelector(".panel") as HTMLElement);
 
+  const footer = app.querySelector(".panel-footer") as HTMLElement;
+
   const segButtons = Array.from(
     app.querySelectorAll<HTMLButtonElement>(".seg-btn"),
   );
@@ -77,10 +79,14 @@ function main(): void {
       b.classList.toggle("is-active", b.dataset.tab === tab);
     }
     if (tab === "videos") {
+      footer.textContent = listView.footerHint();
       void listView.refresh();
       listView.focusFilter();
     } else if (tab === "converted") {
+      footer.textContent = "↑↓ select · ⏎ play · c copy · r reveal · esc back";
       void convertedView.refresh();
+    } else {
+      footer.textContent = "esc back";
     }
   }
 
@@ -110,6 +116,7 @@ function main(): void {
     applyTheme(s.theme);
     prefsView.render(s);
     listView.onSettingsChanged();
+    if (!listView.el.hidden) footer.textContent = listView.footerHint();
   });
 
   void (async () => {

@@ -92,6 +92,8 @@ export interface ListView {
   compressPaths(paths: string[], altHeld: boolean): void;
   /** Overlay text for the current layout / active preset. */
   currentDropHint(): string;
+  /** Footer hint reflecting the hotkeys available in the current layout mode. */
+  footerHint(): string;
 }
 
 export function createListView(getSettings: () => Settings | null): ListView {
@@ -778,6 +780,12 @@ export function createListView(getSettings: () => Settings | null): ListView {
     return "Drop to pick a preset";
   }
 
+  function footerHint(): string {
+    return layoutMode() === "active-bar"
+      ? "↑↓ select · ←→ profile · 1–9 quick profile · ⏎ convert · esc back"
+      : "↑↓ select · ⏎ pick preset · 1–9 quick profile · e expand · esc back";
+  }
+
   function openCustom(v: RecentVideo): void {
     if (modal) return;
     const host = document.querySelector<HTMLElement>(".panel") ?? document.body;
@@ -1205,5 +1213,6 @@ export function createListView(getSettings: () => Settings | null): ListView {
     focusFilter,
     compressPaths,
     currentDropHint,
+    footerHint,
   };
 }
