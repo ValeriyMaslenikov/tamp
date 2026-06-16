@@ -97,10 +97,207 @@ impl RawRecord {
     }
 }
 
-/// One-time migration hook. Identity for now (Task 1); Task 2 fills it in to
-/// merge legacy split parts and backfill the source-created time.
-fn migrate(mapped: Vec<(ConversionRecord, bool)>) -> Vec<ConversionRecord> {
-    mapped.into_iter().map(|(rec, _is_legacy)| rec).collect()
+// keep in lockstep with src/lib/convgroup.ts (parentDir/basename/isPartPath)
+//
+// The "(tamped …)" heuristic below mirrors the TS regexes exactly so that the
+// one-time migration groups legacy per-part journals the same way the old
+// frontend did. After migration the frontend reads structure straight from
+// `outputs[]`; this stays only as the migration mirror.
+
+/// Slice before the last '\\' or '/'; "" if there is no separator.
+fn parent_dir(p: &str) -> &str {
+    match p.rfind(['\\', '/']) {
+        Some(i) => &p[..i],
+        None => "",
+    }
+}
+
+/// The path component after the last '\\' or '/' (the whole string if neither).
+fn basename(p: &str) -> &str {
+    match p.rfind(['\\', '/']) {
+        Some(i) => &p[i + 1..],
+        None => p,
+    }
+}
+
+/// Mirrors TS `TAMPED_DIR = /\(tamped .+\)$/` on a directory's own name: the
+/// name ends in ")" and has "(tamped " somewhere before it with ≥1 char in
+/// between (so "(tamped )" alone does not match).
+fn is_tamped_dir(name: &str) -> bool {
+    if !name.ends_with(')') {
+        return false;
+    }
+    match name.rfind("(tamped ") {
+        // The chars between the marker and the trailing ')' must be ≥1, i.e.
+        // the marker's end index is strictly before the final ')'.
+        Some(i) => i + "(tamped ".len() < name.len() - 1,
+        None => false,
+    }
+}
+
+/// Mirrors TS `TAMPED_FILE = /\(tamped [^)]+\)\.[^.]+$/` on a file's basename:
+/// the name ends in `(tamped <no-')' chars>).<no-'.' chars>` — a standalone
+/// re-compressed output that carries the "(tamped …)" suffix in its OWN name.
+fn is_tamped_file(name: &str) -> bool {
+    // The extension: chars after the last '.', non-empty and dot-free by
+    // construction (everything after the final '.').
+    let Some(dot) = name.rfind('.') else {
+        return false;
+    };
+    let ext = &name[dot + 1..];
+    if ext.is_empty() {
+        return false;
+    }
+    // The stem must end in `(tamped <≥1 non-')'>)`.
+    let stem = &name[..dot];
+    if !stem.ends_with(')') {
+        return false;
+    }
+    let Some(marker) = stem.rfind("(tamped ") else {
+        return false;
+    };
+    // The chars between "(tamped " and the closing ')' must be ≥1 and contain
+    // no ')' (mirrors `[^)]+`).
+    let inner = &stem[marker + "(tamped ".len()..stem.len() - 1];
+    !inner.is_empty() && !inner.contains(')')
+}
+
+/// A split *part* is a bare part file inside a "(tamped …)" output folder whose
+/// OWN name is not itself a "(tamped …)" file. Mirrors TS `isPartPath`.
+fn is_part_path(output_path: &str) -> bool {
+    is_tamped_dir(basename(parent_dir(output_path))) && !is_tamped_file(basename(output_path))
+}
+
+/// The source file's creation time (ms since epoch); 0 when it can't be read
+/// (the source was moved/deleted, or the FS has no creation time). Mirrors
+/// `encoder::input_created_ms` / `commands::file_created_ms`.
+fn disk_created_ms(input_path: &str) -> u64 {
+    std::fs::metadata(input_path)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A natural-sort key for an output path: split into runs of digits and
+/// non-digits so numeric runs compare by value, mirroring TS
+/// `localeCompare(.., { numeric: true })` for the part ordering we care about.
+fn numeric_key(path: &str) -> Vec<NaturalChunk> {
+    let mut chunks = Vec::new();
+    let mut chars = path.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut digits = String::new();
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    digits.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // Compare numerically; fall back to string length for runs that
+            // overflow u128 (paths never realistically hit this).
+            match digits.parse::<u128>() {
+                Ok(n) => chunks.push(NaturalChunk::Num(n)),
+                Err(_) => chunks.push(NaturalChunk::Text(digits)),
+            }
+        } else {
+            let mut text = String::new();
+            while let Some(&t) = chars.peek() {
+                if t.is_ascii_digit() {
+                    break;
+                }
+                text.push(t);
+                chars.next();
+            }
+            chunks.push(NaturalChunk::Text(text));
+        }
+    }
+    chunks
+}
+
+#[derive(PartialEq, Eq)]
+enum NaturalChunk {
+    Text(String),
+    Num(u128),
+}
+
+impl PartialOrd for NaturalChunk {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NaturalChunk {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        use NaturalChunk::*;
+        match (self, other) {
+            (Num(a), Num(b)) => a.cmp(b),
+            (Text(a), Text(b)) => a.cmp(b),
+            // A numeric run sorts before a text run, matching the digit-first
+            // ordering of the part filenames we group.
+            (Num(_), Text(_)) => Ordering::Less,
+            (Text(_), Num(_)) => Ordering::Greater,
+        }
+    }
+}
+
+/// One-time migration: new-format records pass through; legacy split parts
+/// (single-output records whose path `is_part_path`) merge by parent folder
+/// into one N-output record; legacy non-part records stay 1-output. For any
+/// record with `input_created_ms == 0`, backfill the source-created time from
+/// disk ONCE (the value is frozen thereafter). Returns the migrated records and
+/// `changed = true` if any legacy record existed (so the caller rewrites once).
+fn migrate(mapped: Vec<(ConversionRecord, bool)>) -> (Vec<ConversionRecord>, bool) {
+    let changed = mapped.iter().any(|(_, is_legacy)| *is_legacy);
+
+    let mut out: Vec<ConversionRecord> = Vec::new();
+    // Folder -> index into `out` for the group record being accumulated, so the
+    // merged record keeps the position of its first part (chronological order).
+    let mut group_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    for (rec, is_legacy) in mapped {
+        let is_split_part =
+            is_legacy && rec.outputs.len() == 1 && is_part_path(&rec.outputs[0].path);
+        if !is_split_part {
+            out.push(rec);
+            continue;
+        }
+
+        let folder = parent_dir(&rec.outputs[0].path).to_string();
+        match group_index.get(&folder).copied() {
+            Some(idx) => {
+                let group = &mut out[idx];
+                group.outputs.push(rec.outputs.into_iter().next().unwrap());
+                group.completed_at_ms = group.completed_at_ms.max(rec.completed_at_ms);
+                if group.input_created_ms == 0 {
+                    group.input_created_ms = rec.input_created_ms;
+                }
+            }
+            None => {
+                let idx = out.len();
+                group_index.insert(folder, idx);
+                out.push(rec);
+            }
+        }
+    }
+
+    // Sort each merged group's parts numeric-aware (mirrors the TS part sort)
+    // and backfill any still-zero created time from disk once.
+    for rec in &mut out {
+        if rec.outputs.len() > 1 {
+            rec.outputs.sort_by_key(|o| numeric_key(&o.path));
+        }
+        if rec.input_created_ms == 0 {
+            rec.input_created_ms = disk_created_ms(&rec.input_path);
+        }
+    }
+
+    (out, changed)
 }
 
 pub struct Journal {
@@ -128,7 +325,7 @@ impl Journal {
     /// missing file (fresh start) and a corrupt one (backed up to .bak,
     /// then fresh start).
     pub fn load_from_path(path: PathBuf) -> Journal {
-        let records = match std::fs::read(&path) {
+        let (records, changed) = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Vec<RawRecord>>(&bytes) {
                 Ok(raw) => {
                     let mapped = raw.into_iter().map(RawRecord::into_record).collect();
@@ -137,20 +334,28 @@ impl Journal {
                 Err(e) => {
                     crate::log_warn!("conversion journal is unreadable, starting fresh: {e}");
                     backup_corrupt(&path);
-                    Vec::new()
+                    (Vec::new(), false)
                 }
             },
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     crate::log_warn!("cannot read conversion journal: {e}");
                 }
-                Vec::new()
+                (Vec::new(), false)
             }
         };
-        Journal {
+        let journal = Journal {
             records: Mutex::new(records),
             path: Some(path),
+        };
+        // Rewrite once if the migration changed anything (legacy records merged
+        // and/or created times backfilled), so the migration is one-time and
+        // the stored created time is frozen thereafter.
+        if changed {
+            let records = journal.records.lock().unwrap();
+            journal.persist(&records);
         }
+        journal
     }
 
     pub fn append(&self, rec: ConversionRecord) {
@@ -254,7 +459,7 @@ mod tests {
     /// same `RawRecord` mapping `load_from_path` uses.
     fn load_records(json: &str) -> Vec<ConversionRecord> {
         let raw: Vec<RawRecord> = serde_json::from_str(json).unwrap();
-        migrate(raw.into_iter().map(RawRecord::into_record).collect())
+        migrate(raw.into_iter().map(RawRecord::into_record).collect()).0
     }
 
     #[test]
@@ -472,5 +677,160 @@ mod tests {
         assert_eq!(by_first.outputs.len(), 2);
         assert_eq!(by_second.outputs.len(), 2);
         assert_eq!(by_first.completed_at_ms, by_second.completed_at_ms);
+    }
+
+    #[test]
+    fn is_part_path_matches_bare_parts_only() {
+        // A bare-numbered part inside a (tamped …) folder is a split part.
+        assert!(is_part_path("/out/clip (tamped Discord 823f)/clip 2.mp4"));
+        assert!(is_part_path(r"C:\out\clip (tamped 823f)\clip 10.mp4"));
+        // A standalone single (its OWN name is "(tamped …)") is NOT a part.
+        assert!(!is_part_path("/out/clip (tamped Discord 823f).mp4"));
+        // A re-compressed file inside a tamped folder carries the suffix in its
+        // own name → its own conversion, not a part.
+        assert!(!is_part_path(
+            "/out/clip (tamped 823f)/clip 2 (tamped 9ca1).mp4"
+        ));
+        // Not inside a tamped folder at all.
+        assert!(!is_part_path("/out/plain/clip 2.mp4"));
+    }
+
+    #[test]
+    fn legacy_split_parts_merge_into_one_record() {
+        // Two legacy part records in the same (tamped …) folder plus one
+        // standalone single. After migration: 2 records — the split collapsed
+        // to one 2-output record (sorted, completedAtMs = max), the single
+        // untouched.
+        let json = r#"[
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 2.mp4","outputBytes":110000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":50,"inputCreatedMs":7},
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 1.mp4","outputBytes":100000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":40,"inputCreatedMs":7},
+            {"inputPath":"/in/other.mov","inputBytes":500000,
+             "outputPath":"/out/other (tamped 823f).mp4","outputBytes":90000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":60,"inputCreatedMs":3}
+        ]"#;
+        let recs = load_records(json);
+        assert_eq!(recs.len(), 2);
+
+        let split = recs
+            .iter()
+            .find(|r| r.outputs.len() == 2)
+            .expect("the two parts merge into one 2-output record");
+        // Outputs sorted numeric-aware: part 1 before part 2.
+        assert_eq!(split.outputs[0].path, "/out/clip (tamped 823f)/clip 1.mp4");
+        assert_eq!(split.outputs[1].path, "/out/clip (tamped 823f)/clip 2.mp4");
+        // completedAtMs = max over the parts; other fields from the first part.
+        assert_eq!(split.completed_at_ms, 50);
+        assert_eq!(split.input_path, "/in/clip.mov");
+        assert_eq!(split.input_bytes, 2_000_000);
+        assert_eq!(split.input_created_ms, 7);
+
+        let single = recs
+            .iter()
+            .find(|r| r.outputs.len() == 1)
+            .expect("the standalone single stays a single record");
+        assert_eq!(single.outputs[0].path, "/out/other (tamped 823f).mp4");
+        assert_eq!(single.completed_at_ms, 60);
+    }
+
+    #[test]
+    fn recompressed_part_stays_separate() {
+        // A legacy (tamped …) FILE that happens to live inside a tamped folder
+        // (re-compressing a part) is its OWN single record, not merged into the
+        // folder's split. Here both the bare part and the re-compressed file
+        // sit in the same folder.
+        let json = r#"[
+            {"inputPath":"/in/clip.mov","inputBytes":2000000,
+             "outputPath":"/out/clip (tamped 823f)/clip 1.mp4","outputBytes":100000,
+             "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":40,"inputCreatedMs":7},
+            {"inputPath":"/out/clip (tamped 823f)/clip 1.mp4","inputBytes":100000,
+             "outputPath":"/out/clip (tamped 823f)/clip 1 (tamped 9ca1).mp4","outputBytes":50000,
+             "presetHash":"9ca1","presetName":"Discord (10MB)","targetMb":10.0,
+             "completedAtMs":70,"inputCreatedMs":7}
+        ]"#;
+        let recs = load_records(json);
+        assert_eq!(recs.len(), 2, "the re-compressed file is its own record");
+        for rec in &recs {
+            assert_eq!(rec.outputs.len(), 1);
+        }
+        assert!(recs
+            .iter()
+            .any(|r| r.outputs[0].path == "/out/clip (tamped 823f)/clip 1 (tamped 9ca1).mp4"));
+    }
+
+    #[test]
+    fn new_format_records_pass_through() {
+        // A journal already in outputs[] form: unchanged, and NOT rewritten.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversions.json");
+        let json = r#"[{
+            "inputPath":"/in/clip.mov","inputBytes":2000000,
+            "outputs":[
+                {"path":"/out/clip (tamped 823f)/clip 1.mp4","bytes":100000},
+                {"path":"/out/clip (tamped 823f)/clip 2.mp4","bytes":110000}
+            ],
+            "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+            "completedAtMs":50,"inputCreatedMs":7
+        }]"#;
+        std::fs::write(&path, json).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        // migrate reports no change for a purely new-format journal.
+        let raw: Vec<RawRecord> = serde_json::from_slice(&before).unwrap();
+        let (recs, changed) = migrate(raw.into_iter().map(RawRecord::into_record).collect());
+        assert!(!changed, "a new-format journal must not be marked changed");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].outputs.len(), 2);
+
+        // load_from_path must NOT rewrite the file (bytes identical).
+        let _journal = Journal::load_from_path(path.clone());
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before, after, "new-format journal must not be rewritten");
+        assert!(!dir.path().join("conversions.json.tmp").exists());
+    }
+
+    #[test]
+    fn created_time_backfilled_once() {
+        // A legacy record with inputCreatedMs:0 whose input file exists on disk
+        // gets a non-zero created time after load (backfilled once).
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("source.mov");
+        std::fs::write(&input, b"video bytes").unwrap();
+        let input_str = input.to_string_lossy().replace('\\', "\\\\");
+
+        let path = dir.path().join("conversions.json");
+        let json = format!(
+            r#"[{{
+                "inputPath":"{input_str}","inputBytes":11,
+                "outputPath":"/out/source (tamped 823f).mp4","outputBytes":5,
+                "presetHash":"823f","presetName":"Discord (10MB)","targetMb":10.0,
+                "completedAtMs":50,"inputCreatedMs":0
+            }}]"#
+        );
+        std::fs::write(&path, json).unwrap();
+
+        let journal = Journal::load_from_path(path.clone());
+        let rec = journal
+            .find_by_output("/out/source (tamped 823f).mp4")
+            .expect("record must load");
+        assert!(
+            rec.input_created_ms > 0,
+            "created time must be backfilled from the on-disk source"
+        );
+
+        // It was frozen: the rewritten file carries the non-zero value, and a
+        // reload reads it back without touching disk again.
+        let reloaded = Journal::load_from_path(path);
+        let rec2 = reloaded
+            .find_by_output("/out/source (tamped 823f).mp4")
+            .unwrap();
+        assert_eq!(rec2.input_created_ms, rec.input_created_ms);
     }
 }

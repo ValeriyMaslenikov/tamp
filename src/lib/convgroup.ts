@@ -8,6 +8,7 @@ export type ConvNode =
       totalBytes: number; parts: ConversionRecord[];
     };
 
+// keep in lockstep with src-tauri/src/journal.rs (parent_dir/basename/is_part_path)
 function parentDir(p: string): string {
   const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
   return i < 0 ? "" : p.slice(0, i);
