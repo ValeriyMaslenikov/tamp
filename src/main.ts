@@ -83,7 +83,7 @@ function main(): void {
       void listView.refresh();
       listView.focusFilter();
     } else if (tab === "converted") {
-      footer.textContent = "↑↓ select · ⏎ play · c copy · r reveal · esc back";
+      footer.textContent = "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc back";
       void convertedView.refresh();
     } else {
       footer.textContent = "esc back";
