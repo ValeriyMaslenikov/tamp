@@ -7,7 +7,7 @@ import {
   reveal,
   type ConversionRecord,
 } from "../lib/ipc";
-import { formatAbsolute, formatBytes, formatRelativeTime } from "../lib/format";
+import { formatAbsolute, formatBytes, formatRelativeTime, pluralParts } from "../lib/format";
 import { groupConversions, type ConvNode, type ConvPart } from "../lib/convgroup";
 import { showToast } from "../lib/toast";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -324,7 +324,7 @@ export function createConvertedView(): ConvertedView {
       `<span class="badge-parts"></span> · ` +
       `<span class="conv-where"></span> · `;
     (sub.querySelector(".badge-parts") as HTMLElement).textContent =
-      `${node.parts.length} parts`;
+      pluralParts(node.parts.length);
     (sub.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
     sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
