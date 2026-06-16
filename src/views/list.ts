@@ -804,10 +804,23 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (j) {
       if (isBusy(j)) return;
       if (j.phase === "failed") {
+        // Retry: clear the red error AND re-run the same conversion with the
+        // SAME preset the failed job used — the row is the obvious retry target.
+        // Only if that preset no longer exists do we fall through to the picker.
+        // manual: force a failure, click the row → it re-runs the same preset
+        // (queued status reappears), not a silent dismiss; delete that preset
+        // first → clicking the failed row opens the picker instead.
+        const retryId = j.presetId;
         dismiss(j);
-        return;
+        const s = getSettings();
+        if (s && s.presets.some((p) => p.id === retryId)) {
+          void doEnqueue(v, retryId);
+          return;
+        }
+        // else: preset was deleted — fall through to the normal enqueue path.
+      } else {
+        dismiss(j);
       }
-      dismiss(j);
     }
     const settings = getSettings();
     if (!settings) return;
@@ -1235,7 +1248,16 @@ export function createListView(getSettings: () => Settings | null): ListView {
         break;
       }
       case "failed": {
-        status.innerHTML = `<span class="row-error"></span>`;
+        // A "Retry" affordance makes the click behavior (re-run the same preset,
+        // see onRowClick) discoverable rather than a silent error-dismiss. The
+        // pill is self-styled inline (no styles.css change for this task) and
+        // sits below the clamped error text via flex-basis:100%.
+        status.innerHTML =
+          `<span class="row-error"></span>` +
+          `<span class="row-retry" title="Click to retry with the same preset" ` +
+          `style="flex-basis:100%;display:inline-flex;align-items:center;gap:4px;` +
+          `margin-top:2px;font-size:11px;font-weight:600;color:var(--danger);` +
+          `opacity:0.85;cursor:pointer">↻ Retry</span>`;
         const errEl = status.querySelector<HTMLElement>(".row-error");
         if (errEl) {
           // The clamp hides anything past three lines; hover shows it all.
