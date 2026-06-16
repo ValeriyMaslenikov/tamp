@@ -114,7 +114,16 @@ export function createConvertedView(): ConvertedView {
     const vals = tip.querySelectorAll("span span");
     (vals[0] as HTMLElement).textContent = formatAbsolute(recordedMs);
     (vals[1] as HTMLElement).textContent = formatAbsolute(convertedMs);
-    wrap.appendChild(tip);
+    // The sub-line and scroll container clip overflow, so the popover is
+    // attached to <body> and positioned over the viewport on hover instead of
+    // nesting it (where it would be clipped and never show).
+    wrap.addEventListener("mouseenter", () => {
+      const r = wrap.getBoundingClientRect();
+      tip.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+      tip.style.bottom = `${window.innerHeight - r.top + 6}px`;
+      document.body.appendChild(tip);
+    });
+    wrap.addEventListener("mouseleave", () => tip.remove());
     return wrap;
   }
 
@@ -151,9 +160,6 @@ export function createConvertedView(): ConvertedView {
     const r = document.createElement("div");
     r.className = "conv-part";
 
-    const line = document.createElement("span");
-    line.className = "conv-tline";
-
     const no = document.createElement("span");
     no.className = "conv-partno";
     no.textContent = String(index + 1);
@@ -168,7 +174,6 @@ export function createConvertedView(): ConvertedView {
     size.textContent = formatBytes(part.outputBytes);
 
     r.append(
-      line,
       no,
       name,
       size,

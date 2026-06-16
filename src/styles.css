@@ -1274,38 +1274,35 @@ select.input {
 /* Parts live inside the same block — a slim list under a divider, lightly
    inset with a thin connector so they read as children, not separate cards. */
 .conv-children {
-  padding: 2px 10px 6px 12px;
+  position: relative;
+  padding: 4px 10px 8px 24px;
   border-top: 1px solid var(--border);
+}
+/* One continuous vertical guide so the parts read as a single, aligned list. */
+.conv-children::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 4px;
+  bottom: 12px;
+  width: 1.5px;
+  background: var(--border);
 }
 
 .conv-part {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 5px 0;
 }
-
-.conv-tline {
-  position: relative;
-  flex: none;
-  width: 16px;
-  align-self: stretch;
-}
-.conv-tline::before {
+/* Short branch tick joining each part to the guide. */
+.conv-part::before {
   content: "";
   position: absolute;
-  left: 1px;
-  top: 0;
-  bottom: 50%;
-  width: 1.5px;
-  background: var(--border);
-}
-.conv-tline::after {
-  content: "";
-  position: absolute;
-  left: 1px;
+  left: -11px;
   top: 50%;
-  width: 9px;
+  width: 8px;
   height: 1.5px;
   background: var(--border);
 }
@@ -1361,16 +1358,16 @@ select.input {
 }
 
 .conv-time {
-  position: relative;
-  cursor: default;
+  cursor: help;
+  border-bottom: 1px dotted var(--text-dim);
 }
 
+/* Attached to <body> on hover and positioned over the viewport (fixed) so it
+   escapes the sub-line / scroll-container overflow clipping. */
 .conv-tip {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  right: 0;
-  z-index: 60;
-  display: none;
+  position: fixed;
+  z-index: 200;
+  display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
@@ -1379,10 +1376,7 @@ select.input {
   border: 1px solid var(--border);
   box-shadow: 0 6px 20px var(--shadow);
   white-space: nowrap;
-}
-
-.conv-time:hover .conv-tip {
-  display: flex;
+  pointer-events: none;
 }
 
 .conv-tip-row {
