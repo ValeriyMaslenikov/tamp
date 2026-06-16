@@ -129,6 +129,9 @@ function main(): void {
       applyTheme(settings.theme);
       prefsView.render(settings);
       listView.onSettingsChanged();
+      // setTab ran before settings loaded (defaulting the hint to quick-pick);
+      // refresh it now that the real videos-layout is known.
+      if (!listView.el.hidden) footer.textContent = listView.footerHint();
     } catch (e) {
       showToast(String(e));
     }
