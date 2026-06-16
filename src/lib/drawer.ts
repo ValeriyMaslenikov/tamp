@@ -6,11 +6,61 @@ import { formatBytes } from "./format";
 import { showToast } from "./toast";
 
 const RUNNING: ReadonlySet<Phase> = new Set(["queued", "pass1", "pass2", "verifying"]);
+/** Phases that are actively encoding (a queued job hasn't started yet). */
+const ACTIVE: ReadonlySet<Phase> = new Set(["pass1", "pass2", "verifying"]);
 /** How long a finished row lingers before it (and an idle drawer) clears. */
 const KEEP_DONE_MS = 8000;
+/** A cancelled-into-empty drawer flashes "Cancelled" this long before clearing. */
+const CANCELLED_FLASH_MS = 1200;
+/** Cap on individually-rendered rows; the rest fold into a "+N more" line. */
+const MAX_ROWS = 6;
 
 export interface Drawer {
   updateJob(state: JobState): void;
+}
+
+/** What `render()` should draw — derived purely from the job set (unit-tested). */
+export interface DrawerPlan {
+  title: string;
+  /** Jobs to render as their own row, in display order (running first). */
+  rows: JobState[];
+  /** Number of queued jobs folded into a single "N queued" summary (0 = none). */
+  queuedSummary: number;
+  /** Individual rows hidden by the cap, surfaced as a "+N more" line (0 = none). */
+  overflow: number;
+}
+
+/**
+ * Decide the drawer's contents from the full job set: keep the title's
+ * running/done counts accurate over EVERY job, collapse a backlog of queued
+ * jobs into one "N queued" summary, render running and done/failed rows
+ * individually, and cap the individual rows (folding the rest into "+N more")
+ * so a big batch drop can't grow an unbounded scroll over the list.
+ */
+export function planDrawer(jobs: Iterable<JobState>): DrawerPlan {
+  const list = [...jobs];
+  const running = list.filter((j) => RUNNING.has(j.phase)).length;
+  const done = list.filter((j) => j.phase === "done").length;
+  const title =
+    running > 0
+      ? `Compressing… ${running} running${done ? `, ${done} done` : ""}`
+      : `Conversions · ${done} done`;
+
+  const active = list.filter((j) => ACTIVE.has(j.phase));
+  const queued = list.filter((j) => j.phase === "queued");
+  const finished = list.filter((j) => !RUNNING.has(j.phase));
+
+  // Collapse a backlog of queued jobs into one summary; a lone queued job is
+  // cheap enough to show as its own row.
+  const queuedSummary = queued.length >= 2 ? queued.length : 0;
+  const queuedRows = queuedSummary > 0 ? [] : queued;
+
+  // Active encodes first, then any lone queued job, then the finished rows.
+  const ordered = [...active, ...queuedRows, ...finished];
+  const rows = ordered.slice(0, MAX_ROWS);
+  const overflow = ordered.length - rows.length;
+
+  return { title, rows, queuedSummary, overflow };
 }
 
 export function createDrawer(panel: HTMLElement): Drawer {
@@ -34,8 +84,20 @@ export function createDrawer(panel: HTMLElement): Drawer {
 
   const jobs = new Map<string, JobState>();
   const expiry = new Map<string, number>(); // job id -> clearTimeout handle
+  // While a "Cancelled" flash is showing, the drawer is empty but stays visible
+  // for a beat; later updates must not resurrect a real row underneath it, and
+  // the flash's own timeout must be cancellable if work arrives.
+  let flashTimer: number | null = null;
+
+  function clearFlash(): void {
+    if (flashTimer !== null) {
+      window.clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+  }
 
   close.addEventListener("click", () => {
+    clearFlash();
     for (const t of expiry.values()) window.clearTimeout(t);
     expiry.clear();
     jobs.clear();
@@ -141,26 +203,21 @@ export function createDrawer(panel: HTMLElement): Drawer {
     return r;
   }
 
-  function render(): void {
-    const list = [...jobs.values()];
-    if (list.length === 0) {
-      el.hidden = true;
-      rowsEl.innerHTML = "";
-      // No drawer occupying the bottom slot: the toast sits at its normal spot.
-      panel.style.setProperty("--drawer-h", "0px");
-      return;
-    }
-    el.hidden = false;
-    const running = list.filter((j) => RUNNING.has(j.phase)).length;
-    const done = list.filter((j) => j.phase === "done").length;
-    title.textContent =
-      running > 0
-        ? `Compressing… ${running} running${done ? `, ${done} done` : ""}`
-        : `Conversions · ${done} done`;
-    // Running items first, then the rest (most-recently-updated order otherwise).
-    list.sort((a, b) => Number(RUNNING.has(b.phase)) - Number(RUNNING.has(a.phase)));
-    rowsEl.innerHTML = "";
-    for (const j of list) rowsEl.append(rowFor(j));
+  /** A folded "N queued" / "+N more" line (not tied to a single job). */
+  function summaryRow(text: string): HTMLElement {
+    const r = document.createElement("div");
+    r.className = "drawer-row drawer-summary";
+    const meta = document.createElement("div");
+    meta.className = "drawer-meta";
+    const name = document.createElement("div");
+    name.className = "drawer-name";
+    name.textContent = text;
+    meta.append(name);
+    r.append(meta);
+    return r;
+  }
+
+  function publishHeight(): void {
     // Publish the drawer's height (now that the rows are in the DOM) so the toast
     // can offset itself above the drawer instead of overlapping it (styles.css
     // reads --drawer-h on .panel via calc()).
@@ -168,6 +225,51 @@ export function createDrawer(panel: HTMLElement): Drawer {
     // drawer's own Copy button, or a drop-error) → the toast sits just above the
     // drawer and neither occludes the other; with no drawer it sits at bottom:12px.
     panel.style.setProperty("--drawer-h", `${el.offsetHeight}px`);
+  }
+
+  function render(): void {
+    // A "Cancelled" flash owns the drawer until its timer clears it; ignore
+    // re-renders that would otherwise wipe the flash while it's showing.
+    if (flashTimer !== null) return;
+
+    if (jobs.size === 0) {
+      el.hidden = true;
+      rowsEl.innerHTML = "";
+      // No drawer occupying the bottom slot: the toast sits at its normal spot.
+      panel.style.setProperty("--drawer-h", "0px");
+      return;
+    }
+    el.hidden = false;
+    // manual: drop many files → a single "N queued" summary row plus the
+    // capped individual rows and a "+N more" line, instead of an unbounded
+    // scroll covering the list. (planDrawer's logic is covered in drawer.test.ts.)
+    const plan = planDrawer(jobs.values());
+    title.textContent = plan.title;
+    rowsEl.innerHTML = "";
+    for (const j of plan.rows) rowsEl.append(rowFor(j));
+    if (plan.queuedSummary > 0) {
+      rowsEl.append(summaryRow(`${plan.queuedSummary} queued`));
+    }
+    if (plan.overflow > 0) {
+      rowsEl.append(summaryRow(`+${plan.overflow} more`));
+    }
+    publishHeight();
+  }
+
+  // manual: cancel the only running job → the drawer shows "Cancelled" for ~1.2s
+  // then clears (not an instant disappearance); enqueueing during the flash
+  // replaces it immediately with the new row, and it never resurrects an old one.
+  /** Show a transient "Cancelled" state, then clear the (now empty) drawer. */
+  function flashCancelled(): void {
+    clearFlash();
+    el.hidden = false;
+    title.textContent = "Cancelled";
+    rowsEl.innerHTML = "";
+    publishHeight();
+    flashTimer = window.setTimeout(() => {
+      flashTimer = null;
+      render();
+    }, CANCELLED_FLASH_MS);
   }
 
   return {
@@ -180,9 +282,17 @@ export function createDrawer(panel: HTMLElement): Drawer {
           expiry.delete(state.id);
         }
         jobs.delete(state.id);
-        render();
+        // If that emptied the drawer, flash "Cancelled" before it vanishes so
+        // the user sees their cancel landed (not a crash); otherwise re-render.
+        if (jobs.size === 0 && !el.hidden) {
+          flashCancelled();
+        } else {
+          render();
+        }
         return;
       }
+      // Real work arrived — a lingering flash must yield to it immediately.
+      clearFlash();
       jobs.set(state.id, state);
       if (state.phase === "done" || state.phase === "failed") {
         scheduleExpiry(state.id);
