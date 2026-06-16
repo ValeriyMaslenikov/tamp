@@ -296,6 +296,7 @@ pub fn run() {
             commands::queue_state,
             commands::ensure_preview,
             commands::copy_file,
+            commands::copy_files,
             commands::reveal,
             commands::os_info,
             commands::list_conversions,

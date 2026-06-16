@@ -195,6 +195,11 @@ export const ensurePreview = (path: string): Promise<string> =>
 export const copyFile = (path: string): Promise<void> =>
   invoke<void>("copy_file", { path });
 
+/** Copy multiple files to the clipboard in one write (a single CF_HDROP list on
+ *  Windows) so every part of a split lands — not just the last. */
+export const copyFiles = (paths: string[]): Promise<void> =>
+  invoke<void>("copy_files", { paths });
+
 export const openFile = (path: string): Promise<void> =>
   invoke<void>("open_file", { path });
 

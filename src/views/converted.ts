@@ -2,6 +2,7 @@ import {
   conversionThumb,
   convertFileSrc,
   copyFile,
+  copyFiles,
   listConversions,
   openFile,
   reveal,
@@ -333,7 +334,7 @@ export function createConvertedView(): ConvertedView {
     const copyAll = actionButton("Copy all", "Copy all parts", COPY_SVG);
     copyAll.addEventListener("click", (e) => {
       e.stopPropagation();
-      Promise.all(node.parts.map((p) => copyFile(p.path)))
+      copyFiles(node.parts.map((p) => p.path))
         .then(() => showToast("Copied to clipboard", "success"))
         .catch((err) => showToast(friendlyError(err), "error"));
     });
@@ -353,7 +354,7 @@ export function createConvertedView(): ConvertedView {
     parent.dataset.navKey = `group:${node.folder}`;
     rowActions.set(parent, {
       kind: "group",
-      copy: () => Promise.all(node.parts.map((p) => copyFile(p.path)))
+      copy: () => copyFiles(node.parts.map((p) => p.path))
         .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(friendlyError(e), "error")),
       reveal: () => doReveal(node.folder),
       expand, collapse, isOpen,

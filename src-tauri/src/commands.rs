@@ -352,6 +352,21 @@ pub async fn copy_file(app: AppHandle, path: String) -> Result<(), String> {
     .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
+/// Copies ALL `paths` to the clipboard in a single write (one CF_HDROP file
+/// list on Windows), so a multi-part group lands every part — unlike calling
+/// `copy_file` per path, where each write replaces the clipboard and only the
+/// last survives.
+#[tauri::command]
+pub async fn copy_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    use crate::platform::Platform as _;
+    tauri::async_runtime::spawn_blocking(move || {
+        let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        crate::platform::native().copy_files_to_clipboard(&app, &pbs)
+    })
+    .await
+    .map_err(|e| format!("clipboard task failed: {e}"))?
+}
+
 /// Reveals `path` in the OS file manager (Finder/Explorer/…). Returns an error
 /// the frontend can toast: a moved/deleted output is caught by the existence
 /// pre-check (the opener would otherwise fail or silently no-op), mirroring
