@@ -526,6 +526,21 @@ async fn run_single(
         .await?
     };
 
+    // Honor a cancel that landed in the post-encode window: the engine
+    // already promoted the output onto plan.output, but post-actions (trash
+    // original, clipboard) have not run yet. Discard the just-finished output
+    // and surface the cancel so process_job ends the job Cancelled with the
+    // original untouched — once a cancel is observed, NOTHING is trashed.
+    if !should_deliver(is_cancelled()) {
+        crate::log_info!(
+            "job {}: cancelled in the post-encode window; discarding {}",
+            job.id,
+            plan.output.display()
+        );
+        let _ = std::fs::remove_file(&plan.output);
+        return Err(CANCELLED_ERR.to_string());
+    }
+
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Verifying;
         j.progress = 1.0;
@@ -642,7 +657,33 @@ async fn run_split_set(
         ));
     }
 
-    match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
+    // A cancel observed in the post-encode window (the set finished but
+    // post-actions haven't run) must be honored: discard the whole set and
+    // end Cancelled with the original untouched. Mapped to the cancel
+    // sentinel so it flows through the same cleanup arm a mid-set cancel does
+    // (remove every promoted part + the folder); is_cancelled folds in
+    // shutdown exactly like the per-part closures.
+    let result =
+        match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
+            Ok(total)
+                if should_deliver(
+                    inner.shutting_down.load(Ordering::SeqCst)
+                        || inner.cancelled.lock().unwrap().contains(&job.id),
+                ) =>
+            {
+                Ok(total)
+            }
+            Ok(_) => {
+                crate::log_info!(
+                    "job {}: cancelled in the post-encode window; discarding the {n}-part set",
+                    job.id
+                );
+                Err(CANCELLED_ERR.to_string())
+            }
+            Err(err) => Err(err),
+        };
+
+    match result {
         Ok(total) => {
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Verifying;
@@ -950,6 +991,21 @@ fn reuse_is_stale(app: &AppHandle, input: &Path, expected: &Path) -> bool {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .is_some_and(|d| d.as_millis() as u64 > record.completed_at_ms)
 }
+
+/// Whether the just-finished output may be delivered (post-actions run, job
+/// goes Done). A cancel observed in the window between the engine returning
+/// `Ok` and post-actions running must be honored: the output is discarded and
+/// the original is NEVER trashed. `false` means the caller removes the output
+/// and returns the cancel sentinel so `process_job` ends the job Cancelled.
+fn should_deliver(is_cancelled: bool) -> bool {
+    !is_cancelled
+}
+
+/// The error a path returns when a cancel was observed. `process_job` keys
+/// Cancelled vs Failed off the cancelled set, not this string, so the exact
+/// text is only for the log — but it mirrors the in-engine cancel sentinel
+/// ([`run_ffmpeg_with_progress`] returns `"cancelled"`) for consistency.
+const CANCELLED_ERR: &str = "cancelled";
 
 /// Final guarantee before a job goes Done: re-stat the output and confirm it
 /// fits the byte target. On violation the file is removed and the job fails
@@ -2092,6 +2148,22 @@ mod tests {
             "the symlink must be left alone"
         );
     }
+
+    #[test]
+    fn should_deliver_blocks_a_post_encode_cancel() {
+        // The post-encode window guard: a job may only deliver (run
+        // post-actions, go Done) when no cancel was observed. Once a cancel is
+        // seen, the output is discarded and the original is NEVER trashed.
+        assert!(should_deliver(false), "no cancel -> deliver");
+        assert!(!should_deliver(true), "cancel observed -> never deliver");
+    }
+
+    // manual: with a real ffmpeg on-device, enqueue an encode that trashes the
+    // original, then click Cancel during the brief Verifying phase (after the
+    // engine finishes, before Done). Expected: the job row ends Cancelled, the
+    // original file is still present (NOT in Trash), the clipboard was not
+    // written, and the just-finished output (single file, or every split part
+    // plus the now-empty part folder) is gone. Repeat for a split preset.
 
     #[test]
     fn job_state_part_serializes_as_a_pair_under_part() {
