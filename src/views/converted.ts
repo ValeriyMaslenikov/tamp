@@ -10,10 +10,19 @@ import {
 import { formatAbsolute, formatBytes, formatRelativeTime } from "../lib/format";
 import { groupConversions, type ConvNode } from "../lib/convgroup";
 import { showToast } from "../lib/toast";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface ConvertedView {
   el: HTMLElement;
   refresh(): Promise<void>;
+}
+
+/** Next cursor index when moving by `dir`, clamped to [0, len-1]. From "no
+ *  selection" (-1), down → first row, up → last row. -1 when there are no rows. */
+export function nextNavIndex(cur: number, dir: number, len: number): number {
+  if (len === 0) return -1;
+  if (cur < 0) return dir > 0 ? 0 : len - 1;
+  return Math.min(len - 1, Math.max(0, cur + dir));
 }
 
 function basename(p: string): string {
@@ -42,6 +51,23 @@ export function createConvertedView(): ConvertedView {
   const scroll = document.createElement("div");
   scroll.className = "list-scroll";
   el.append(scroll);
+
+  type RowActions = {
+    kind: "single" | "group" | "part";
+    play?: () => void;
+    copy: () => void;
+    reveal: () => void;
+    expand?: () => void;
+    collapse?: () => void;
+    isOpen?: () => boolean;
+  };
+  const rowActions = new WeakMap<HTMLElement, RowActions>();
+  let selEl: HTMLElement | null = null;
+
+  const doPlay = (p: string) => openFile(p).catch((e) => showToast(String(e)));
+  const doCopy = (p: string) =>
+    copyFile(p).then(() => showToast("Copied to clipboard")).catch((e) => showToast(String(e)));
+  const doReveal = (p: string) => reveal(p).catch((e) => showToast(String(e)));
 
   function actionButton(
     label: string,
@@ -130,6 +156,13 @@ export function createConvertedView(): ConvertedView {
   function singleRow(rec: ConversionRecord): HTMLElement {
     const r = document.createElement("div");
     r.className = "conv-row";
+    r.classList.add("conv-nav");
+    rowActions.set(r, {
+      kind: "single",
+      play: () => doPlay(rec.outputPath),
+      copy: () => doCopy(rec.outputPath),
+      reveal: () => doReveal(rec.outputPath),
+    });
 
     // Empty toggle-gutter so the thumbnail lines up with multi-part rows, whose
     // chevron would otherwise push their thumbnail further right (jagged edge).
@@ -164,6 +197,13 @@ export function createConvertedView(): ConvertedView {
   function partRow(part: ConversionRecord, index: number): HTMLElement {
     const r = document.createElement("div");
     r.className = "conv-part";
+    r.classList.add("conv-nav");
+    rowActions.set(r, {
+      kind: "part",
+      play: () => doPlay(part.outputPath),
+      copy: () => doCopy(part.outputPath),
+      reveal: () => doReveal(part.outputPath),
+    });
 
     const no = document.createElement("span");
     no.className = "conv-partno";
@@ -239,14 +279,74 @@ export function createConvertedView(): ConvertedView {
     children.hidden = true;
     node.parts.forEach((part, i) => children.append(partRow(part, i)));
 
-    parent.addEventListener("click", () => {
-      const open = wrap.classList.toggle("is-open");
-      children.hidden = !open;
+    const expand = () => { wrap.classList.add("is-open"); children.hidden = false; };
+    const collapse = () => { wrap.classList.remove("is-open"); children.hidden = true; };
+    const isOpen = () => wrap.classList.contains("is-open");
+    parent.addEventListener("click", () => (isOpen() ? collapse() : expand()));
+    parent.classList.add("conv-nav");
+    rowActions.set(parent, {
+      kind: "group",
+      copy: () => Promise.all(node.parts.map((p) => copyFile(p.outputPath)))
+        .then(() => showToast("Copied to clipboard")).catch((e) => showToast(String(e))),
+      reveal: () => doReveal(node.folder),
+      expand, collapse, isOpen,
     });
 
     wrap.append(parent, children);
     return wrap;
   }
+
+  function navRows(): HTMLElement[] {
+    return Array.from(scroll.querySelectorAll<HTMLElement>(".conv-nav")).filter((el) => {
+      const kids = el.closest(".conv-children") as HTMLElement | null;
+      return !kids || !kids.hidden; // skip parts of a collapsed group
+    });
+  }
+  function setSelected(node: HTMLElement | null): void {
+    if (selEl) selEl.classList.remove("is-sel");
+    selEl = node;
+    if (node) {
+      node.classList.add("is-sel");
+      node.scrollIntoView({ block: "nearest" });
+    }
+  }
+  function moveSel(dir: number): void {
+    const rows = navRows();
+    const cur = selEl ? rows.indexOf(selEl) : -1;
+    const i = nextNavIndex(cur, dir, rows.length);
+    setSelected(i >= 0 ? rows[i] : null);
+  }
+  function onKeyDown(e: KeyboardEvent): void {
+    if (el.hidden) return; // only when the Converted tab is active
+    if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; }
+    if (!selEl) return;
+    const a = rowActions.get(selEl);
+    if (!a) return;
+    switch (e.key) {
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (a.kind === "group") (a.isOpen?.() ? a.collapse : a.expand)?.();
+        else a.play?.();
+        return;
+      case "ArrowRight":
+      case "e":
+        if (a.kind === "group" && !a.isOpen?.()) { e.preventDefault(); a.expand?.(); }
+        return;
+      case "ArrowLeft":
+        if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); }
+        return;
+      case "c": e.preventDefault(); a.copy(); return;
+      case "r": e.preventDefault(); a.reveal(); return;
+      case "Escape":
+        if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); return; }
+        e.preventDefault();
+        void getCurrentWindow().hide().catch(() => {});
+        return;
+    }
+  }
+  document.addEventListener("keydown", onKeyDown);
 
   async function refresh(): Promise<void> {
     let records: ConversionRecord[];
@@ -268,6 +368,8 @@ export function createConvertedView(): ConvertedView {
     for (const node of groupConversions(records)) {
       scroll.append(node.kind === "single" ? singleRow(node.rec) : groupNode(node));
     }
+    selEl = null;
+    setSelected(navRows()[0] ?? null);
   }
 
   return { el, refresh };
