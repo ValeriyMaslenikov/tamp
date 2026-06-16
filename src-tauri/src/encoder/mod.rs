@@ -569,7 +569,16 @@ async fn run_single(
         &job.input,
         std::slice::from_ref(&plan.output),
     );
-    append_journal(inner, job, &plan.output, preset_hash, actual);
+    // One record per job: a single = a 1-output set.
+    append_journal(
+        inner,
+        job,
+        &[crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        }],
+        preset_hash,
+    );
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Done;
         j.progress = 1.0;
@@ -663,28 +672,27 @@ async fn run_split_set(
     // sentinel so it flows through the same cleanup arm a mid-set cancel does
     // (remove every promoted part + the folder); is_cancelled folds in
     // shutdown exactly like the per-part closures.
-    let result =
-        match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
-            Ok(total)
-                if should_deliver(
-                    inner.shutting_down.load(Ordering::SeqCst)
-                        || inner.cancelled.lock().unwrap().contains(&job.id),
-                ) =>
-            {
-                Ok(total)
-            }
-            Ok(_) => {
-                crate::log_info!(
-                    "job {}: cancelled in the post-encode window; discarding the {n}-part set",
-                    job.id
-                );
-                Err(CANCELLED_ERR.to_string())
-            }
-            Err(err) => Err(err),
-        };
+    let result = match encode_part_set(inner, job, info, split, &parts, target_bytes).await {
+        Ok(delivered)
+            if should_deliver(
+                inner.shutting_down.load(Ordering::SeqCst)
+                    || inner.cancelled.lock().unwrap().contains(&job.id),
+            ) =>
+        {
+            Ok(delivered)
+        }
+        Ok(_) => {
+            crate::log_info!(
+                "job {}: cancelled in the post-encode window; discarding the {n}-part set",
+                job.id
+            );
+            Err(CANCELLED_ERR.to_string())
+        }
+        Err(err) => Err(err),
+    };
 
     match result {
-        Ok(total) => {
+        Ok((total, delivered)) => {
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Verifying;
                 j.progress = 1.0;
@@ -697,6 +705,10 @@ async fn run_split_set(
                 job.input.display(),
                 job.preset.target_mb
             );
+            // One record per job: the whole set becomes a single N-output
+            // journal record, written here (past the post-encode cancel guard)
+            // so a cancel before delivery records nothing.
+            append_journal(inner, job, &delivered, preset_hash);
             // Clipboard gets ALL parts in order; the original is only ever
             // trashed once the FULL set succeeded.
             let post_error = run_post_actions(inner, &job.post, &job.input, &parts);
@@ -736,17 +748,19 @@ async fn run_split_set(
 /// existing per-part pipeline (auto-degradation, convergence retries, .part
 /// temp + promote, enforce_target) with the input trimmed to its slice. The
 /// LAST part takes the remainder so the lengths sum to the exact duration.
-/// Returns the SUM of all part sizes; a failed part aborts the loop (the
-/// caller cleans up the half-set).
+/// Returns the SUM of all part sizes plus the delivered `{path, bytes}` of
+/// every part (in order) so the caller can write ONE journal record for the
+/// whole set; a failed part aborts the loop (the caller cleans up the
+/// half-set). The journal append is the caller's job, gated behind the
+/// post-encode cancel check, so a cancel before delivery records nothing.
 async fn encode_part_set(
     inner: &Arc<Inner>,
     job: &QueuedJob,
     info: &probe::ProbeInfo,
     split: plan::SplitPlan,
     parts: &[PathBuf],
-    preset_hash: &str,
     target_bytes: f64,
-) -> Result<u64, String> {
+) -> Result<(u64, Vec<crate::journal::Output>), String> {
     let n = split.count;
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
@@ -769,6 +783,7 @@ async fn encode_part_set(
     };
 
     let mut total: u64 = 0;
+    let mut delivered: Vec<crate::journal::Output> = Vec::with_capacity(parts.len());
     for (idx, output) in parts.iter().enumerate() {
         let i = idx as u32 + 1;
         let start = split.part_secs * f64::from(i - 1);
@@ -868,10 +883,15 @@ async fn encode_part_set(
             plan.output.display(),
             job.preset.target_mb
         );
-        append_journal(inner, job, &plan.output, preset_hash, actual);
+        // Accumulate this part for the single set-level journal record; the
+        // append happens once in the caller after the whole set is delivered.
+        delivered.push(crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        });
         total += actual;
     }
-    Ok(total)
+    Ok((total, delivered))
 }
 
 /// Set-level reuse probe: `Some(sizes)` when EVERY path in `parts` is a real
@@ -1317,14 +1337,15 @@ fn open_output_location(
     }
 }
 
-/// Records a successful (non-reused) encode in the conversion journal.
-/// Best-effort: skipped silently when the journal isn't managed (tests).
+/// Records a successful (non-reused) encode in the conversion journal as ONE
+/// record per job: `outputs` is the whole delivered set — a single-element
+/// slice for an ordinary job, every part in order for a split set. Best-effort:
+/// skipped silently when the journal isn't managed (tests).
 fn append_journal(
     inner: &Inner,
     job: &QueuedJob,
-    output: &Path,
+    outputs: &[crate::journal::Output],
     preset_hash: &str,
-    output_bytes: u64,
 ) {
     let Some(journal) = inner.app.try_state::<crate::journal::Journal>() else {
         return;
@@ -1344,10 +1365,7 @@ fn append_journal(
     journal.append(crate::journal::ConversionRecord {
         input_path: job.input.to_string_lossy().into_owned(),
         input_bytes,
-        outputs: vec![crate::journal::Output {
-            path: output.to_string_lossy().into_owned(),
-            bytes: output_bytes,
-        }],
+        outputs: outputs.to_vec(),
         preset_hash: preset_hash.to_string(),
         preset_name: job.preset.name.clone(),
         target_mb: job.preset.target_mb,
@@ -2166,6 +2184,14 @@ mod tests {
     // original file is still present (NOT in Trash), the clipboard was not
     // written, and the just-finished output (single file, or every split part
     // plus the now-empty part folder) is gone. Repeat for a split preset.
+
+    // manual: append_journal needs a managed Journal behind an AppHandle, which
+    // the unit/integration harnesses can't build, so the one-record-per-job
+    // contract is checked on-device. A single conversion appends ONE record
+    // with one output (its path/bytes); an N-part split appends exactly ONE
+    // record carrying N outputs (every part's path/bytes, in order) only on
+    // full delivery — a cancel before delivery records nothing. The journal's
+    // own tests cover the resulting outputs[] shape, dedup, and find-by-part.
 
     #[test]
     fn job_state_part_serializes_as_a_pair_under_part() {
