@@ -63,12 +63,51 @@ export function installTauriMock(defaultSettings: Record<string, unknown>): void
   // The shared bridge: a test may have pre-seeded window.__E2E__ via an earlier
   // addInitScript (setMock/seedSettings); merge onto it so those win.
   const seeded = (w.__E2E__ as Partial<E2EBridge> | undefined) ?? undefined;
+
+  // A few flows persist via save_settings and then hard-reload the webview (the
+  // language switch does `location.reload()` so the app re-reads settings in the
+  // new locale). A reload tears down window.__E2E__ — including the recorded
+  // calls and the saved settings — which would lose the very write a spec wants
+  // to assert. So the bridge mirrors calls + settings into sessionStorage (it
+  // survives a same-origin reload but not a new context) and restores them on
+  // re-init. addInitScript runs this BEFORE the seeded overrides re-apply, so a
+  // post-reload boot picks up the persisted (just-saved) settings rather than
+  // snapping back to the seed. Wrapped in try/catch so a storage-less context
+  // degrades to the in-memory bridge.
+  const CALLS_KEY = "__E2E_calls__";
+  const SETTINGS_KEY = "__E2E_settings__";
+  function readStored<T>(key: string): T | undefined {
+    try {
+      const raw = window.sessionStorage.getItem(key);
+      return raw == null ? undefined : (JSON.parse(raw) as T);
+    } catch {
+      return undefined;
+    }
+  }
+  function writeStored(key: string, value: unknown): void {
+    try {
+      window.sessionStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* storage unavailable — in-memory only */
+    }
+  }
+
+  const storedCalls = readStored<E2EBridge["calls"]>(CALLS_KEY);
+  const storedSettings = readStored<Record<string, unknown>>(SETTINGS_KEY);
+
   const bridge: E2EBridge = {
     mocks: (seeded && seeded.mocks) || {},
     listeners: {},
+    // Precedence for the boot settings: a value persisted by an earlier
+    // save_settings (a reload happened) wins, so the reloaded app sees the
+    // just-saved state; then a per-test seed; then the canned default.
     settings:
-      seeded && seeded.settings !== undefined ? seeded.settings : defaultSettings,
-    calls: [],
+      storedSettings !== undefined
+        ? storedSettings
+        : seeded && seeded.settings !== undefined
+          ? seeded.settings
+          : defaultSettings,
+    calls: storedCalls ?? [],
     emit: () => {},
   };
 
@@ -113,6 +152,9 @@ export function installTauriMock(defaultSettings: Record<string, unknown>): void
         // Echo back (and persist) the settings the UI saved, like the backend.
         const next = (args.settings as Record<string, unknown>) ?? bridge.settings;
         bridge.settings = next;
+        // Mirror to sessionStorage so a save-then-reload flow (language switch)
+        // boots into the just-saved state, not the original seed.
+        writeStored(SETTINGS_KEY, next);
         return next;
       }
       case "list_recents":
@@ -211,8 +253,10 @@ export function installTauriMock(defaultSettings: Record<string, unknown>): void
     if (cmd.startsWith("plugin:webview|")) return null;
     if (cmd.startsWith("plugin:")) return null;
 
-    // A real app command: record it and resolve from the mock table.
+    // A real app command: record it (mirroring to sessionStorage so a reload
+    // doesn't lose the call a spec wants to assert) and resolve from the mock.
     bridge.calls.push({ cmd, args: a });
+    writeStored(CALLS_KEY, bridge.calls);
     return resolveMock(cmd, a);
   }
 
