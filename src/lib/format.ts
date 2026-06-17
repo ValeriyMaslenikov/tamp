@@ -6,6 +6,7 @@
 // by host locale, so tests must never assert a bare default-locale string).
 
 import type { SplitConfig } from "./ipc";
+import { t } from "../i18n";
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -59,8 +60,10 @@ export function formatRelativeTime(
   locale?: string,
 ): string {
   const diff = now - ms;
-  if (diff < 60_000) return "Just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 60_000) return t("converted.justNow");
+  if (diff < 3_600_000) {
+    return t("converted.minutesAgo", { count: Math.floor(diff / 60_000) });
+  }
 
   const d = new Date(ms);
   const n = new Date(now);
@@ -68,8 +71,12 @@ export function formatRelativeTime(
     new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.round((startOfDay(n) - startOfDay(d)) / 86_400_000);
 
-  if (dayDiff <= 0) return `${Math.floor(diff / 3_600_000)}h ago`;
-  if (dayDiff === 1) return `Yesterday ${formatClock(ms, locale)}`;
+  if (dayDiff <= 0) {
+    return t("converted.hoursAgo", { count: Math.floor(diff / 3_600_000) });
+  }
+  if (dayDiff === 1) {
+    return t("converted.yesterday", { time: formatClock(ms, locale) });
+  }
 
   const monthDay = new Intl.DateTimeFormat(locale, {
     month: "short",
@@ -116,25 +123,29 @@ export function formatPercentSmaller(
   outB: number,
   locale?: string,
 ): string {
-  if (!(inB > 0)) return "0% smaller";
+  if (!(inB > 0)) return t("converted.percentSmaller", { percent: "0" });
   const pct = Math.max(0, (1 - outB / inB) * 100);
-  return `${formatMagnitude(Math.round(pct * 10) / 10, locale)}% smaller`;
+  const magnitude = formatMagnitude(Math.round(pct * 10) / 10, locale);
+  return t("converted.percentSmaller", { percent: magnitude });
 }
 
-/** Grammatical part count: "1 part" / "4 parts". */
+/** Grammatical part count: "1 part" / "4 parts" (locale-correct plural). */
 export function pluralParts(n: number): string {
-  return n === 1 ? "1 part" : `${n} parts`;
+  return t("units.parts", { count: n });
 }
 
 /** Compact "≈Ns / ≈Nm / ≈Nh" for a by-seconds split interval, rolling up into
  *  minutes/hours above 60/3600 (mirrors formatDuration's tiers) so a 600s
- *  interval reads "≈10m" rather than "≈600s". */
+ *  interval reads "≈10m" rather than "≈600s". The unit token (s/m/h) is
+ *  localized; the ≈ glyph and the number are locale-independent. */
 function approxInterval(seconds: number): string {
-  if (seconds >= 3600 && seconds % 3600 === 0) return `≈${seconds / 3600}h`;
-  if (seconds >= 60 && seconds % 60 === 0) return `≈${seconds / 60}m`;
-  if (seconds >= 3600) return `≈${Math.round(seconds / 3600)}h`;
-  if (seconds >= 60) return `≈${Math.round(seconds / 60)}m`;
-  return `≈${seconds}s`;
+  const unit = (key: string, n: number) =>
+    `≈${n}${t(`converted.intervalUnit.${key}`)}`;
+  if (seconds >= 3600 && seconds % 3600 === 0) return unit("h", seconds / 3600);
+  if (seconds >= 60 && seconds % 60 === 0) return unit("m", seconds / 60);
+  if (seconds >= 3600) return unit("h", Math.round(seconds / 3600));
+  if (seconds >= 60) return unit("m", Math.round(seconds / 60));
+  return unit("s", seconds);
 }
 
 /**
@@ -145,10 +156,10 @@ export function splitSummaryLabel(
   split: SplitConfig | undefined,
 ): string | null {
   if (!split || split.mode === "off") return null;
-  if (split.mode === "smart") return "smart split";
+  if (split.mode === "smart") return t("converted.smartSplit");
   return split.by === "parts"
     ? pluralParts(split.parts)
-    : `split ${approxInterval(split.seconds)}`;
+    : t("converted.splitInterval", { interval: approxInterval(split.seconds) });
 }
 
 /** Middle-ellipsis truncation, keeps the extension visible. Counts/cuts over

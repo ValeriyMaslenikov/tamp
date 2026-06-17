@@ -12,6 +12,7 @@ import { formatAbsolute, formatBytes, formatRelativeTime, pluralParts } from "..
 import { groupConversions, type ConvNode, type ConvPart } from "../lib/convgroup";
 import { showToast } from "../lib/toast";
 import { friendlyError } from "../lib/errors";
+import { t } from "../i18n";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export interface ConvertedView {
@@ -120,7 +121,7 @@ export function createConvertedView(): ConvertedView {
   const doPlay = (p: string) => openFile(p).catch((e) => showToast(friendlyError(e), "error"));
   const doCopy = (p: string) =>
     copyFile(p)
-      .then(() => showToast("Copied to clipboard", "success"))
+      .then(() => showToast(t("converted.copiedToClipboard"), "success"))
       .catch((e) => showToast(friendlyError(e), "error"));
   const doReveal = (p: string) => reveal(p).catch((e) => showToast(friendlyError(e), "error"));
 
@@ -154,7 +155,12 @@ export function createConvertedView(): ConvertedView {
   }
 
   function playButton(outputPath: string): HTMLButtonElement {
-    const play = actionButton("Play", "Play the converted video", PLAY_SVG, "conv-play");
+    const play = actionButton(
+      t("converted.playAria"),
+      t("converted.playTitle"),
+      PLAY_SVG,
+      "conv-play",
+    );
     play.addEventListener("click", (e) => {
       e.stopPropagation();
       pressFeedback(play);
@@ -164,18 +170,22 @@ export function createConvertedView(): ConvertedView {
   }
 
   function copyButton(outputPath: string): HTMLButtonElement {
-    const copy = actionButton("Copy file", "Copy compressed file", COPY_SVG);
+    const copy = actionButton(
+      t("converted.copyFileAria"),
+      t("converted.copyFileTitle"),
+      COPY_SVG,
+    );
     copy.addEventListener("click", (e) => {
       e.stopPropagation();
       copyFile(outputPath)
-        .then(() => showToast("Copied to clipboard", "success"))
+        .then(() => showToast(t("converted.copiedToClipboard"), "success"))
         .catch((err) => showToast(friendlyError(err), "error"));
     });
     return copy;
   }
 
   function revealButton(path: string, title: string): HTMLButtonElement {
-    const rev = actionButton("Reveal", title, REVEAL_SVG);
+    const rev = actionButton(t("converted.revealAria"), title, REVEAL_SVG, "conv-reveal");
     rev.addEventListener("click", (e) => {
       e.stopPropagation();
       pressFeedback(rev);
@@ -192,8 +202,10 @@ export function createConvertedView(): ConvertedView {
     const tip = document.createElement("span");
     tip.className = "conv-tip";
     tip.innerHTML =
-      `<span class="conv-tip-row"><b class="rec">Created</b><span></span></span>` +
-      `<span class="conv-tip-row"><b class="conv">Converted</b><span></span></span>`;
+      `<span class="conv-tip-row"><b class="rec"></b><span></span></span>` +
+      `<span class="conv-tip-row"><b class="conv"></b><span></span></span>`;
+    (tip.querySelector("b.rec") as HTMLElement).textContent = t("converted.tipCreated");
+    (tip.querySelector("b.conv") as HTMLElement).textContent = t("converted.tipConverted");
     const vals = tip.querySelectorAll("span span");
     (vals[0] as HTMLElement).textContent = formatAbsolute(recordedMs);
     (vals[1] as HTMLElement).textContent = formatAbsolute(convertedMs);
@@ -254,7 +266,7 @@ export function createConvertedView(): ConvertedView {
     sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
 
-    r.append(meta, playButton(outputPath), copyButton(outputPath), revealButton(outputPath, "Show in file manager"));
+    r.append(meta, playButton(outputPath), copyButton(outputPath), revealButton(outputPath, t("converted.revealInFileManager")));
     return r;
   }
 
@@ -291,7 +303,7 @@ export function createConvertedView(): ConvertedView {
       size,
       playButton(part.path),
       copyButton(part.path),
-      revealButton(part.path, "Show in file manager"),
+      revealButton(part.path, t("converted.revealInFileManager")),
     );
     return r;
   }
@@ -331,15 +343,19 @@ export function createConvertedView(): ConvertedView {
     sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
 
-    const copyAll = actionButton("Copy all", "Copy all parts", COPY_SVG);
+    const copyAll = actionButton(
+      t("converted.copyAllAria"),
+      t("converted.copyAllTitle"),
+      COPY_SVG,
+    );
     copyAll.addEventListener("click", (e) => {
       e.stopPropagation();
       copyFiles(node.parts.map((p) => p.path))
-        .then(() => showToast("Copied to clipboard", "success"))
+        .then(() => showToast(t("converted.copiedToClipboard"), "success"))
         .catch((err) => showToast(friendlyError(err), "error"));
     });
 
-    parent.append(meta, copyAll, revealButton(node.folder, "Open output folder"));
+    parent.append(meta, copyAll, revealButton(node.folder, t("converted.revealOutputFolder")));
 
     const children = document.createElement("div");
     children.className = "conv-children";
@@ -355,7 +371,7 @@ export function createConvertedView(): ConvertedView {
     rowActions.set(parent, {
       kind: "group",
       copy: () => copyFiles(node.parts.map((p) => p.path))
-        .then(() => showToast("Copied to clipboard", "success")).catch((e) => showToast(friendlyError(e), "error")),
+        .then(() => showToast(t("converted.copiedToClipboard"), "success")).catch((e) => showToast(friendlyError(e), "error")),
       reveal: () => doReveal(node.folder),
       expand, collapse, isOpen,
     });
@@ -413,7 +429,7 @@ export function createConvertedView(): ConvertedView {
       case "r":
         e.preventDefault();
         // Flash the row's Reveal button so a keyboard reveal is acknowledged too.
-        pressFeedback(selEl.querySelector<HTMLElement>('[aria-label="Reveal"]'));
+        pressFeedback(selEl.querySelector<HTMLElement>(".conv-reveal"));
         a.reveal();
         return;
       case "Escape":
@@ -457,7 +473,7 @@ export function createConvertedView(): ConvertedView {
     if (firstLoad && scroll.childElementCount === 0) {
       const loading = document.createElement("div");
       loading.className = "empty";
-      loading.textContent = "Loading…";
+      loading.textContent = t("converted.loading");
       scroll.append(loading);
     }
 
@@ -486,8 +502,7 @@ export function createConvertedView(): ConvertedView {
     if (records.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent =
-        "No conversions yet.\nCompress a video and it'll show up here — including files from outside your watched folders.";
+      empty.textContent = t("converted.empty");
       scroll.append(empty);
       return;
     }

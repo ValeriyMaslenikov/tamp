@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   formatAbsolute,
   formatBytes,
@@ -10,12 +10,18 @@ import {
   splitSummaryLabel,
   truncateMiddle,
 } from "./format";
+import { setLocale } from "../i18n";
 import type { SplitConfig } from "./ipc";
 
 // Intl output is locale-dependent and vitest runs under the host locale, so
 // every locale-sensitive assertion pins an explicit locale ("en-US" for the
 // app's reference convention, a comma-decimal locale for number separators).
 // We never assert a bare default-locale Intl string.
+//
+// The textual LABELS (pluralParts, splitSummaryLabel, formatPercentSmaller now
+// route through the i18n t() runtime, so pin the active dictionary to "en" —
+// these assertions check the English source strings.
+beforeAll(() => setLocale("en"));
 
 const split = (overrides: Partial<SplitConfig> = {}): SplitConfig => ({
   mode: "off",

@@ -80,5 +80,39 @@
       },
       "hint": "It may be offline or you may lack permission."
     }
+  },
+  "converted": {
+    "loading": "Loading…",
+    "empty": "No conversions yet.\nCompress a video and it'll show up here — including files from outside your watched folders.",
+    "tipCreated": "Created",
+    "tipConverted": "Converted",
+    "copiedToClipboard": "Copied to clipboard",
+    "playAria": "Play",
+    "playTitle": "Play the converted video",
+    "copyFileAria": "Copy file",
+    "copyFileTitle": "Copy compressed file",
+    "copyAllAria": "Copy all",
+    "copyAllTitle": "Copy all parts",
+    "revealAria": "Reveal",
+    "revealInFileManager": "Show in file manager",
+    "revealOutputFolder": "Open output folder",
+    "justNow": "Just now",
+    "minutesAgo": {
+      "one": "{count}m ago",
+      "other": "{count}m ago"
+    },
+    "hoursAgo": {
+      "one": "{count}h ago",
+      "other": "{count}h ago"
+    },
+    "yesterday": "Yesterday {time}",
+    "percentSmaller": "{percent}% smaller",
+    "smartSplit": "smart split",
+    "splitInterval": "split {interval}",
+    "intervalUnit": {
+      "s": "s",
+      "m": "m",
+      "h": "h"
+    }
   }
 }

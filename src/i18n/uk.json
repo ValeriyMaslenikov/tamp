@@ -84,5 +84,43 @@
       },
       "hint": "Можливо, вона офлайн або у вас немає доступу."
     }
+  },
+  "converted": {
+    "loading": "Завантаження…",
+    "empty": "Ще немає перетворень.\nСтисніть відео, і воно з'явиться тут — зокрема файли поза вашими відстежуваними теками.",
+    "tipCreated": "Створено",
+    "tipConverted": "Перетворено",
+    "copiedToClipboard": "Скопійовано до буфера обміну",
+    "playAria": "Відтворити",
+    "playTitle": "Відтворити перетворене відео",
+    "copyFileAria": "Копіювати файл",
+    "copyFileTitle": "Копіювати стиснутий файл",
+    "copyAllAria": "Копіювати все",
+    "copyAllTitle": "Копіювати всі частини",
+    "revealAria": "Показати",
+    "revealInFileManager": "Показати у файловому менеджері",
+    "revealOutputFolder": "Відкрити теку виводу",
+    "justNow": "Щойно",
+    "minutesAgo": {
+      "one": "{count} хв тому",
+      "few": "{count} хв тому",
+      "many": "{count} хв тому",
+      "other": "{count} хв тому"
+    },
+    "hoursAgo": {
+      "one": "{count} год тому",
+      "few": "{count} год тому",
+      "many": "{count} год тому",
+      "other": "{count} год тому"
+    },
+    "yesterday": "Учора {time}",
+    "percentSmaller": "менше на {percent}%",
+    "smartSplit": "розумне розбиття",
+    "splitInterval": "розбиття {interval}",
+    "intervalUnit": {
+      "s": "с",
+      "m": "хв",
+      "h": "год"
+    }
   }
 }
