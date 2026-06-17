@@ -245,6 +245,12 @@ impl Platform for Windows {
         // is virtual-key based), so the configured character works as typed.
         accelerator.to_string()
     }
+
+    fn cleanup_legacy_autostart(&self) {
+        // Nothing to clean: the autostart Run value is keyed by the product
+        // name "tamp" (rewritten on enable) and the uninstaller drops it; there
+        // was never a legacy-identifier variant on Windows. See the macOS impl.
+    }
 }
 
 #[cfg(test)]

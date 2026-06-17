@@ -178,8 +178,13 @@ pub fn run() {
             migrate_legacy_data(app.handle());
             let loaded = settings::load(app.handle());
 
-            // The pre-rebrand LaunchAgent pointed at the old bundle
-            // identifier; re-enabling rewrites it against the current app.
+            // Drop any stale launch-at-login agent a pre-rebrand build left
+            // behind (a macOS LaunchAgent named by the legacy bundle id), then
+            // re-enable under the current identity. The modern agent is named by
+            // the rebrand-stable product name, so re-enabling rewrites it in
+            // place; this only sweeps the orphan the rename would miss. No-op on
+            // Windows.
+            platform::native().cleanup_legacy_autostart();
             if loaded.launch_at_login {
                 if let Err(e) = app.autolaunch().enable() {
                     log_warn!("failed to refresh launch-at-login agent: {e}");

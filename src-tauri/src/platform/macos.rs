@@ -103,6 +103,41 @@ impl Platform for MacOs {
         // that types the configured character in the active layout.
         super::rewrite_accelerator_key(accelerator, super::macos_keyboard::layout_token)
     }
+
+    fn cleanup_legacy_autostart(&self) {
+        remove_legacy_launch_agent();
+    }
+}
+
+/// Best-effort removal of a pre-rebrand LaunchAgent plist named by the legacy
+/// bundle identifier. The autostart plugin names its plist by the product name
+/// "tamp" (`~/Library/LaunchAgents/tamp.plist`), which is rebrand-stable and so
+/// gets overwritten on re-enable — but an earlier build that registered the
+/// agent under the old bundle id leaves `com.joystudios.tamp.plist` orphaned,
+/// pointing at a binary that no longer exists. Mirrors the data-side
+/// `migrate_legacy_data` cleanup: keyed off `LEGACY_IDENTIFIER`, runs once at
+/// startup before the current agent is re-enabled, and swallows every error.
+fn remove_legacy_launch_agent() {
+    // ~/Library/LaunchAgents is where per-user agents live; $HOME is always set
+    // for a logged-in macOS session (the autostart plugin resolves it the same
+    // way via dirs::home_dir).
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let plist = PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", crate::LEGACY_IDENTIFIER));
+    if !plist.exists() {
+        return;
+    }
+    match std::fs::remove_file(&plist) {
+        Ok(()) => crate::log_info!("removed legacy LaunchAgent {}", plist.display()),
+        Err(e) => crate::log_warn!(
+            "failed to remove legacy LaunchAgent {}: {e}",
+            plist.display()
+        ),
+    }
 }
 
 /// Lets the panel join the Space of a full-screen app; without
