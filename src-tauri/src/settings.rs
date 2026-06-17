@@ -199,6 +199,16 @@ pub struct Settings {
     /// profile sees it once; the frontend flips it to `true` on dismiss.
     #[serde(default)]
     pub onboarding_seen: bool,
+    /// Whether the opt-in GitHub update check runs on launch. Defaults to
+    /// `false` — off until the first-run consent or the Preferences toggle
+    /// turns it on. The single outbound request sends nothing about the user.
+    #[serde(default)]
+    pub update_check_enabled: bool,
+    /// The newest version the user has already dismissed in the update modal,
+    /// so it never re-nags for it — only a strictly newer release reappears.
+    /// `None` until something is dismissed; old stores read as `None`.
+    #[serde(default)]
+    pub last_dismissed_update_version: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -260,6 +270,8 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         context_menu_enabled: true,
         recents_limit: 50,
         onboarding_seen: false,
+        update_check_enabled: false,
+        last_dismissed_update_version: None,
     }
 }
 
@@ -620,6 +632,37 @@ mod tests {
         assert!(!settings.onboarding_seen);
         let empty: Settings = serde_json::from_str("{}").unwrap();
         assert!(!empty.onboarding_seen);
+    }
+
+    #[test]
+    fn update_check_fields_default_off_for_old_stores() {
+        // Stores written before the update-check feature must load with the
+        // check OFF (privacy: opt-in) and no dismissed version recorded.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.update_check_enabled);
+        assert_eq!(settings.last_dismissed_update_version, None);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.update_check_enabled);
+        assert_eq!(empty.last_dismissed_update_version, None);
+    }
+
+    #[test]
+    fn update_check_fields_round_trip_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.update_check_enabled = true;
+        settings.last_dismissed_update_version = Some("0.3.0-beta.7".into());
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["updateCheckEnabled"], serde_json::json!(true));
+        assert_eq!(
+            json["lastDismissedUpdateVersion"],
+            serde_json::json!("0.3.0-beta.7")
+        );
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert!(back.update_check_enabled);
+        assert_eq!(
+            back.last_dismissed_update_version.as_deref(),
+            Some("0.3.0-beta.7")
+        );
     }
 
     #[test]

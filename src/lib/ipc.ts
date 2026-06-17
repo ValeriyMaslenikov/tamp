@@ -57,6 +57,10 @@ export interface Settings {
   recentsLimit: number;
   /** Whether the one-time first-run notice has been shown and dismissed. */
   onboardingSeen: boolean;
+  /** Whether the opt-in GitHub update check runs on launch (off by default). */
+  updateCheckEnabled: boolean;
+  /** Newest version already dismissed in the update modal; never re-nags for it. */
+  lastDismissedUpdateVersion: string | null;
 }
 
 /**

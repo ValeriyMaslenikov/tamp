@@ -10,6 +10,7 @@ pub mod settings;
 mod shortcuts;
 mod thumbs;
 mod tray;
+mod update_check;
 
 use platform::Platform as _;
 use std::sync::atomic::AtomicBool;
@@ -315,7 +316,8 @@ pub fn run() {
             commands::open_file,
             commands::conversion_thumb,
             commands::recent_thumb,
-            commands::recent_duration
+            commands::recent_duration,
+            update_check::check_for_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
