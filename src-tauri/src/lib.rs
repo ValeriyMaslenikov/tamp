@@ -125,6 +125,33 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
     show_panel_fallback(app);
 }
 
+/// True only when the `TAMP_E2E` env var is exactly `"1"`. Pure (takes the
+/// already-read value) so the guard is unit-testable without touching the
+/// process environment; any other value — including unset (`None`), empty, or
+/// `"0"` — keeps the test mode off.
+fn e2e_mode_enabled(var: Option<&str>) -> bool {
+    var == Some("1")
+}
+
+/// E2E test mode: when `TAMP_E2E=1` is set at startup, surface the panel and
+/// set the session pin so it stays open. The release-only hide-on-blur handler
+/// closes the panel the instant WebDriver's automation window takes focus
+/// (smart-hide); pinning it (the same flag the pin button toggles via
+/// `set_pin`) keeps it attachable so `tauri-driver` can drive the WebView2
+/// window. Strictly guarded by the env var: a complete no-op on every normal
+/// run (the var is never set outside the WDIO harness), so there is zero effect
+/// on shipped behavior.
+fn apply_e2e_mode(app: &AppHandle) {
+    if !e2e_mode_enabled(std::env::var("TAMP_E2E").ok().as_deref()) {
+        return;
+    }
+    log_info!("TAMP_E2E=1: showing and pinning the panel for WebDriver");
+    if let Some(state) = app.try_state::<Pinned>() {
+        state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    show_panel_fallback(app);
+}
+
 /// Whether the panel should hide when it loses focus. It stays open while a
 /// native dialog is up, while pinned, or while the primary mouse button is held
 /// (a drag is in flight and may be heading to us). Only the release-only
@@ -252,6 +279,10 @@ pub fn run() {
             // tamp for the first time, or `tamp <file>` from a shell).
             let argv: Vec<String> = std::env::args().collect();
             compress_file_args(app.handle(), &argv);
+
+            // Guarded test mode (no-op unless TAMP_E2E=1): show + pin the panel
+            // so the tauri-driver smoke suite can attach to the WebView2 window.
+            apply_e2e_mode(app.handle());
             Ok(())
         })
         .on_window_event(|_window, _event| {
@@ -363,6 +394,24 @@ mod arg_tests {
     fn returns_none_without_a_video_arg() {
         let args = vec!["tamp.exe".to_string(), "--toggle".to_string()];
         assert_eq!(first_video_arg(&args), None);
+    }
+}
+
+#[cfg(test)]
+mod e2e_mode_tests {
+    use super::e2e_mode_enabled;
+
+    #[test]
+    fn enabled_only_for_exactly_one() {
+        assert!(e2e_mode_enabled(Some("1")));
+    }
+
+    #[test]
+    fn disabled_when_unset_or_other_value() {
+        assert!(!e2e_mode_enabled(None), "unset");
+        assert!(!e2e_mode_enabled(Some("")), "empty");
+        assert!(!e2e_mode_enabled(Some("0")), "zero");
+        assert!(!e2e_mode_enabled(Some("true")), "true");
     }
 }
 
