@@ -435,8 +435,17 @@ impl Journal {
             .cloned()
     }
 
+    /// Serialize a snapshot under the lock, then write it to disk. The disk
+    /// write is offloaded off the caller (the encode worker) when an async
+    /// runtime is present — `append` runs once per job after Batch 3, and a
+    /// full-file `fs::write` must not block the worker between encodes. When no
+    /// runtime is present (the unit tests, and the one-time migration rewrite in
+    /// `load_from_path`), the write runs synchronously so persistence is
+    /// observable on the very next reload.
     fn persist(&self, records: &[ConversionRecord]) {
         let Some(path) = &self.path else { return };
+        // Serialize the snapshot synchronously (under the caller's lock) so the
+        // offloaded write captures exactly the state at append time.
         let json = match serde_json::to_vec(records) {
             Ok(json) => json,
             Err(e) => {
@@ -444,24 +453,37 @@ impl Journal {
                 return;
             }
         };
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                crate::log_warn!("failed to create conversion journal dir: {e}");
-                return;
-            }
+        let path = path.clone();
+        // Offload the blocking disk write onto a blocking task when a tokio
+        // runtime is running (the encode worker). Outside a runtime (tests /
+        // migration rewrite) write synchronously so a reload sees the record.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tauri::async_runtime::spawn_blocking(move || write_journal(&path, &json));
+        } else {
+            write_journal(&path, &json);
         }
-        // Atomic write: stage to a sibling temp file, then rename over the
-        // target (std::fs::rename replaces atomically on Windows), so a crash
-        // mid-write can never leave a half-written journal.
-        let tmp = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::write(&tmp, &json) {
-            crate::log_warn!("failed to stage conversion journal: {e}");
+    }
+}
+
+/// Atomically write `json` to `path`: stage to a sibling temp file, then rename
+/// over the target (`std::fs::rename` replaces atomically on Windows), so a
+/// crash mid-write can never leave a half-written journal. Best-effort: every
+/// failure is logged, never propagated (persistence is best-effort).
+fn write_journal(path: &Path, json: &[u8]) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            crate::log_warn!("failed to create conversion journal dir: {e}");
             return;
         }
-        if let Err(e) = std::fs::rename(&tmp, path) {
-            crate::log_warn!("failed to persist conversion journal: {e}");
-            let _ = std::fs::remove_file(&tmp);
-        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp, json) {
+        crate::log_warn!("failed to stage conversion journal: {e}");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        crate::log_warn!("failed to persist conversion journal: {e}");
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
