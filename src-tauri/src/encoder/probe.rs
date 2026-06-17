@@ -38,8 +38,10 @@ pub async fn probe_cached(path: &Path) -> Result<ProbeInfo, String> {
 
 /// Cache core, generic over the probe function so tests can inject a
 /// call-counting stub. Returns a cache hit without invoking `probe_fn`; on a
-/// miss it runs `probe_fn`, storing only a successful (`Ok`) result.
-async fn probe_cached_with<F, Fut>(path: &Path, probe_fn: F) -> Result<ProbeInfo, String>
+/// miss it runs `probe_fn`, storing only a successful (`Ok`) result. Public so
+/// the integration suite can exercise the cache via the same injectable path
+/// the in-crate unit test uses — without spawning ffprobe.
+pub async fn probe_cached_with<F, Fut>(path: &Path, probe_fn: F) -> Result<ProbeInfo, String>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<ProbeInfo, String>>,
