@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
+    "sync-version": "bun scripts/sync-version.ts",
     "changeset": "changeset",
     "version": "changeset version",
     "tag": "changeset tag"

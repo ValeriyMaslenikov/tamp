@@ -25,6 +25,22 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+      # Guard main against a -beta version leaking in (a forgotten beta bump
+      # would poison the changesets stable-version computation), and against
+      # Cargo.toml drifting from package.json. Runs before changesets so a bad
+      # version fails loudly instead of being baked into the release PR.
+      - name: Guard version (no -beta, Cargo == package.json)
+        run: |
+          PKG_VERSION="$(jq -r .version package.json)"
+          if [[ "$PKG_VERSION" == *-beta* ]]; then
+            echo "::error::package.json version $PKG_VERSION contains -beta; betas are tag-driven and must never reach main."
+            exit 1
+          fi
+          CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)"
+          if [[ "$PKG_VERSION" != "$CARGO_VERSION" ]]; then
+            echo "::error::version drift: package.json=$PKG_VERSION but src-tauri/Cargo.toml=$CARGO_VERSION. Run 'bun run sync-version'."
+            exit 1
+          fi
       - run: bun install --frozen-lockfile
       - name: Create version PR or tag release
         id: changesets

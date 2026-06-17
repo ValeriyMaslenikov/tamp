@@ -44,19 +44,27 @@ flow, plus the underlying automated/manual mechanics.
 3. The `build` matrix then attaches: macOS DMG (Apple Silicon), Windows NSIS
    x64, and Windows NSIS arm64.
 
-## Beta releases (manual tag, any branch)
+> **Keep the crate version in sync.** `package.json` is the source of truth, but
+> `src-tauri/Cargo.toml`/`Cargo.lock` carry their own version. Run
+> `bun run sync-version` after a version bump to mirror it into the crate (and
+> commit the result). The Release workflow fails on `main` if the two drift, so
+> a forgotten sync is caught before it ships.
+
+## Beta releases (tag-driven, any branch)
 
 Tag-push workflows run the workflow file **at the tagged commit**, so betas
-work from feature branches without touching main:
+work from feature branches without touching main — and the version now comes
+**from the tag**, so there is no `package.json` edit and nothing to revert:
 
-1. On the branch, set a pre-release version in `package.json`
-   (e.g. `0.3.0-beta.1`) and commit.
-2. `git tag v0.3.0-beta.1 && git push origin v0.3.0-beta.1`
-3. The **Beta release** workflow creates a GitHub *prerelease* with the same
-   three installers.
-4. Before merging the branch, revert the version-bump commit — changesets
-   computes the stable version from `package.json`, and a leftover `-beta.N`
-   would corrupt the next bump.
+1. `git tag v0.3.0-beta.1 && git push origin v0.3.0-beta.1`
+2. The **Beta release** workflow derives the version from the tag
+   (`vX.Y.Z-beta.N` → `X.Y.Z-beta.N`), patches `package.json` + the crate
+   version in its ephemeral checkout (`bun run sync-version`), builds, and
+   creates a GitHub *prerelease* with the same three installers.
+
+Because the bump happens only in the throwaway CI checkout, `main`/the branch
+never carries a `-beta` version — the Release workflow's guard rejects one if it
+somehow does, so a leftover `-beta.N` can never poison the next changesets bump.
 
 ## Manual fallback (no CI)
 

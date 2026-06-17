@@ -49,6 +49,16 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
+      # Tag-driven beta version: strip the leading `v` from the tag, patch
+      # package.json to it, then mirror that into Cargo.toml/Cargo.lock. The
+      # checkout is ephemeral, so nothing is committed and there is nothing to
+      # revert — the built installers carry the tag's version with no manual
+      # package.json bump. (vX.Y.Z-beta.N -> X.Y.Z-beta.N.)
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm pkg set version="$VERSION"
+          bun run sync-version
       - run: bun scripts/fetch-ffmpeg.ts
       - name: Build app bundle
         run: bun tauri build
