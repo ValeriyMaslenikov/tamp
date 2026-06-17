@@ -13,5 +13,72 @@
       "one": "{count} part",
       "other": "{count} parts"
     }
+  },
+  "videos": {
+    "empty": "No videos in your watched folders yet — record something!",
+    "noMatch": "No recordings match your filter.",
+    "filterPlaceholder": "Filter recordings…",
+    "addFile": "＋ Add file…",
+    "addFileTitle": "Compress a video from anywhere",
+    "trashGuardHint": "'Move original to Trash' is on, so the original disappears after the first conversion — only one preset per video. Turn the toggle off in Preferences to export several formats.",
+    "metaSize": "Size",
+    "metaLength": "Length",
+    "metaRecorded": "Recorded",
+    "compressedBadge": "compressed",
+    "customChip": "Custom…",
+    "customChipTitle": "One-off conversion with custom settings",
+    "compressWithName": "Compress with {name}",
+    "cancelTitle": "Cancel",
+    "cancelAria": "Cancel conversion",
+    "detailsTitle": "Details (e)",
+    "detailsAria": "Details",
+    "preparingPreview": "Preparing preview…",
+    "previewUnavailable": "Preview unavailable",
+    "copiedToClipboard": "Copied to clipboard",
+    "noVideoFilesInDrop": "No video files in that drop",
+    "activeBar": {
+      "label": "Compress with",
+      "none": "—",
+      "prevTitle": "Previous preset ([)",
+      "prevAria": "Previous preset",
+      "nextTitle": "Next preset (])",
+      "nextAria": "Next preset"
+    },
+    "quickPick": {
+      "title": "Compress with…",
+      "titleMany": "Compress {count} files with…",
+      "dialogAria": "Choose a preset",
+      "custom": "Custom…",
+      "hint": "1–9 apply · ⏎ default · ↑↓ move · esc cancel"
+    },
+    "drop": {
+      "pickPreset": "Drop to pick a preset",
+      "withName": "Drop to compress with {name}"
+    },
+    "footer": {
+      "activeBar": "↑↓ select · ←→ profile · 1–9 quick profile · ⏎ convert · esc back",
+      "quickPick": "↑↓ select · ⏎ pick preset · 1–9 quick profile · e expand · esc back"
+    },
+    "status": {
+      "queued": "Queued",
+      "pass1": "Pass 1",
+      "pass2": "Pass 2",
+      "verifying": "Verifying",
+      "part": " · Part {current}/{total}",
+      "reused": "Already compressed — reused",
+      "retry": "↻ Retry",
+      "retryTitle": "Click to retry with the same preset",
+      "encodingFailed": "Encoding failed",
+      "cancelled": "Cancelled"
+    },
+    "donePartsSize": "{parts} · {size}",
+    "unreachable": {
+      "titleOne": "Couldn't read a watched folder",
+      "titleMany": {
+        "one": "Couldn't read {count} watched folder",
+        "other": "Couldn't read {count} watched folders"
+      },
+      "hint": "It may be offline or you may lack permission."
+    }
   }
 }

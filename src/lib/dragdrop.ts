@@ -4,6 +4,7 @@
 // is the overlay + path filtering + Alt tracking.
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { showToast } from "./toast";
+import { t } from "../i18n";
 
 const VIDEO_EXTS = new Set(["mov", "mp4", "m4v", "webm", "mkv", "avi"]);
 
@@ -46,7 +47,7 @@ export function initDragDrop(deps: DragDropDeps): void {
       overlay.hidden = true;
       const vids = filterVideos(p.paths);
       if (vids.length === 0) {
-        showToast("No video files in that drop");
+        showToast(t("videos.noVideoFilesInDrop"));
         return;
       }
       deps.compressPaths(vids, altHeld);

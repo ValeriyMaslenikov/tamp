@@ -29,6 +29,7 @@ import { stripOutputSuffix } from "../lib/naming";
 import { revealLabel } from "../lib/platform";
 import { showToast } from "../lib/toast";
 import { friendlyError } from "../lib/errors";
+import { t } from "../i18n";
 import { openCustomModal, type CustomModal } from "./custom";
 
 const RUNNING = new Set<Phase>(["pass1", "pass2", "verifying"]);
@@ -51,16 +52,18 @@ function pressFeedback(btn: HTMLElement): void {
   }, 220);
 }
 
-const PHASE_LABELS: Partial<Record<Phase, string>> = {
-  pass1: "Pass 1",
-  pass2: "Pass 2",
-  verifying: "Verifying",
-};
-
-const TRASH_GUARD_HINT =
-  "'Move original to Trash' is on, so the original disappears after the " +
-  "first conversion — only one preset per video. Turn the toggle off in " +
-  "Preferences to export several formats.";
+function phaseLabel(phase: Phase): string {
+  switch (phase) {
+    case "pass1":
+      return t("videos.status.pass1");
+    case "pass2":
+      return t("videos.status.pass2");
+    case "verifying":
+      return t("videos.status.verifying");
+    default:
+      return "";
+  }
+}
 
 function isBusy(j: JobState | undefined): boolean {
   return !!j && (j.phase === "queued" || RUNNING.has(j.phase));
@@ -135,14 +138,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
   const filterInput = document.createElement("input");
   filterInput.type = "text";
   filterInput.className = "input filter-input";
-  filterInput.placeholder = "Filter recordings…";
+  filterInput.placeholder = t("videos.filterPlaceholder");
   filterRow.appendChild(filterInput);
 
   const addBtn = document.createElement("button");
   addBtn.type = "button";
   addBtn.className = "add-file-btn";
-  addBtn.textContent = "＋ Add file…";
-  addBtn.title = "Compress a video from anywhere";
+  addBtn.textContent = t("videos.addFile");
+  addBtn.title = t("videos.addFileTitle");
   addBtn.addEventListener("click", async () => {
     const paths = await pickVideos();
     if (paths.length) compressPaths(paths, false);
@@ -627,8 +630,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     title.className = "folder-notice-title";
     title.textContent =
       unreachable.length === 1
-        ? "Couldn't read a watched folder"
-        : `Couldn't read ${unreachable.length} watched folders`;
+        ? t("videos.unreachable.titleOne")
+        : t("videos.unreachable.titleMany", { count: unreachable.length });
     banner.appendChild(title);
     for (const folder of unreachable) {
       const line = document.createElement("div");
@@ -639,7 +642,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     const hint = document.createElement("div");
     hint.className = "folder-notice-hint";
-    hint.textContent = "It may be offline or you may lack permission.";
+    hint.textContent = t("videos.unreachable.hint");
     banner.appendChild(hint);
     return banner;
   }
@@ -663,8 +666,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (videos.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent =
-        "No videos in your watched folders yet — record something!";
+      empty.textContent = t("videos.empty");
       listScroll.appendChild(empty);
       setSelected(null);
       return;
@@ -686,7 +688,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     noMatch = document.createElement("div");
     noMatch.className = "empty";
-    noMatch.textContent = "No recordings match your filter.";
+    noMatch.textContent = t("videos.noMatch");
     noMatch.hidden = true;
     listScroll.appendChild(noMatch);
     applyFilter(false);
@@ -797,7 +799,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     const label = document.createElement("span");
     label.className = "active-bar-label";
-    label.textContent = "Compress with";
+    label.textContent = t("videos.activeBar.label");
 
     const control = document.createElement("div");
     control.className = "active-bar-control";
@@ -805,20 +807,20 @@ export function createListView(getSettings: () => Settings | null): ListView {
     prev.type = "button";
     prev.className = "active-bar-arrow";
     prev.textContent = "‹";
-    prev.title = "Previous preset ([)";
-    prev.setAttribute("aria-label", "Previous preset");
+    prev.title = t("videos.activeBar.prevTitle");
+    prev.setAttribute("aria-label", t("videos.activeBar.prevAria"));
     prev.tabIndex = -1;
     prev.disabled = s.presets.length < 2;
     prev.addEventListener("click", () => cycleActive(-1));
     const name = document.createElement("span");
     name.className = "active-bar-name";
-    name.textContent = ap ? ap.name : "—";
+    name.textContent = ap ? ap.name : t("videos.activeBar.none");
     const next = document.createElement("button");
     next.type = "button";
     next.className = "active-bar-arrow";
     next.textContent = "›";
-    next.title = "Next preset (])";
-    next.setAttribute("aria-label", "Next preset");
+    next.title = t("videos.activeBar.nextTitle");
+    next.setAttribute("aria-label", t("videos.activeBar.nextAria"));
     next.tabIndex = -1;
     next.disabled = s.presets.length < 2;
     next.addEventListener("click", () => cycleActive(1));
@@ -910,11 +912,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
     // Tab stays inside; closing restores focus to the filter.
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
-    card.setAttribute("aria-label", "Choose a preset");
+    card.setAttribute("aria-label", t("videos.quickPick.dialogAria"));
     const title = document.createElement("div");
     title.className = "quickpick-title";
     title.textContent =
-      paths.length > 1 ? `Compress ${paths.length} files with…` : `Compress with…`;
+      paths.length > 1
+        ? t("videos.quickPick.titleMany", { count: paths.length })
+        : t("videos.quickPick.title");
     card.appendChild(title);
 
     presets.forEach((p, i) => {
@@ -944,7 +948,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
       custom.className = "quickpick-item quickpick-custom";
       custom.innerHTML =
         `<span class="quickpick-num">C</span>` +
-        `<span class="quickpick-name">Custom…</span>`;
+        `<span class="quickpick-name"></span>`;
+      (custom.querySelector(".quickpick-name") as HTMLElement).textContent =
+        t("videos.quickPick.custom");
       custom.addEventListener("click", () => {
         closeQuickPick();
         openCustom(customVideo);
@@ -954,7 +960,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     const hint = document.createElement("div");
     hint.className = "quickpick-hint";
-    hint.textContent = "1–9 apply · ⏎ default · ↑↓ move · esc cancel";
+    hint.textContent = t("videos.quickPick.hint");
     card.appendChild(hint);
 
     overlay.appendChild(card);
@@ -976,7 +982,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
     if (v.isOutput) {
       // Orphaned output: the original is gone, so a click just copies the file.
       copyFile(v.path)
-        .then(() => showToast("Copied to clipboard", "success"))
+        .then(() => showToast(t("videos.copiedToClipboard"), "success"))
         .catch((e) => showToast(friendlyError(e), "error"));
       return;
     }
@@ -1028,15 +1034,17 @@ export function createListView(getSettings: () => Settings | null): ListView {
   function currentDropHint(): string {
     if (layoutMode() === "active-bar") {
       const ap = activePreset();
-      return ap ? `Drop to compress with ${ap.name}` : "Drop to pick a preset";
+      return ap
+        ? t("videos.drop.withName", { name: ap.name })
+        : t("videos.drop.pickPreset");
     }
-    return "Drop to pick a preset";
+    return t("videos.drop.pickPreset");
   }
 
   function footerHint(): string {
     return layoutMode() === "active-bar"
-      ? "↑↓ select · ←→ profile · 1–9 quick profile · ⏎ convert · esc back"
-      : "↑↓ select · ⏎ pick preset · 1–9 quick profile · e expand · esc back";
+      ? t("videos.footer.activeBar")
+      : t("videos.footer.quickPick");
   }
 
   function openCustom(v: RecentVideo): void {
@@ -1097,7 +1105,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       const blocked =
         guardJobs.length > 0 && !allowed.has(btn.dataset.guardPreset ?? "");
       btn.disabled = blocked;
-      btn.title = blocked ? TRASH_GUARD_HINT : btn.dataset.baseTitle ?? "";
+      btn.title = blocked ? t("videos.trashGuardHint") : btn.dataset.baseTitle ?? "";
     }
   }
 
@@ -1157,7 +1165,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       }
       const loading = document.createElement("div");
       loading.className = "preview-loading";
-      loading.textContent = "Preparing preview…";
+      loading.textContent = t("videos.preparingPreview");
       stage.appendChild(loading);
 
       ensurePreview(v.path)
@@ -1171,7 +1179,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         .catch(() => {
           if (expand.dataset.previewToken !== token) return;
           loading.classList.add("is-failed");
-          loading.textContent = "Preview unavailable";
+          loading.textContent = t("videos.previewUnavailable");
         });
     }
 
@@ -1188,7 +1196,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
             "chip" + (p.id === settings.defaultPresetId ? " chip-default" : "");
           chip.textContent = p.name;
           chip.dataset.guardPreset = p.id;
-          chip.dataset.baseTitle = `Compress with ${p.name}`;
+          chip.dataset.baseTitle = t("videos.compressWithName", { name: p.name });
           chip.title = chip.dataset.baseTitle;
           chip.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -1201,9 +1209,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
       const custom = document.createElement("button");
       custom.type = "button";
       custom.className = "chip chip-custom";
-      custom.textContent = "Custom…";
+      custom.textContent = t("videos.customChip");
       custom.dataset.guardPreset = "custom";
-      custom.dataset.baseTitle = "One-off conversion with custom settings";
+      custom.dataset.baseTitle = t("videos.customChipTitle");
       custom.title = custom.dataset.baseTitle;
       custom.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1297,7 +1305,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
       text.textContent = truncateMiddle(stripOutputSuffix(v.name), 28);
       const badge = document.createElement("span");
       badge.className = "badge-compressed";
-      badge.textContent = "compressed";
+      badge.textContent = t("videos.compressedBadge");
       if (v.conversion?.presetName) badge.title = v.conversion.presetName;
       name.append(text, badge);
     } else {
@@ -1319,11 +1327,11 @@ export function createListView(getSettings: () => Settings | null): ListView {
     const meta = document.createElement("div");
     meta.className = "row-meta";
     meta.innerHTML =
-      `<div class="meta"><span class="meta-label">Size</span>` +
+      `<div class="meta"><span class="meta-label">${t("videos.metaSize")}</span>` +
       `<span class="meta-value">${sizeText}</span></div>` +
-      `<div class="meta"><span class="meta-label">Length</span>` +
+      `<div class="meta"><span class="meta-label">${t("videos.metaLength")}</span>` +
       `<span class="meta-value meta-length">${lengthText}</span></div>` +
-      `<div class="meta"><span class="meta-label">Recorded</span>` +
+      `<div class="meta"><span class="meta-label">${t("videos.metaRecorded")}</span>` +
       `<span class="meta-value">${formatRelativeTime(v.createdMs)}</span></div>`;
 
     const status = document.createElement("div");
@@ -1334,8 +1342,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     const cancelBtn = document.createElement("button");
     cancelBtn.type = "button";
     cancelBtn.className = "row-cancel";
-    cancelBtn.title = "Cancel";
-    cancelBtn.setAttribute("aria-label", "Cancel conversion");
+    cancelBtn.title = t("videos.cancelTitle");
+    cancelBtn.setAttribute("aria-label", t("videos.cancelAria"));
     cancelBtn.textContent = "✕";
     cancelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1346,8 +1354,8 @@ export function createListView(getSettings: () => Settings | null): ListView {
     const chevron = document.createElement("button");
     chevron.type = "button";
     chevron.className = "row-chevron";
-    chevron.title = "Details (e)";
-    chevron.setAttribute("aria-label", "Details");
+    chevron.title = t("videos.detailsTitle");
+    chevron.setAttribute("aria-label", t("videos.detailsAria"));
     chevron.textContent = "›";
     chevron.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1404,17 +1412,19 @@ export function createListView(getSettings: () => Settings | null): ListView {
 
     switch (j.phase) {
       case "queued":
-        status.innerHTML = `<span class="status-dim">Queued</span>`;
+        status.innerHTML = `<span class="status-dim">${t("videos.status.queued")}</span>`;
         bar.style.width = "0%";
         break;
       case "pass1":
       case "pass2":
       case "verifying": {
         const pct = Math.min(100, Math.max(0, Math.round(j.progress * 100)));
-        const partLabel = j.part ? ` · Part ${j.part[0]}/${j.part[1]}` : "";
+        const partLabel = j.part
+          ? t("videos.status.part", { current: j.part[0], total: j.part[1] })
+          : "";
         status.innerHTML =
           `<span class="status-pct">${pct}%</span>` +
-          `<span class="status-dim">${PHASE_LABELS[j.phase] ?? ""}${partLabel}</span>`;
+          `<span class="status-dim">${phaseLabel(j.phase)}${partLabel}</span>`;
         bar.style.width = `${pct}%`;
         break;
       }
@@ -1423,11 +1433,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
         // Split jobs produced n part files; outputBytes is their summed size.
         const parts = j.part && j.part[1] > 1 ? j.part[1] : null;
         const outText = parts
-          ? `${parts} parts · ${formatBytes(outB)}`
+          ? t("videos.donePartsSize", {
+              parts: t("units.parts", { count: parts }),
+              size: formatBytes(outB),
+            })
           : formatBytes(outB);
         let html = `<span class="done-stat">${formatBytes(j.inputBytes)} → ${outText}</span>`;
         if (j.reused) {
-          html += `<span class="done-smaller">Already compressed — reused</span>`;
+          html += `<span class="done-smaller">${t("videos.status.reused")}</span>`;
         } else {
           // No above-target note: the backend guarantees a Done job's output
           // is at or under its preset's byte target.
@@ -1449,14 +1462,14 @@ export function createListView(getSettings: () => Settings | null): ListView {
         // sits below the clamped error text via flex-basis:100%.
         status.innerHTML =
           `<span class="row-error"></span>` +
-          `<span class="row-retry" title="Click to retry with the same preset" ` +
+          `<span class="row-retry" title="${t("videos.status.retryTitle")}" ` +
           `style="flex-basis:100%;display:inline-flex;align-items:center;gap:4px;` +
           `margin-top:2px;font-size:11px;font-weight:600;color:var(--danger);` +
-          `opacity:0.85;cursor:pointer">↻ Retry</span>`;
+          `opacity:0.85;cursor:pointer">${t("videos.status.retry")}</span>`;
         const errEl = status.querySelector<HTMLElement>(".row-error");
         if (errEl) {
           // The clamp hides anything past three lines; hover shows it all.
-          const msg = j.error ?? "Encoding failed";
+          const msg = j.error ?? t("videos.status.encodingFailed");
           errEl.textContent = msg;
           errEl.title = msg;
         }
@@ -1464,7 +1477,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         break;
       }
       case "cancelled":
-        status.innerHTML = `<span class="status-dim">Cancelled</span>`;
+        status.innerHTML = `<span class="status-dim">${t("videos.status.cancelled")}</span>`;
         bar.style.width = "0%";
         break;
     }
