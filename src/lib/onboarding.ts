@@ -1,39 +1,44 @@
 import { isWindows } from "./platform";
+import { t } from "../i18n";
 
 /** The reopen shortcut wording, per OS (mirrors the default toggle-panel
- *  accelerator CmdOrCtrl+Alt+O). Pure so it's unit-testable. */
+ *  accelerator CmdOrCtrl+Alt+O). An accelerator string, not localized. Pure so
+ *  it's unit-testable. */
 export function reopenShortcut(windows: boolean): string {
   return windows ? "Ctrl+Alt+O" : "Cmd+Alt+O";
 }
 
 /** Where this OS hides the tray/menu-bar icon — the load-bearing hint, since a
  *  resident menu-bar app is invisible until the user finds its icon. Windows
- *  buries it under the `^` overflow; macOS keeps it in the menu bar. Pure. */
+ *  buries it under the `^` overflow; macOS keeps it in the menu bar. Localized
+ *  via t(); pure so it's unit-testable. */
 export function trayLocationHint(windows: boolean): string {
   return windows
-    ? "tamp now lives in your system tray, near the clock. Windows often hides it under the ^ overflow arrow — drag it out to keep it handy."
-    : "tamp now lives in your menu bar, near the clock at the top-right of your screen.";
+    ? t("onboarding.trayLocationWindows")
+    : t("onboarding.trayLocationMac");
 }
 
 /** The one-line notification rationale shown in the first-run notice, so the
  *  permission prompt that may follow has in-app context: why tamp wants to
- *  notify, and that it's reversible. Pure so it's unit-testable. This is the
- *  "permission priming with context" the onboarding step requires. */
+ *  notify, and that it's reversible. Localized via t(); pure so it's
+ *  unit-testable. This is the "permission priming with context" the onboarding
+ *  step requires. */
 export function notificationPrimingHint(): string {
-  return "tamp may ask to send notifications so it can warn you when your latest recording goes stale — you can change this any time in Preferences.";
+  return t("onboarding.notificationPriming");
 }
 
 /** The calm one-liner above the update-check consent checkbox: it frames the
- *  choice as opt-in and reassuring, not a demand. Pure so it's unit-testable. */
+ *  choice as opt-in and reassuring, not a demand. Localized via t(); pure so
+ *  it's unit-testable. */
 export function updateCheckConsentLine(): string {
-  return "tamp can quietly check for new versions when it starts.";
+  return t("onboarding.updateConsentLine");
 }
 
 /** The privacy sub-label under the consent checkbox: it makes the single
  *  outbound request's scope explicit (a pull to GitHub, nothing about the
- *  user). Pure so it's unit-testable. */
+ *  user). Localized via t(); pure so it's unit-testable. */
 export function updateCheckPrivacyHint(): string {
-  return "Only asks GitHub for the latest version — nothing about you is sent.";
+  return t("onboarding.updatePrivacyHint");
 }
 
 export interface OnboardingNotice {
@@ -62,7 +67,7 @@ export function buildOnboardingNotice(
 
   const title = document.createElement("div");
   title.className = "folder-notice-title";
-  title.textContent = "Welcome to tamp";
+  title.textContent = t("onboarding.title");
   el.appendChild(title);
 
   const where = document.createElement("div");
@@ -72,7 +77,9 @@ export function buildOnboardingNotice(
 
   const reopen = document.createElement("div");
   reopen.className = "folder-notice-hint";
-  reopen.textContent = `Press ${reopenShortcut(windows)} any time to show or hide this panel.`;
+  reopen.textContent = t("onboarding.reopenShortcut", {
+    shortcut: reopenShortcut(windows),
+  });
   el.appendChild(reopen);
 
   // The notification rationale: this is the in-context explanation that must be
@@ -100,7 +107,7 @@ export function buildOnboardingNotice(
   consentText.className = "onboarding-consent-text";
   const consentTitle = document.createElement("span");
   consentTitle.className = "onboarding-consent-title";
-  consentTitle.textContent = "Check for new versions automatically";
+  consentTitle.textContent = t("onboarding.updateConsentTitle");
   const consentSub = document.createElement("span");
   consentSub.className = "onboarding-consent-sub";
   consentSub.textContent = updateCheckPrivacyHint();
@@ -113,7 +120,7 @@ export function buildOnboardingNotice(
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "btn-ghost";
-  dismiss.textContent = "Got it";
+  dismiss.textContent = t("common.gotIt");
   dismiss.addEventListener("click", () => onDismiss(consentBox.checked));
   actions.appendChild(dismiss);
   el.appendChild(actions);

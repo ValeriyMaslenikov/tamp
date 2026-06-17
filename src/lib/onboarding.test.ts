@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   notificationPrimingHint,
   reopenShortcut,
@@ -6,6 +6,11 @@ import {
   updateCheckConsentLine,
   updateCheckPrivacyHint,
 } from "./onboarding";
+import { setLocale } from "../i18n";
+
+// These pure copy helpers now route through t(); pin the locale to English so
+// the assertions check the source-of-truth en.json strings deterministically.
+beforeAll(() => setLocale("en"));
 
 describe("reopenShortcut", () => {
   it("uses Ctrl on Windows", () => {
@@ -52,5 +57,20 @@ describe("update-check consent copy", () => {
     const hint = updateCheckPrivacyHint();
     expect(hint).toContain("GitHub");
     expect(hint.toLowerCase()).toContain("nothing about you");
+  });
+});
+
+describe("onboarding copy is localized through t()", () => {
+  it("returns Ukrainian copy when the locale is uk", () => {
+    setLocale("uk");
+    try {
+      // Cyrillic content proves the helpers resolve through the active dict.
+      expect(trayLocationHint(false)).toContain("рядку меню");
+      expect(notificationPrimingHint()).toContain("сповіщення");
+      expect(updateCheckConsentLine()).toContain("tamp");
+      expect(updateCheckPrivacyHint()).toContain("GitHub");
+    } finally {
+      setLocale("en");
+    }
   });
 });

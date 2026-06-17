@@ -192,5 +192,78 @@
     "splitSeconds": "≈ every N seconds",
     "errSplitParts": "Split parts must be a whole number from 2 to 20",
     "errSplitDuration": "Split duration must be a whole number of seconds (10 or more)"
+  },
+  "onboarding": {
+    "title": "Welcome to tamp",
+    "trayLocationWindows": "tamp now lives in your system tray, near the clock. Windows often hides it under the ^ overflow arrow — drag it out to keep it handy.",
+    "trayLocationMac": "tamp now lives in your menu bar, near the clock at the top-right of your screen.",
+    "reopenShortcut": "Press {shortcut} any time to show or hide this panel.",
+    "notificationPriming": "tamp may ask to send notifications so it can warn you when your latest recording goes stale — you can change this any time in Preferences.",
+    "updateConsentLine": "tamp can quietly check for new versions when it starts.",
+    "updateConsentTitle": "Check for new versions automatically",
+    "updatePrivacyHint": "Only asks GitHub for the latest version — nothing about you is sent."
+  },
+  "update": {
+    "available": "tamp {version} is available",
+    "body": "A newer version of tamp is ready. Update whenever it suits you — this won't change anything until you choose to.",
+    "whatsNew": "What's new",
+    "download": "Download",
+    "later": "Later"
+  },
+  "drawer": {
+    "dismiss": "Dismiss",
+    "titleRunning": "Compressing… {running} running",
+    "titleRunningWithDone": "Compressing… {running} running, {done} done",
+    "titleIdle": "Conversions · {done} done",
+    "queued": "queued",
+    "doneSize": "✓ {size}",
+    "done": "✓ done",
+    "failed": "✕ failed",
+    "copyFile": "Copy compressed file",
+    "reveal": "Show in file manager",
+    "copiedToClipboard": "Copied to clipboard",
+    "cancelled": "Cancelled",
+    "queuedSummary": {
+      "one": "{count} queued",
+      "other": "{count} queued"
+    },
+    "more": {
+      "one": "+{count} more",
+      "other": "+{count} more"
+    }
+  },
+  "custom": {
+    "title": "Custom conversion",
+    "back": "Back",
+    "backTitle": "Back (Esc)",
+    "targetMb": "Target MB",
+    "format": "Format",
+    "maxFps": "Max FPS",
+    "maxWidth": "Max width",
+    "scalePercent": "Scale %",
+    "stripAudio": "Strip audio",
+    "widthScaleHint": "Max width and scale % are mutually exclusive.",
+    "convert": "Convert",
+    "errTargetSize": "Target size must be greater than 0 MB",
+    "errFpsWidthScale": "FPS, width and scale must be positive whole numbers"
+  },
+  "main": {
+    "tabVideos": "Videos",
+    "tabConverted": "Converted",
+    "tabPrefs": "Preferences",
+    "pinTitle": "Keep panel open",
+    "footerVideos": "↑↓ select · ⏎/d default · e expand · esc back",
+    "footerConverted": "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc back",
+    "footerPrefs": "esc back"
+  },
+  "errors": {
+    "generic": "Something went wrong. Check the logs (tray → Open Logs) for details.",
+    "recentsScan": "Couldn't refresh your recordings. Try again.",
+    "noLongerExists": "That file is no longer there — it may have been moved or deleted.",
+    "clipboard": "Couldn't copy the file. Try again, or reveal it in your file manager.",
+    "reveal": "Couldn't show the file in your file manager.",
+    "open": "Couldn't open the file — it may have been moved or deleted.",
+    "ffmpeg": "The video tool hit an error. Check the logs (tray → Open Logs) for details.",
+    "shortcut": "Couldn't update the keyboard shortcut."
   }
 }

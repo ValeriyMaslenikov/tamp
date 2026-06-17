@@ -18,10 +18,11 @@ import { openUpdateModal, shouldShowUpdate } from "./lib/updatemodal";
 import { initPlatform } from "./lib/platform";
 import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
+import { friendlyError } from "./lib/errors";
 import { createConvertedView } from "./views/converted";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
-import { resolveLocale, setLocale } from "./i18n";
+import { resolveLocale, setLocale, t } from "./i18n";
 
 type Tab = "videos" | "converted" | "prefs";
 
@@ -48,14 +49,14 @@ async function main(): Promise<void> {
     <div class="panel">
       <header class="panel-header">
         <div class="seg" role="tablist">
-          <button type="button" class="seg-btn is-active" data-tab="videos" role="tab" id="tab-videos" aria-controls="panel-videos" aria-selected="true" tabindex="0">Videos</button>
-          <button type="button" class="seg-btn" data-tab="converted" role="tab" id="tab-converted" aria-controls="panel-converted" aria-selected="false" tabindex="-1">Converted</button>
-          <button type="button" class="seg-btn" data-tab="prefs" role="tab" id="tab-prefs" aria-controls="panel-prefs" aria-selected="false" tabindex="-1">Preferences</button>
+          <button type="button" class="seg-btn is-active" data-tab="videos" role="tab" id="tab-videos" aria-controls="panel-videos" aria-selected="true" tabindex="0">${t("main.tabVideos")}</button>
+          <button type="button" class="seg-btn" data-tab="converted" role="tab" id="tab-converted" aria-controls="panel-converted" aria-selected="false" tabindex="-1">${t("main.tabConverted")}</button>
+          <button type="button" class="seg-btn" data-tab="prefs" role="tab" id="tab-prefs" aria-controls="panel-prefs" aria-selected="false" tabindex="-1">${t("main.tabPrefs")}</button>
         </div>
-        <button type="button" class="pin-btn" id="pin-btn" aria-pressed="false" title="Keep panel open">📌</button>
+        <button type="button" class="pin-btn" id="pin-btn" aria-pressed="false" title="${t("main.pinTitle")}">📌</button>
       </header>
       <main class="content" id="content"></main>
-      <footer class="panel-footer">↑↓ select · ⏎/d default · e expand · esc back</footer>
+      <footer class="panel-footer">${t("main.footerVideos")}</footer>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </div>`;
 
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
         updateCheckEnabled,
       };
       settings = next;
-      void saveSettings(next).catch((e) => showToast(String(e), "error"));
+      void saveSettings(next).catch((e) => showToast(friendlyError(e), "error"));
     });
     onboardingEl = notice.el;
     panel.insertBefore(notice.el, content);
@@ -223,10 +224,10 @@ async function main(): Promise<void> {
       void listView.refresh();
       listView.focusFilter();
     } else if (tab === "converted") {
-      footer.textContent = "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc back";
+      footer.textContent = t("main.footerConverted");
       void convertedView.refresh();
     } else {
-      footer.textContent = "esc back";
+      footer.textContent = t("main.footerPrefs");
     }
   }
 

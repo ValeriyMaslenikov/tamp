@@ -5,6 +5,7 @@ import { copyFile, reveal, type JobState, type Phase } from "./ipc";
 import { formatBytes } from "./format";
 import { showToast } from "./toast";
 import { friendlyError } from "./errors";
+import { t } from "../i18n";
 
 const RUNNING: ReadonlySet<Phase> = new Set(["queued", "pass1", "pass2", "verifying"]);
 /** Phases that are actively encoding (a queued job hasn't started yet). */
@@ -44,8 +45,10 @@ export function planDrawer(jobs: Iterable<JobState>): DrawerPlan {
   const done = list.filter((j) => j.phase === "done").length;
   const title =
     running > 0
-      ? `Compressing… ${running} running${done ? `, ${done} done` : ""}`
-      : `Conversions · ${done} done`;
+      ? done
+        ? t("drawer.titleRunningWithDone", { running, done })
+        : t("drawer.titleRunning", { running })
+      : t("drawer.titleIdle", { done });
 
   const active = list.filter((j) => ACTIVE.has(j.phase));
   const queued = list.filter((j) => j.phase === "queued");
@@ -75,7 +78,7 @@ export function createDrawer(panel: HTMLElement): Drawer {
   const close = document.createElement("button");
   close.type = "button";
   close.className = "drawer-close";
-  close.setAttribute("aria-label", "Dismiss");
+  close.setAttribute("aria-label", t("drawer.dismiss"));
   close.textContent = "✕";
   head.append(title, close);
   const rowsEl = document.createElement("div");
@@ -169,7 +172,7 @@ export function createDrawer(panel: HTMLElement): Drawer {
     if (RUNNING.has(j.phase)) {
       const pct = Math.round((j.progress ?? 0) * 100);
       tag.className = "drawer-tag run";
-      tag.textContent = j.phase === "queued" ? "queued" : `${pct}%`;
+      tag.textContent = j.phase === "queued" ? t("drawer.queued") : `${pct}%`;
       const bar = document.createElement("div");
       bar.className = "drawer-bar";
       const fill = document.createElement("i");
@@ -179,18 +182,21 @@ export function createDrawer(panel: HTMLElement): Drawer {
       r.append(meta);
     } else if (j.phase === "done") {
       tag.className = "drawer-tag ok";
-      tag.textContent = j.outputBytes != null ? `✓ ${formatBytes(j.outputBytes)}` : "✓ done";
+      tag.textContent =
+        j.outputBytes != null
+          ? t("drawer.doneSize", { size: formatBytes(j.outputBytes) })
+          : t("drawer.done");
       r.append(meta);
       if (j.outputPath) {
         const out = j.outputPath;
-        const revealBtn = actionBtn(REVEAL, "Show in file manager", () => {
+        const revealBtn = actionBtn(REVEAL, t("drawer.reveal"), () => {
           pressFeedback(revealBtn);
           reveal(out).catch((e) => showToast(friendlyError(e), "error"));
         });
         r.append(
-          actionBtn(COPY, "Copy compressed file", () =>
+          actionBtn(COPY, t("drawer.copyFile"), () =>
             copyFile(out)
-              .then(() => showToast("Copied to clipboard", "success"))
+              .then(() => showToast(t("drawer.copiedToClipboard"), "success"))
               .catch((e) => showToast(friendlyError(e), "error")),
           ),
           revealBtn,
@@ -198,7 +204,7 @@ export function createDrawer(panel: HTMLElement): Drawer {
       }
     } else {
       tag.className = "drawer-tag fail";
-      tag.textContent = "✕ failed";
+      tag.textContent = t("drawer.failed");
       r.append(meta);
     }
     return r;
@@ -249,10 +255,12 @@ export function createDrawer(panel: HTMLElement): Drawer {
     rowsEl.innerHTML = "";
     for (const j of plan.rows) rowsEl.append(rowFor(j));
     if (plan.queuedSummary > 0) {
-      rowsEl.append(summaryRow(`${plan.queuedSummary} queued`));
+      rowsEl.append(
+        summaryRow(t("drawer.queuedSummary", { count: plan.queuedSummary })),
+      );
     }
     if (plan.overflow > 0) {
-      rowsEl.append(summaryRow(`+${plan.overflow} more`));
+      rowsEl.append(summaryRow(t("drawer.more", { count: plan.overflow })));
     }
     publishHeight();
   }
@@ -264,7 +272,7 @@ export function createDrawer(panel: HTMLElement): Drawer {
   function flashCancelled(): void {
     clearFlash();
     el.hidden = false;
-    title.textContent = "Cancelled";
+    title.textContent = t("drawer.cancelled");
     rowsEl.innerHTML = "";
     publishHeight();
     flashTimer = window.setTimeout(() => {

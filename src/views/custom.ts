@@ -17,6 +17,8 @@ import {
 } from "../lib/forms";
 import { truncateMiddle } from "../lib/format";
 import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
+import { t } from "../i18n";
 
 export interface CustomModal {
   el: HTMLElement;
@@ -39,7 +41,7 @@ export function openCustomModal(opts: {
   // within the page and Shift+Tab from the first control wraps to the last.
   el.setAttribute("role", "dialog");
   el.setAttribute("aria-modal", "true");
-  el.setAttribute("aria-label", "Custom conversion");
+  el.setAttribute("aria-label", t("custom.title"));
 
   // The trap is registered on open and torn down on close. Capturing Tab inside
   // the dialog cycles focus across its focusable controls (Shift+Tab reverses).
@@ -78,15 +80,15 @@ export function openCustomModal(opts: {
   const back = document.createElement("button");
   back.type = "button";
   back.className = "modal-back";
-  back.title = "Back (Esc)";
-  back.setAttribute("aria-label", "Back");
+  back.title = t("custom.backTitle");
+  back.setAttribute("aria-label", t("custom.back"));
   back.textContent = "‹";
   back.addEventListener("click", close);
   const titles = document.createElement("div");
   titles.className = "modal-titles";
   const title = document.createElement("div");
   title.className = "modal-title";
-  title.textContent = "Custom conversion";
+  title.textContent = t("custom.title");
   const subtitle = document.createElement("div");
   subtitle.className = "modal-subtitle";
   subtitle.textContent = truncateMiddle(video.name, 44);
@@ -117,39 +119,42 @@ export function openCustomModal(opts: {
 
   const split = splitControl();
 
-  const audio = switchRow("Strip audio", false);
+  const audio = switchRow(t("custom.stripAudio"), false);
 
   const grid1 = document.createElement("div");
   grid1.className = "field-grid";
-  grid1.append(field("Target MB", targetInput), field("Format", formatInput));
+  grid1.append(
+    field(t("custom.targetMb"), targetInput),
+    field(t("custom.format"), formatInput),
+  );
 
   const grid2 = document.createElement("div");
   grid2.className = "field-grid field-grid-3";
   grid2.append(
-    field("Max FPS", fpsInput),
-    field("Max width", widthInput),
-    field("Scale %", scaleInput),
+    field(t("custom.maxFps"), fpsInput),
+    field(t("custom.maxWidth"), widthInput),
+    field(t("custom.scalePercent"), scaleInput),
   );
 
   const hint = document.createElement("div");
   hint.className = "field-hint";
-  hint.textContent = "Max width and scale % are mutually exclusive.";
+  hint.textContent = t("custom.widthScaleHint");
 
   const convert = document.createElement("button");
   convert.type = "button";
   convert.className = "btn-primary btn-block modal-convert";
-  convert.textContent = "Convert";
+  convert.textContent = t("custom.convert");
   convert.addEventListener("click", () => {
     const target = Number(targetInput.value);
     if (!(target > 0)) {
-      showToast("Target size must be greater than 0 MB");
+      showToast(t("custom.errTargetSize"));
       return;
     }
     const fps = parseOptionalPositiveInt(fpsInput.value);
     const width = parseOptionalPositiveInt(widthInput.value);
     const scale = parseOptionalPositiveInt(scaleInput.value);
     if (fps === undefined || width === undefined || scale === undefined) {
-      showToast("FPS, width and scale must be positive whole numbers");
+      showToast(t("custom.errFpsWidthScale"));
       return;
     }
     const splitRead = split.read();
@@ -174,7 +179,7 @@ export function openCustomModal(opts: {
       })
       .catch((e) => {
         convert.disabled = false;
-        showToast(String(e));
+        showToast(friendlyError(e), "error");
       });
   });
 

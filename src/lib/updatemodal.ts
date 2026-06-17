@@ -5,6 +5,7 @@
 // newer one reappears.
 
 import { openUrl, type UpdateInfo } from "./ipc";
+import { t } from "../i18n";
 
 /**
  * Pure decision: should the update modal be shown for `info`? True only when an
@@ -64,14 +65,13 @@ export function openUpdateModal(opts: {
   const title = document.createElement("div");
   title.className = "quickpick-title update-title";
   title.id = "update-modal-title";
-  title.textContent = `tamp ${info.version} is available`;
+  title.textContent = t("update.available", { version: info.version });
   card.setAttribute("aria-labelledby", title.id);
   card.appendChild(title);
 
   const line = document.createElement("div");
   line.className = "update-line";
-  line.textContent =
-    "A newer version of tamp is ready. Update whenever it suits you — this won't change anything until you choose to.";
+  line.textContent = t("update.body");
   card.appendChild(line);
 
   const actions = document.createElement("div");
@@ -82,7 +82,7 @@ export function openUpdateModal(opts: {
   const whatsNew = document.createElement("button");
   whatsNew.type = "button";
   whatsNew.className = "btn-ghost";
-  whatsNew.textContent = "What's new";
+  whatsNew.textContent = t("update.whatsNew");
   whatsNew.addEventListener("click", () => {
     void openUrl(info.url).catch(() => {});
     dismiss();
@@ -91,7 +91,7 @@ export function openUpdateModal(opts: {
   const download = document.createElement("button");
   download.type = "button";
   download.className = "btn-primary";
-  download.textContent = "Download";
+  download.textContent = t("update.download");
   download.addEventListener("click", () => {
     void openUrl(info.url).catch(() => {});
     dismiss();
@@ -100,7 +100,7 @@ export function openUpdateModal(opts: {
   const later = document.createElement("button");
   later.type = "button";
   later.className = "btn-ghost";
-  later.textContent = "Later";
+  later.textContent = t("update.later");
   later.addEventListener("click", () => dismiss());
 
   actions.append(whatsNew, download, later);
