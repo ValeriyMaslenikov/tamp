@@ -429,6 +429,19 @@ async fn run_single(
         None => probe::probe_cached(&job.input).await?,
     };
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
+    // The output (and its `.part` temp sibling) is upgraded to the `\\?\`
+    // verbatim form at the write boundary so an everyday deep OneDrive/synced
+    // path past the legacy 260 MAX_PATH still writes on a default Windows.
+    // Only an UNFIXABLE over-length path (a component past the 255-char cap)
+    // is rejected here with an actionable error instead of a low-level ffmpeg
+    // failure.
+    // manual: on a default-off-LongPaths Windows, a recording in a deeply
+    // nested path (output > 260) now compresses instead of failing with
+    // "cannot move finished output into place"; an unavoidably-too-long path
+    // (a 256+ char name) fails with output_too_long_error() up front.
+    if plan::path_too_long(&plan.output) {
+        return Err(output_too_long_error());
+    }
     if plan.auto_fps.is_some() || plan.auto_width.is_some() {
         let caps: Vec<String> = plan
             .auto_fps
@@ -537,7 +550,7 @@ async fn run_single(
             job.id,
             plan.output.display()
         );
-        let _ = std::fs::remove_file(&plan.output);
+        let _ = std::fs::remove_file(plan::to_verbatim(&plan.output));
         return Err(CANCELLED_ERR.to_string());
     }
 
@@ -551,8 +564,14 @@ async fn run_single(
     // Defense in depth: the engines above already enforced the target on the
     // part file before renaming it onto plan.output, but a Done job must
     // NEVER carry an over-target output, so re-verify the delivered file one
-    // last time and fail (removing it) on any violation.
-    let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+    // last time and fail (removing it) on any violation. Stat via the verbatim
+    // form so a delivered path past 260 on Windows still resolves.
+    let actual = enforce_target(
+        &plan::to_verbatim(&plan.output),
+        actual,
+        target_bytes,
+        job.preset.target_mb,
+    )?;
 
     crate::log_info!(
         "job {}: done — {} -> {} ({actual} bytes, target {} MB)",
@@ -613,6 +632,13 @@ async fn run_split_set(
         job.preset.format,
         n,
     );
+    // A split adds a folder level + a `.part` sibling, the longest path of the
+    // job. The folder/parts are written via the `\\?\` verbatim form below, so
+    // only an UNFIXABLE over-length part (a component past the 255-char cap) is
+    // rejected here with an actionable error.
+    if parts.iter().any(|p| plan::path_too_long(p)) {
+        return Err(output_too_long_error());
+    }
     crate::log_info!(
         "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
         job.id,
@@ -659,7 +685,10 @@ async fn run_split_set(
     // clean folder (clears any stale parts from a prior geometry of this
     // hash), then encode the whole set onto the now-free expected paths.
     let folder = plan::expected_part_folder(&job.input, &job.preset.name, preset_hash);
-    if let Err(e) = plan::reset_dir(&folder) {
+    // Create the part folder via the `\\?\` verbatim form so a folder path
+    // past the legacy 260 MAX_PATH on Windows still resolves; the error keeps
+    // the clean, non-verbatim path for the message.
+    if let Err(e) = plan::reset_dir(&plan::to_verbatim(&folder)) {
         return Err(format!(
             "cannot prepare output folder {}: {e}",
             folder.display()
@@ -728,10 +757,13 @@ async fn run_split_set(
             // already cleared older files at these names, so everything here
             // is THIS run's own debris.
             for part in &parts {
-                if part.exists() {
-                    let _ = std::fs::remove_file(part);
+                // Route exists()/remove through the verbatim form so cleanup of
+                // a deep-tree part path past 260 on Windows is not a no-op.
+                let part_v = plan::to_verbatim(part);
+                if part_v.exists() {
+                    let _ = std::fs::remove_file(&part_v);
                 }
-                let tmp = plan::part_path(part);
+                let tmp = plan::to_verbatim(&plan::part_path(part));
                 if tmp.exists() {
                     let _ = std::fs::remove_file(&tmp);
                 }
@@ -875,8 +907,14 @@ async fn encode_part_set(
         };
 
         // The same defense in depth as the single-output path: a delivered
-        // part must NEVER be over target.
-        let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+        // part must NEVER be over target. Stat via the verbatim form so a
+        // delivered deep-tree part path past 260 on Windows still resolves.
+        let actual = enforce_target(
+            &plan::to_verbatim(&plan.output),
+            actual,
+            target_bytes,
+            job.preset.target_mb,
+        )?;
         crate::log_info!(
             "job {}: part {i}/{n} done — {} ({actual} bytes, target {} MB)",
             job.id,
@@ -1027,6 +1065,14 @@ fn should_deliver(is_cancelled: bool) -> bool {
 /// ([`run_ffmpeg_with_progress`] returns `"cancelled"`) for consistency.
 const CANCELLED_ERR: &str = "cancelled";
 
+/// The actionable error surfaced when the intended output (or a split part) is
+/// too long to write even with `\\?\` verbatim handling — a single path
+/// component past the filesystem's name cap. Points the user at the real fix
+/// (a shorter folder) instead of a low-level ffmpeg/rename failure.
+fn output_too_long_error() -> String {
+    "Output path is too long — move the recording to a shorter folder".to_string()
+}
+
 /// Final guarantee before a job goes Done: re-stat the output and confirm it
 /// fits the byte target. On violation the file is removed and the job fails
 /// with the actionable error — an oversized file must never be delivered.
@@ -1082,7 +1128,11 @@ fn promote_part(
     target_bytes: f64,
 ) -> Result<u64, String> {
     let actual = enforce_target(part, expected_len, target_bytes, target_bytes / 1_000_000.0)?;
-    if let Err(e) = std::fs::rename(part, output) {
+    // The `part` is already verbatim (the engine wrote it that way); address
+    // the rename DEST in the same `\\?\` form so a final path past the legacy
+    // 260 MAX_PATH on Windows can still be written. No-op off Windows.
+    let dest = plan::to_verbatim(output);
+    if let Err(e) = std::fs::rename(part, &dest) {
         let _ = std::fs::remove_file(part);
         return Err(format!("cannot move finished output into place: {e}"));
     }
@@ -1113,7 +1163,11 @@ pub async fn run_video_convergence(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<u64, String> {
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // ffmpeg writes the `.part` temp; on Windows that path can sit past the
+    // legacy 260 MAX_PATH in a deep synced tree, so address it in the `\\?\`
+    // verbatim form. The stored/displayed `plan.output` stays the clean,
+    // non-verbatim path; only the write boundary is upgraded.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = convergence_attempts(
         &mut work,
         info,
@@ -1510,7 +1564,9 @@ pub async fn run_gif(
         .gif
         .ok_or("gif plan is missing its palette parameters")?;
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // See run_video_convergence: write the `.part` via the `\\?\` verbatim
+    // form so a deep Windows path past 260 still encodes.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = gif_attempts(
         &work,
         info,

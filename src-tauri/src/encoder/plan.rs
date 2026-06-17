@@ -577,6 +577,89 @@ pub fn reset_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
+/// The legacy Windows `MAX_PATH` (drive letter + `:\` + 256 + NUL). Paths at or
+/// beyond this length fail on a default-configured Windows (LongPathsEnabled
+/// off) unless they are addressed in the `\\?\` verbatim form.
+pub const LEGACY_MAX_PATH: usize = 260;
+
+/// Longest single path component NTFS/exFAT/ReFS accept (the file/dir name).
+/// The `\\?\` verbatim form lifts the whole-path 260 limit to ~32767 but does
+/// NOT raise this per-component cap, so a single name past it is unfixable.
+const MAX_COMPONENT: usize = 255;
+
+/// Whether `path` is too long to write even with `\\?\` verbatim handling, so
+/// the caller can surface an actionable "shorter folder" error instead of
+/// letting ffmpeg fail with a low-level message. Pure (no filesystem access),
+/// so it is the same on every OS — a single component past [`MAX_COMPONENT`]
+/// is unfixable, and a whole path that even the extended verbatim limit
+/// (~32767 UTF-16 code units) can't hold is hopeless. The everyday >260
+/// case is NOT flagged here: [`to_verbatim`] rescues it.
+pub fn path_too_long(path: &Path) -> bool {
+    if path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .any(|c| c.chars().count() > MAX_COMPONENT)
+    {
+        return true;
+    }
+    // The verbatim form maxes out near 32767 UTF-16 code units; approximate
+    // with the lossy char count — anything close is already pathological.
+    path.to_string_lossy().chars().count() >= 32767
+}
+
+/// The `\\?\` verbatim/extended-length form of an absolute Windows `path`, so
+/// ffmpeg can write outputs/temp/parts that sit past the legacy 260 `MAX_PATH`
+/// on a default-configured Windows. Canonicalizes the nearest EXISTING
+/// ancestor (which yields a `\\?\` prefix on Windows) and re-appends the
+/// not-yet-created tail, so it works for the output/part files before they
+/// exist. Returns the path unchanged when it is already verbatim, when no
+/// ancestor exists, or on any canonicalize error — a best-effort upgrade that
+/// never makes the path worse. No-op on non-Windows targets.
+#[cfg(windows)]
+pub fn to_verbatim(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    // Already `\\?\...` (verbatim) or a `\\?\UNC\...` — nothing to do.
+    if matches!(
+        path.components().next(),
+        Some(Component::Prefix(p))
+            if matches!(p.kind(), Prefix::VerbatimDisk(_) | Prefix::Verbatim(_) | Prefix::VerbatimUNC(_, _))
+    ) {
+        return path.to_path_buf();
+    }
+
+    // Walk up to the nearest ancestor that exists on disk, remembering the
+    // tail components we stepped over so they can be re-appended verbatim.
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut existing = path;
+    loop {
+        if existing.exists() {
+            break;
+        }
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                existing = parent;
+            }
+            _ => return path.to_path_buf(), // no existing ancestor — give up
+        }
+    }
+    let Ok(mut canonical) = std::fs::canonicalize(existing) else {
+        return path.to_path_buf();
+    };
+    for name in tail.iter().rev() {
+        canonical.push(name);
+    }
+    canonical
+}
+
+/// No-op on non-Windows: those filesystems carry no 260-char `MAX_PATH` limit,
+/// so paths are written as built.
+#[cfg(not(windows))]
+pub fn to_verbatim(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 /// The single token a sibling of the base output carries between the base
 /// stem (minus its closing paren) and ").{ext}": Some("2") for
 /// "clip (tamped 823f 2).mp4" against base "clip (tamped 823f)" / "mp4".
@@ -1820,5 +1903,59 @@ mod tests {
         );
         let stem = out.file_stem().unwrap().to_str().unwrap();
         assert_eq!(output_original_stem(stem), Some("clip"));
+    }
+
+    #[test]
+    fn path_too_long_flags_only_the_unfixable_cases() {
+        // An everyday deep path past the legacy 260 MAX_PATH is NOT flagged —
+        // to_verbatim rescues it. (~320 chars of nested 40-char folders, each
+        // well under the per-component cap.)
+        let folder = "0123456789abcdefghijklmnopqrstuvwxyz1234"; // 40 chars
+        let deep = [folder; 8].join("/");
+        assert!(deep.chars().count() > LEGACY_MAX_PATH);
+        assert!(!path_too_long(Path::new(&format!("/root/{deep}/clip.mp4"))));
+
+        // A single component past the 255-char NTFS cap is unfixable even with
+        // verbatim handling, so it IS flagged.
+        let huge_name = "x".repeat(MAX_COMPONENT + 1);
+        assert!(path_too_long(Path::new(&format!("/root/{huge_name}.mp4"))));
+
+        // A name exactly at the cap is fine.
+        let max_name = "y".repeat(MAX_COMPONENT);
+        assert!(!path_too_long(Path::new(&format!("/root/{max_name}"))));
+
+        // A short, ordinary path is never flagged.
+        assert!(!path_too_long(Path::new("/root/clip (tamped 823f).mp4")));
+    }
+
+    #[test]
+    fn to_verbatim_is_a_noop_off_windows() {
+        // On non-Windows there is no 260 MAX_PATH, so the path is returned
+        // byte-for-byte regardless of its length.
+        #[cfg(not(windows))]
+        {
+            let p = Path::new("/definitely/missing/clip (tamped 823f).mp4");
+            assert_eq!(to_verbatim(p), p);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn to_verbatim_upgrades_to_extended_form_and_leaves_verbatim_paths_alone() {
+        // An already-verbatim path is returned untouched (no double-prefix).
+        let v = Path::new(r"\\?\C:\some\dir\out.mp4");
+        assert_eq!(to_verbatim(v), v);
+
+        // An absolute path whose root exists is upgraded to the `\\?\`
+        // extended-length form, with the not-yet-created tail re-appended.
+        let tmp = std::env::temp_dir();
+        let target = tmp.join("tamp-missing-dir").join("clip (tamped 823f).mp4");
+        let out = to_verbatim(&target);
+        let s = out.to_string_lossy();
+        assert!(
+            s.starts_with(r"\\?\"),
+            "expected a verbatim prefix, got {s}"
+        );
+        assert!(s.ends_with(r"clip (tamped 823f).mp4"), "tail dropped: {s}");
     }
 }
