@@ -7,6 +7,7 @@ import {
   requestNotificationPermission,
   saveSettings,
   setContextMenu,
+  type LocaleSetting,
   type NotificationPermission,
   type OpenAfterConvert,
   type OutputFormat,
@@ -464,7 +465,7 @@ export function createPreferencesView(opts: {
     return card;
   }
 
-  /** Theme picker (system / light / dark). */
+  /** Theme + language pickers. */
   function appearanceCard(): HTMLElement {
     const s = current as Settings;
     const card = document.createElement("div");
@@ -482,6 +483,29 @@ export function createPreferencesView(opts: {
           void persist((d) => {
             d.theme = v;
           }),
+      ),
+      // The autonyms ("English"/"Українська") stay in their own language in
+      // every locale so a user can always recognize their language.
+      radioRow<LocaleSetting>(
+        "Language",
+        s.locale,
+        [
+          { value: "system", label: "System" },
+          { value: "en", label: "English" },
+          { value: "uk", label: "Українська" },
+        ],
+        (v) => {
+          // Persist, then hard-reload so the whole webview re-reads settings
+          // and re-renders fully localized — the simplest reliable apply. A
+          // failed save shows a toast (via persist) and skips the reload, so
+          // the controls snap back to the persisted language.
+          // manual: switching language reloads the panel into the new locale.
+          void persist((d) => {
+            d.locale = v;
+          }).then((ok) => {
+            if (ok) location.reload();
+          });
+        },
       ),
     );
     return card;

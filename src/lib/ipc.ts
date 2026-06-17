@@ -61,7 +61,13 @@ export interface Settings {
   updateCheckEnabled: boolean;
   /** Newest version already dismissed in the update modal; never re-nags for it. */
   lastDismissedUpdateVersion: string | null;
+  /** UI language: "system" follows the browser language; "en"/"uk" pin it. */
+  locale: LocaleSetting;
 }
+
+/** The persisted UI-language choice. "system" resolves from the browser
+ *  language at startup; "en"/"uk" pin the locale. */
+export type LocaleSetting = "system" | "en" | "uk";
 
 /**
  * Notification permission as a lowercase string. "unsupported" means the state

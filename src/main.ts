@@ -20,12 +20,28 @@ import { initToast, showToast } from "./lib/toast";
 import { createConvertedView } from "./views/converted";
 import { createListView } from "./views/list";
 import { createPreferencesView } from "./views/preferences";
+import { resolveLocale, setLocale } from "./i18n";
 
 type Tab = "videos" | "converted" | "prefs";
 
-function main(): void {
+async function main(): Promise<void> {
   const app = document.getElementById("app");
   if (!app) return;
+
+  // Resolve the platform and the persisted settings BEFORE building any view,
+  // so the very first render is in the right locale (and per-OS labels don't
+  // flash). `setLocale` swaps the active dictionary the views read through
+  // t(); a failure here leaves the "en" default + null settings, and the
+  // views render from defaults until the retry below succeeds.
+  let settings: Settings | null = null;
+  await initPlatform();
+  try {
+    settings = await getSettings();
+    setLocale(resolveLocale(settings.locale, navigator.language));
+  } catch {
+    // Leave settings null and the locale at its "en" default; the IIFE below
+    // re-fetches and surfaces the error via a toast once the panel is built.
+  }
 
   app.innerHTML = `
     <div class="panel">
@@ -52,8 +68,6 @@ function main(): void {
     pinBtn.setAttribute("aria-pressed", String(pinned));
     void setPin(pinned);
   });
-
-  let settings: Settings | null = null;
 
   const listView = createListView(() => settings);
   const convertedView = createConvertedView();
@@ -292,12 +306,12 @@ function main(): void {
   });
 
   void (async () => {
-    // Platform resolves before the first render so per-OS labels (reveal
-    // button) never flash the wrong OS's wording.
-    await initPlatform();
+    // Platform + the locale-deciding settings were resolved before the views
+    // were built (so the first render is in the right locale). Reuse that
+    // fetch when it succeeded; only re-fetch if the early load failed.
     setTab("videos");
     try {
-      settings = await getSettings();
+      if (!settings) settings = await getSettings();
       applyTheme(settings.theme);
       prefsView.render(settings);
       listView.onSettingsChanged();
@@ -319,7 +333,7 @@ function main(): void {
   })();
 }
 
-window.addEventListener("DOMContentLoaded", main);
+window.addEventListener("DOMContentLoaded", () => void main());
 
 // Dev-only test hook: drop an autotest.json in public/ to trigger an encode
 // through the real IPC path without UI interaction. Either

@@ -209,6 +209,11 @@ pub struct Settings {
     /// `None` until something is dismissed; old stores read as `None`.
     #[serde(default)]
     pub last_dismissed_update_version: Option<String>,
+    /// UI language: `"system"` (resolved from the browser language, the
+    /// default), `"en"`, or `"uk"`. Stores written before the field existed
+    /// read as `"system"`.
+    #[serde(default = "default_locale")]
+    pub locale: String,
 }
 
 fn default_true() -> bool {
@@ -229,6 +234,10 @@ fn default_stale_warn_minutes() -> u32 {
 
 fn default_recents_limit() -> usize {
     50
+}
+
+fn default_locale() -> String {
+    "system".into()
 }
 
 pub struct SettingsState(pub Mutex<Settings>);
@@ -272,6 +281,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         onboarding_seen: false,
         update_check_enabled: false,
         last_dismissed_update_version: None,
+        locale: default_locale(),
     }
 }
 
@@ -384,6 +394,9 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     }
     if !(1..=200).contains(&settings.recents_limit) {
         return Err("recent videos shown must be between 1 and 200".into());
+    }
+    if !matches!(settings.locale.as_str(), "system" | "en" | "uk") {
+        return Err(format!("unsupported locale \"{}\"", settings.locale));
     }
     Ok(())
 }
@@ -677,6 +690,40 @@ mod tests {
         for limit in [1, 50, 200] {
             settings.recents_limit = limit;
             assert!(validate(&settings).is_ok(), "{limit}");
+        }
+    }
+
+    #[test]
+    fn locale_defaults_to_system_for_old_stores() {
+        // Stores written before the locale field existed must read as
+        // "system" so the UI follows the browser language.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert_eq!(settings.locale, "system");
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.locale, "system");
+    }
+
+    #[test]
+    fn locale_round_trips_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.locale = "uk".into();
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["locale"], serde_json::json!("uk"));
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.locale, "uk");
+    }
+
+    #[test]
+    fn validate_accepts_known_locales_and_rejects_others() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        for locale in ["system", "en", "uk"] {
+            settings.locale = locale.into();
+            assert!(validate(&settings).is_ok(), "{locale}");
+        }
+        for locale in ["", "fr", "EN", "uk-UA"] {
+            settings.locale = locale.into();
+            let err = validate(&settings).unwrap_err();
+            assert!(err.contains("unsupported locale"), "{err}");
         }
     }
 
