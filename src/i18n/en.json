@@ -265,5 +265,9 @@
     "open": "Couldn't open the file — it may have been moved or deleted.",
     "ffmpeg": "The video tool hit an error. Check the logs (tray → Open Logs) for details.",
     "shortcut": "Couldn't update the keyboard shortcut."
+  },
+  "platform": {
+    "revealFinder": "Reveal in Finder",
+    "revealExplorer": "Show in Explorer"
   }
 }

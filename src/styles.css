@@ -157,6 +157,7 @@ textarea {
 
 .seg-btn {
   flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   color: var(--text-dim);
@@ -167,6 +168,13 @@ textarea {
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  /* i18n: keep each tab on one line and clip rather than wrap — Ukrainian
+     labels (e.g. "Перетворені") run a touch wider than the English, and a wrap
+     would jump the header height. Equal flex:1 + min-width:0 lets them share
+     the row; the panel is wide enough that no label actually truncates. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .seg-btn:hover {

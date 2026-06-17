@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveLocale, setLocale, t } from "./index";
+import en from "./en.json";
+import uk from "./uk.json";
 
 // t() reads module-level active state, so reset to the default locale after
 // each test to keep cases independent regardless of order.
@@ -80,6 +82,100 @@ describe("Ukrainian plurals (one/few/many/other)", () => {
     expect(t("units.parts", { count: 21 })).toBe("21 частина"); // one
   });
 });
+
+// ---------------------------------------------------------------------------
+// Key parity (Phase 2.5): en.json is the source of truth; uk.json must mirror
+// its key set exactly. A switched locale should never fall back to English for
+// a key that simply wasn't translated, and uk should never carry an orphan key
+// that en lacks.
+//
+// Plurals are the one allowed asymmetry: a plural object is a *leaf* here (an
+// object whose category keys are language-specific), so we don't descend into
+// it. English uses one/other; Ukrainian uses one/few/many/other. We assert each
+// side carries exactly the CLDR categories its language needs, rather than
+// requiring identical category sets.
+// ---------------------------------------------------------------------------
+
+type Dict = { [key: string]: unknown };
+
+const PLURAL_CATEGORIES = new Set(["zero", "one", "two", "few", "many", "other"]);
+
+/** A node is a plural object iff it's a plain object with `other` and *only*
+ *  CLDR plural-category keys (so a real nested group named "...other..." can't
+ *  masquerade as one). */
+function isPluralObject(node: unknown): node is Record<string, string> {
+  if (typeof node !== "object" || node === null) return false;
+  const keys = Object.keys(node);
+  return keys.includes("other") && keys.every((k) => PLURAL_CATEGORIES.has(k));
+}
+
+/** Collect every dotted leaf path. A leaf is a string OR a plural object; we do
+ *  NOT descend into plural objects (their category keys are language-specific).
+ *  Returns paths tagged so we can assert plural-ness matches on both sides. */
+function leafPaths(
+  node: Dict,
+  prefix = "",
+  out: Map<string, "string" | "plural"> = new Map(),
+): Map<string, "string" | "plural"> {
+  for (const [key, value] of Object.entries(node)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isPluralObject(value)) {
+      out.set(path, "plural");
+    } else if (typeof value === "object" && value !== null) {
+      leafPaths(value as Dict, path, out);
+    } else {
+      out.set(path, "string");
+    }
+  }
+  return out;
+}
+
+describe("en/uk key parity", () => {
+  const enPaths = leafPaths(en as Dict);
+  const ukPaths = leafPaths(uk as Dict);
+
+  it("every en leaf key exists in uk", () => {
+    const missing = [...enPaths.keys()].filter((k) => !ukPaths.has(k));
+    expect(missing).toEqual([]);
+  });
+
+  it("every uk leaf key exists in en (no orphans)", () => {
+    const orphans = [...ukPaths.keys()].filter((k) => !enPaths.has(k));
+    expect(orphans).toEqual([]);
+  });
+
+  it("a key that is a plural in one locale is a plural in the other", () => {
+    const mismatched = [...enPaths.entries()]
+      .filter(([k, kind]) => ukPaths.has(k) && ukPaths.get(k) !== kind)
+      .map(([k]) => k);
+    expect(mismatched).toEqual([]);
+  });
+
+  it("en plural objects carry the English CLDR categories (one/other)", () => {
+    for (const [path, kind] of enPaths) {
+      if (kind !== "plural") continue;
+      const node = lookupRaw(en as Dict, path) as Record<string, string>;
+      expect(Object.keys(node).sort()).toEqual(["one", "other"]);
+    }
+  });
+
+  it("uk plural objects carry the Ukrainian CLDR categories (one/few/many/other)", () => {
+    for (const [path, kind] of ukPaths) {
+      if (kind !== "plural") continue;
+      const node = lookupRaw(uk as Dict, path) as Record<string, string>;
+      expect(Object.keys(node).sort()).toEqual(["few", "many", "one", "other"]);
+    }
+  });
+});
+
+/** Walk a dotted path through a raw dictionary (test-local helper). */
+function lookupRaw(dict: Dict, path: string): unknown {
+  let node: unknown = dict;
+  for (const part of path.split(".")) {
+    node = (node as Dict)[part];
+  }
+  return node;
+}
 
 describe("resolveLocale", () => {
   it("passes explicit locales through", () => {
