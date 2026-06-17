@@ -1,0 +1,17 @@
+{
+  "app": {
+    "name": "tamp"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "later": "Later",
+    "gotIt": "Got it"
+  },
+  "units": {
+    "parts": {
+      "one": "{count} part",
+      "other": "{count} parts"
+    }
+  }
+}

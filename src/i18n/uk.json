@@ -1,0 +1,19 @@
+{
+  "app": {
+    "name": "tamp"
+  },
+  "common": {
+    "save": "Зберегти",
+    "cancel": "Скасувати",
+    "later": "Пізніше",
+    "gotIt": "Зрозуміло"
+  },
+  "units": {
+    "parts": {
+      "one": "{count} частина",
+      "few": "{count} частини",
+      "many": "{count} частин",
+      "other": "{count} частини"
+    }
+  }
+}
