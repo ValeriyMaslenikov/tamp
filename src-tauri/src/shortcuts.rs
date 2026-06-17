@@ -74,6 +74,46 @@ pub fn changed(old: &Settings, new: &Settings) -> bool {
         || old.shortcut_toggle_panel != new.shortcut_toggle_panel
 }
 
+/// The current notification permission as a lowercase string the frontend can
+/// branch on: "granted" | "denied" | "prompt" | "prompt-with-rationale", or
+/// "unsupported" when the permission can't be read (no API / plugin error).
+///
+/// On desktop this plugin reports `Granted` unconditionally (the OS, not tamp,
+/// owns the real notification toggle), so the Preferences "notifications are
+/// off" row simply never appears there — the right graceful degradation. The
+/// command still reports a real denied/prompt state on platforms that surface
+/// one, so the recovery UI lights up wherever it's meaningful.
+pub fn permission_state_str(app: &AppHandle) -> &'static str {
+    match app.notification().permission_state() {
+        Ok(PermissionState::Granted) => "granted",
+        Ok(PermissionState::Denied) => "denied",
+        Ok(PermissionState::Prompt) => "prompt",
+        Ok(PermissionState::PromptWithRationale) => "prompt-with-rationale",
+        Err(e) => {
+            crate::log_warn!("cannot read notification permission: {e}");
+            "unsupported"
+        }
+    }
+}
+
+/// Requests the notification permission and reports the resulting state as the
+/// same lowercase string [`permission_state_str`] returns. Backs the
+/// Preferences "Enable" affordance: a `prompt` state re-shows the OS prompt; a
+/// hard `denied` is unchanged by this (the user must flip it in System
+/// Settings) but the call is harmless and surfaces the still-denied state.
+pub fn request_permission_str(app: &AppHandle) -> &'static str {
+    match app.notification().request_permission() {
+        Ok(PermissionState::Granted) => "granted",
+        Ok(PermissionState::Denied) => "denied",
+        Ok(PermissionState::Prompt) => "prompt",
+        Ok(PermissionState::PromptWithRationale) => "prompt-with-rationale",
+        Err(e) => {
+            crate::log_warn!("notification permission request failed: {e}");
+            "unsupported"
+        }
+    }
+}
+
 /// Sends a user notification, requesting permission lazily on first use.
 /// Best-effort: failures only log (shortcuts must never crash the app).
 pub fn notify(app: &AppHandle, body: String) {

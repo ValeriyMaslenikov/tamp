@@ -410,6 +410,50 @@ pub fn os_info() -> &'static str {
     std::env::consts::OS
 }
 
+/// The current notification permission state as a lowercase string
+/// ("granted" | "denied" | "prompt" | "prompt-with-rationale" | "unsupported").
+/// Drives the Preferences "notifications are off" recovery row: only a real
+/// "denied" surfaces it. On desktop the notification plugin always reports
+/// "granted" (the OS owns the toggle), so the row stays hidden there.
+#[tauri::command]
+pub fn notification_permission(app: AppHandle) -> &'static str {
+    crate::shortcuts::permission_state_str(&app)
+}
+
+/// Re-requests the notification permission (the Preferences "Enable" button when
+/// notifications are off) and returns the resulting state in the same vocabulary
+/// as `notification_permission`. A hard OS-level deny is unaffected — the user
+/// must flip it in System Settings — but the call is safe and reports back.
+#[tauri::command]
+pub fn request_notification_permission(app: AppHandle) -> &'static str {
+    crate::shortcuts::request_permission_str(&app)
+}
+
+/// Deep-links to the OS notifications settings so a user with a hard "denied"
+/// state (where re-requesting is a no-op, e.g. macOS) has a one-click recovery
+/// path instead of hunting through System Settings by hand. The per-OS URL is
+/// `#[cfg]`-gated; on platforms without a known deep link this is an Ok no-op so
+/// the frontend can offer the button unconditionally without erroring.
+#[tauri::command]
+pub fn open_notification_settings(app: AppHandle) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        use tauri_plugin_opener::OpenerExt as _;
+        #[cfg(target_os = "macos")]
+        let url = "x-apple.systempreferences:com.apple.preference.notifications";
+        #[cfg(target_os = "windows")]
+        let url = "ms-settings:notifications";
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|e| format!("couldn't open notification settings: {e}"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 /// The conversion history (newest first) for the Converted tab. The source's
 /// creation time is frozen in the record: it's captured at encode time and
 /// backfilled once during the journal's one-time migration, never re-read live

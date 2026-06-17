@@ -1,9 +1,13 @@
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getSettings,
+  notificationPermission,
+  openNotificationSettings,
   pickFolder,
+  requestNotificationPermission,
   saveSettings,
   setContextMenu,
+  type NotificationPermission,
   type OpenAfterConvert,
   type OutputFormat,
   type Preset,
@@ -619,8 +623,77 @@ export function createPreferencesView(opts: {
     hint.className = "field-hint";
     hint.textContent = "Leave a shortcut empty to disable it.";
 
-    card.append(stack, hint);
+    // The stale-recording warning rides on a notification, so a denied
+    // notification permission silently kills it. A recovery row appears here
+    // when permission is missing; it stays hidden when granted (the desktop
+    // default) or unreadable.
+    const notif = notificationStatusRow();
+
+    card.append(stack, hint, notif);
     return card;
+  }
+
+  /** A recovery row shown when notifications are off: it warns the
+   *  stale-recording notification won't fire and offers a re-request. The row
+   *  starts hidden and reveals itself only once the async permission probe
+   *  reports a non-granted, recoverable state — so on desktop (always
+   *  "granted") and where the API is absent ("unsupported") it never appears. */
+  function notificationStatusRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "folder-notice notif-notice";
+    row.setAttribute("role", "status");
+    row.hidden = true;
+
+    const title = document.createElement("div");
+    title.className = "folder-notice-title";
+    title.textContent = "Notifications are off";
+    const body = document.createElement("div");
+    body.className = "folder-notice-hint";
+    body.textContent =
+      "The stale-recording warning (when the latest video is older than the limit above) won't show. Re-request below, or open System Settings if it's been turned off there.";
+    const actions = document.createElement("div");
+    actions.className = "onboarding-actions";
+    const enable = button("Enable notifications", "btn-ghost");
+    // The open-settings deep link is the real recovery for a hard OS-level deny
+    // (where re-requesting is a no-op, e.g. macOS); the command no-ops where no
+    // deep link exists, so the button is safe to offer unconditionally.
+    const openSettings = button("Open System Settings", "btn-ghost");
+    openSettings.addEventListener("click", () => {
+      void openNotificationSettings().catch((e) =>
+        showToast(friendlyError(e), "error"),
+      );
+    });
+    actions.append(enable, openSettings);
+    row.append(title, body, actions);
+
+    const reveal = (state: NotificationPermission): void => {
+      // Only a real, recoverable "off" state shows the row. "granted" hides it;
+      // "unsupported" (no API) degrades to hidden rather than nagging.
+      row.hidden = state === "granted" || state === "unsupported";
+    };
+
+    enable.addEventListener("click", () => {
+      enable.disabled = true;
+      void requestNotificationPermission()
+        .then((state) => {
+          reveal(state);
+          if (state === "granted") {
+            showToast("Notifications enabled", "success");
+          }
+        })
+        .catch((e) => showToast(friendlyError(e), "error"))
+        .finally(() => {
+          enable.disabled = false;
+        });
+    });
+
+    void notificationPermission()
+      .then(reveal)
+      .catch(() => {
+        /* leave hidden on probe failure */
+      });
+
+    return row;
   }
 
   function foldersCard(): HTMLElement {

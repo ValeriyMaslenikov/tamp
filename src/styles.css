@@ -362,6 +362,30 @@ textarea {
   opacity: 0.8;
 }
 
+/* The one-time first-run notice reuses the calm folder-notice card but mounts
+   at the very top of the panel (above the content), with the accent edge to
+   read as a friendly welcome rather than a warning. */
+.onboarding-notice {
+  margin: 8px 12px 0;
+  border-left-color: var(--accent);
+}
+
+/* Action row inside a notice card (the onboarding "Got it" / the notifications
+   "Enable" recovery button): right-aligned, a touch of top spacing. */
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* The Preferences "notifications are off" recovery row leans warning-ward
+   (amber edge) since it flags a feature that won't work until fixed. */
+.notif-notice {
+  margin-top: 10px;
+  border-left-color: var(--warning, #d9a23a);
+}
+
 .row {
   background: var(--surface);
   border: 1px solid var(--border);

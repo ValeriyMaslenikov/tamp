@@ -55,7 +55,22 @@ export interface Settings {
   contextMenuEnabled: boolean;
   /** How many recent videos the Videos tab lists (1–200). */
   recentsLimit: number;
+  /** Whether the one-time first-run notice has been shown and dismissed. */
+  onboardingSeen: boolean;
 }
+
+/**
+ * Notification permission as a lowercase string. "unsupported" means the state
+ * couldn't be read (no API / plugin error). On desktop the plugin always
+ * reports "granted" (the OS owns the toggle), so "denied" only ever appears
+ * where the platform surfaces a real one.
+ */
+export type NotificationPermission =
+  | "granted"
+  | "denied"
+  | "prompt"
+  | "prompt-with-rationale"
+  | "unsupported";
 
 /** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
 export type OpenAfterConvert = "off" | "multipart" | "all";
@@ -169,6 +184,19 @@ export const setContextMenu = (enabled: boolean): Promise<void> =>
 
 export const setPin = (pinned: boolean): Promise<void> =>
   invoke<void>("set_pin", { pinned });
+
+/** The current notification permission state (see {@link NotificationPermission}). */
+export const notificationPermission = (): Promise<NotificationPermission> =>
+  invoke<NotificationPermission>("notification_permission");
+
+/** Re-requests the notification permission; resolves to the resulting state. */
+export const requestNotificationPermission =
+  (): Promise<NotificationPermission> =>
+    invoke<NotificationPermission>("request_notification_permission");
+
+/** Deep-links to the OS notifications settings (no-op where unsupported). */
+export const openNotificationSettings = (): Promise<void> =>
+  invoke<void>("open_notification_settings");
 
 export const pickFolder = (): Promise<string | null> =>
   invoke<string | null>("pick_folder");

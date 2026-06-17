@@ -4,11 +4,14 @@ import {
   onEncodeState,
   onPanelShown,
   onSettingsChanged,
+  requestNotificationPermission,
+  saveSettings,
   setPin,
   type Settings,
 } from "./lib/ipc";
 import { createDrawer } from "./lib/drawer";
 import { initDragDrop } from "./lib/dragdrop";
+import { buildOnboardingNotice } from "./lib/onboarding";
 import { initPlatform } from "./lib/platform";
 import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
@@ -74,9 +77,58 @@ function main(): void {
   prefsView.el.setAttribute("role", "tabpanel");
   prefsView.el.setAttribute("aria-labelledby", "tab-prefs");
 
-  const drawer = createDrawer(app.querySelector(".panel") as HTMLElement);
+  const panel = app.querySelector(".panel") as HTMLElement;
+  const drawer = createDrawer(panel);
 
   const footer = app.querySelector(".panel-footer") as HTMLElement;
+
+  // The one-time first-run notice mounts here (above the content), so it shows
+  // over whichever tab is active until dismissed. Tracked so we never stack two.
+  let onboardingEl: HTMLElement | null = null;
+
+  // Prime the notification permission with context the first time the panel
+  // opens, rather than letting the OS prompt appear silently on the first
+  // shortcut fire. Best-effort: a granted/denied/unsupported result needs no
+  // action here — Preferences surfaces a denied state with a recovery path.
+  let primedNotifications = false;
+  function primeNotifications(): void {
+    if (primedNotifications) return;
+    primedNotifications = true;
+    // No blocking dialog: we simply trigger the request in context. The notice
+    // mounted just above carries the notification rationale line, so on a
+    // platform that surfaces an OS prompt the user has already read why tamp
+    // wants to notify. Failures are swallowed — notifications are an optional
+    // convenience.
+    void requestNotificationPermission().catch(() => {});
+  }
+
+  function maybeShowOnboarding(s: Settings): void {
+    if (s.onboardingSeen || onboardingEl) return;
+    const notice = buildOnboardingNotice(() => {
+      // Dismiss: drop the notice immediately, then persist the seen flag so it
+      // never reshows. Spread the LATEST settings (not the show-time snapshot)
+      // so a preference changed meanwhile isn't reverted. A persist failure
+      // only means the notice may show once more.
+      onboardingEl?.remove();
+      onboardingEl = null;
+      const base = settings ?? s;
+      void saveSettings({ ...base, onboardingSeen: true }).catch((e) =>
+        showToast(String(e), "error"),
+      );
+    });
+    onboardingEl = notice.el;
+    panel.insertBefore(notice.el, content);
+    // First run is also the moment to prime notifications, in context: the
+    // notice explains where tamp lives AND why it may notify (its rationale
+    // line); the permission request follows immediately after.
+    primeNotifications();
+  }
+
+  // manual: on a fresh profile (no settings.json), the one-time tray-location +
+  // reopen-shortcut notice shows once and never again after "Got it". On a
+  // platform that can deny notifications, denying then opening Preferences shows
+  // the recoverable "Notifications are off" row with an Enable button; on
+  // desktop the plugin reports "granted", so that row stays hidden by design.
 
   const segButtons = Array.from(
     app.querySelectorAll<HTMLButtonElement>(".seg-btn"),
@@ -195,6 +247,9 @@ function main(): void {
       // setTab ran before settings loaded (defaulting the hint to quick-pick);
       // refresh it now that the real videos-layout is known.
       if (!listView.el.hidden) footer.textContent = listView.footerHint();
+      // First-run notice (tray-location hint + reopen shortcut + notification
+      // rationale) + permission priming, once the real seen-flag is known.
+      maybeShowOnboarding(settings);
     } catch (e) {
       showToast(String(e), "error");
     }

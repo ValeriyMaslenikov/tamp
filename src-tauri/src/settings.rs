@@ -194,6 +194,11 @@ pub struct Settings {
     /// How many recent videos the Videos tab lists. 1..=200.
     #[serde(default = "default_recents_limit")]
     pub recents_limit: usize,
+    /// Whether the one-time first-run notice (tray-location hint + how to
+    /// reopen) has been shown and dismissed. Defaults to `false` so a fresh
+    /// profile sees it once; the frontend flips it to `true` on dismiss.
+    #[serde(default)]
+    pub onboarding_seen: bool,
 }
 
 fn default_true() -> bool {
@@ -254,6 +259,7 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         theme: Theme::default(),
         context_menu_enabled: true,
         recents_limit: 50,
+        onboarding_seen: false,
     }
 }
 
@@ -604,6 +610,16 @@ mod tests {
     fn recents_limit_defaults_to_50_and_is_bounded() {
         let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.recents_limit, 50);
+    }
+
+    #[test]
+    fn onboarding_seen_defaults_to_false_for_old_stores() {
+        // A store written before the field existed must read as "not yet
+        // seen" so the one-time notice still appears once.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.onboarding_seen);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.onboarding_seen);
     }
 
     #[test]
