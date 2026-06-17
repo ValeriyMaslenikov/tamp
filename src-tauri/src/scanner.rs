@@ -38,6 +38,18 @@ pub(crate) fn has_video_ext(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `path` can be represented as UTF-8 without loss. Non-UTF-8 recording
+/// filenames are declared unsupported and skipped at scan time (see `scan`):
+/// `RecentVideo.path` is a `String` that round-trips through IPC and back into
+/// probe/copy/reveal, so a `to_string_lossy()` replacement (U+FFFD) would point
+/// those at a wrong or nonexistent file. Rejecting here means the IPC layer only
+/// ever sees a path that maps back to the real file. The clipboard's
+/// `paths_to_utf8` guard (platform/mod.rs) is the same predicate, kept as a
+/// backstop for paths that arrive by other routes (drops, the picker).
+pub(crate) fn is_supported_filename(path: &Path) -> bool {
+    path.to_str().is_some()
+}
+
 /// If `stem` ends with a tamped-output suffix, returns the derived original
 /// stem (the stem with the whole suffix removed); `None` otherwise.
 ///
@@ -117,6 +129,19 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
             if !has_video_ext(&path) {
                 continue;
             }
+            // Non-UTF-8 filenames are unsupported: `RecentVideo.path` is a
+            // `String`, and emitting a `to_string_lossy()` version (U+FFFD)
+            // would mangle the path so probe/copy/reveal act on a wrong or
+            // nonexistent file. Skip it here so the lossy string never enters
+            // IPC, and warn so the skip is a distinct, visible condition (not a
+            // silent drop) — `path.display()` itself is lossy for logging only.
+            if !is_supported_filename(&path) {
+                crate::log_warn!(
+                    "skipping recording with a non-UTF-8 filename: {}",
+                    path.display()
+                );
+                continue;
+            }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -170,6 +195,44 @@ mod tests {
     fn touch(dir: &Path, name: &str) {
         let mut file = File::create(dir.join(name)).unwrap();
         file.write_all(b"video bytes").unwrap();
+    }
+
+    /// A filename `<stem>.<ext>` whose stem is NOT valid UTF-8 (the extension
+    /// stays ASCII so it still passes the video-extension gate). On Unix a raw
+    /// continuation byte 0x80 is never valid UTF-8 on its own; on Windows an
+    /// unpaired high surrogate (0xD800) has no UTF-8 mapping. Either way
+    /// `OsString::to_str()` returns `None`.
+    fn non_utf8_name(stem: &str, ext: &str) -> std::ffi::OsString {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = stem.as_bytes().to_vec();
+            bytes.push(0x80); // lone continuation byte: invalid UTF-8
+            bytes.push(b'.');
+            bytes.extend_from_slice(ext.as_bytes());
+            std::ffi::OsString::from_vec(bytes)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<u16> = stem.encode_utf16().collect();
+            units.push(0xD800); // unpaired high surrogate: no UTF-8 mapping
+            units.extend(format!(".{ext}").encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (stem, ext);
+            std::ffi::OsString::from("placeholder.mp4")
+        }
+    }
+
+    /// Best-effort create an empty file with an arbitrary (possibly non-UTF-8)
+    /// `OsString` name; `None` if the filesystem refuses the byte sequence.
+    fn touch_os(dir: &Path, name: &std::ffi::OsStr) -> Option<()> {
+        let mut file = File::create(dir.join(name)).ok()?;
+        file.write_all(b"video bytes").ok()?;
+        Some(())
     }
 
     fn names(videos: &[RecentVideo]) -> Vec<&str> {
@@ -505,6 +568,55 @@ mod tests {
         assert_eq!(got, vec![blocked.to_string_lossy().into_owned()]);
         // manual: add an offline UNC path as a watched folder → the Videos tab
         // shows the "couldn't read <folder>" banner, not "no recordings".
+    }
+
+    #[test]
+    fn is_supported_filename_gates_on_lossless_utf8() {
+        // ASCII / valid UTF-8 paths are supported.
+        assert!(is_supported_filename(Path::new("/rec/clip.mov")));
+        assert!(is_supported_filename(Path::new(
+            "/rec/café (tamped a3f2).mp4"
+        )));
+
+        // A path whose filename is NOT valid UTF-8 is rejected, so the scanner
+        // never laundered it through `to_string_lossy` into a `RecentVideo`.
+        let bad = non_utf8_name("clip", "mp4");
+        assert!(
+            bad.to_str().is_none(),
+            "test fixture must be a genuinely non-UTF-8 name"
+        );
+        assert!(!is_supported_filename(&PathBuf::from("/rec").join(&bad)));
+    }
+
+    #[test]
+    fn scan_skips_non_utf8_filenames_instead_of_mangling_them() {
+        let dir = tempfile::tempdir().unwrap();
+        // A normal recording alongside one with a non-UTF-8 filename and a valid
+        // `.mp4` extension (the extension is ASCII; only the stem is invalid —
+        // exactly the case `to_string_lossy` would have mangled into a U+FFFD
+        // path that probe/copy/reveal then mis-target).
+        touch(dir.path(), "good.mp4");
+        if touch_os(dir.path(), &non_utf8_name("bad", "mp4")).is_none() {
+            // Some filesystems reject the byte sequence outright; the UTF-8 gate
+            // itself is still covered by `is_supported_filename_gates_*`.
+            return;
+        }
+        let folders = vec![dir.path().to_path_buf()];
+
+        // The non-UTF-8 row is skipped, never emitted as a lossy RecentVideo…
+        let found = scan(&folders, 100);
+        assert_eq!(names(&found), vec!["good.mp4"]);
+        // …so no row carries a laundered path: `to_string_lossy` would have
+        // injected the U+FFFD replacement char, and that mangled string would
+        // not round-trip back to the real file for copy/reveal/probe.
+        assert!(
+            found
+                .iter()
+                .all(|v| !v.path.contains('\u{FFFD}') && !v.name.contains('\u{FFFD}')),
+            "no row may carry a U+FFFD-mangled path or name"
+        );
+        // manual: a file with a non-UTF-8 name is skipped (with a warn log),
+        // never mangled into a broken row that probe/copy/reveal mis-targets.
     }
 
     #[test]

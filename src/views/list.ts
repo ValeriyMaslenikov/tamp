@@ -669,6 +669,13 @@ export function createListView(getSettings: () => Settings | null): ListView {
       setSelected(null);
       return;
     }
+    // Every row here carries a path that round-trips back to a real file:
+    // recordings with a non-UTF-8 filename are declared unsupported and skipped
+    // at scan time (scanner::scan), never laundered through to_string_lossy into
+    // a U+FFFD path that copy/reveal/probe would then mis-target. So a file with
+    // an exotic name simply doesn't appear, rather than showing as a broken row.
+    // manual: a recording with a non-UTF-8 filename is absent from the list (and
+    // logged as skipped), not present as a row that fails when you act on it.
     for (const v of videos) {
       const row = buildRow(v);
       listScroll.appendChild(row);
