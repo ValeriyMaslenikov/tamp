@@ -297,6 +297,17 @@ export function createPreferencesView(opts: {
         showToast(t("prefs.errPresetNameRequired"));
         return;
       }
+      // Block a name already used by another preset (case-insensitive) so the
+      // pickers can always tell presets apart; excludes the one being edited.
+      const lower = name.toLowerCase();
+      if (
+        (current?.presets ?? []).some(
+          (x) => x.id !== p?.id && x.name.trim().toLowerCase() === lower,
+        )
+      ) {
+        showToast(t("prefs.errDuplicateName", { name }));
+        return;
+      }
       const target = Number(targetInput.value);
       if (!(target > 0)) {
         showToast(t("prefs.errTargetSize"));

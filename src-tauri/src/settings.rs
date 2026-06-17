@@ -392,6 +392,18 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
             return Err(format!("preset \"{}\": {e}", preset.name));
         }
     }
+    // Preset names must be unique so every picker can tell them apart
+    // (case-insensitive, trimmed). The editor blocks this client-side; this is
+    // the backing guarantee (also catches hand-edited settings files).
+    let mut seen_names = std::collections::HashSet::new();
+    for preset in &settings.presets {
+        if !seen_names.insert(preset.name.trim().to_lowercase()) {
+            return Err(format!(
+                "two presets are named \"{}\"; give each preset a unique name",
+                preset.name.trim()
+            ));
+        }
+    }
     if !(1..=200).contains(&settings.recents_limit) {
         return Err("recent videos shown must be between 1 and 200".into());
     }
@@ -563,6 +575,28 @@ mod tests {
         let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
         settings.presets[0].split = split;
         settings
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut dup = settings.presets[0].clone();
+        dup.id = "dup-id".to_string();
+        // Same name but different case + surrounding whitespace — still a dup.
+        dup.name = format!("  {}  ", settings.presets[0].name.to_uppercase());
+        settings.presets.push(dup);
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("unique name"), "{err}");
+    }
+
+    #[test]
+    fn validate_allows_distinct_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut other = settings.presets[0].clone();
+        other.id = "other-id".to_string();
+        other.name = "A genuinely different name".to_string();
+        settings.presets.push(other);
+        assert!(validate(&settings).is_ok());
     }
 
     #[test]

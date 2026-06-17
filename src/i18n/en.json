@@ -137,6 +137,7 @@
     "stripAudio": "Strip audio",
     "widthScaleHint": "Max width and scale % are mutually exclusive.",
     "errPresetNameRequired": "Preset name is required",
+    "errDuplicateName": "A preset named \"{name}\" already exists — choose a different name.",
     "errTargetSize": "Target size must be greater than 0 MB",
     "errFpsWidthScale": "FPS, width and scale must be positive whole numbers",
     "videosLayout": {
