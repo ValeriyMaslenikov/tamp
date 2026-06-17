@@ -7,6 +7,7 @@ import type {
   SplitMode,
   StaticSplitBy,
 } from "./ipc";
+import { t } from "../i18n";
 
 let fieldSeq = 0; // unique ids so each label binds to its own control
 
@@ -116,10 +117,10 @@ export function parseSplitInputs(
   const partsOk = Number.isInteger(parts) && parts >= 2 && parts <= 20;
   const secondsOk = Number.isInteger(seconds) && seconds >= 10;
   if (mode === "static" && by === "parts" && !partsOk) {
-    return { error: "Split parts must be a whole number from 2 to 20" };
+    return { error: t("forms.errSplitParts") };
   }
   if (mode === "static" && by === "seconds" && !secondsOk) {
-    return { error: "Split duration must be a whole number of seconds (10 or more)" };
+    return { error: t("forms.errSplitDuration") };
   }
   return {
     config: {
@@ -188,8 +189,8 @@ export function splitControl(initial?: SplitConfig): SplitControl {
   secondsInput.min = "10";
   secondsInput.step = "1";
 
-  const partsField = field("Parts (2–20)", partsInput);
-  const secondsField = field("≈ every N seconds", secondsInput);
+  const partsField = field(t("forms.splitParts"), partsInput);
+  const secondsField = field(t("forms.splitSeconds"), secondsInput);
 
   const sub = document.createElement("div");
   sub.className = "split-sub";
@@ -202,11 +203,11 @@ export function splitControl(initial?: SplitConfig): SplitControl {
 
   const modeRow = radioRow<SplitMode>(
     `split-mode-${seq}`,
-    "Split mode",
+    t("forms.splitMode"),
     [
-      ["off", "Off"],
-      ["smart", "Smart"],
-      ["static", "Static"],
+      ["off", t("forms.splitModeOff")],
+      ["smart", t("forms.splitModeSmart")],
+      ["static", t("forms.splitModeStatic")],
     ],
     mode,
     (v) => {
@@ -216,10 +217,10 @@ export function splitControl(initial?: SplitConfig): SplitControl {
   );
   const byRow = radioRow<StaticSplitBy>(
     `split-by-${seq}`,
-    "Split by",
+    t("forms.splitBy"),
     [
-      ["parts", "By parts"],
-      ["seconds", "By duration"],
+      ["parts", t("forms.splitByParts")],
+      ["seconds", t("forms.splitBySeconds")],
     ],
     by,
     (v) => {
@@ -231,7 +232,7 @@ export function splitControl(initial?: SplitConfig): SplitControl {
   sub.append(byRow, partsField, secondsField);
   sync();
 
-  const el = field("Split into parts", modeRow);
+  const el = field(t("forms.splitIntoParts"), modeRow);
   el.classList.add("split-field");
   el.appendChild(sub);
 
