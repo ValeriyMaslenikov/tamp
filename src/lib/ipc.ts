@@ -85,6 +85,16 @@ export type VideosLayout = "quick-pick" | "active-bar";
 /** system = follow OS light/dark (tracks live changes); light/dark pin it. */
 export type Theme = "system" | "light" | "dark";
 
+/**
+ * A newer release the opt-in update check found. `notes` is the release body
+ * (markdown), surfaced as "What's new"; `url` is the GitHub release page.
+ */
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes: string | null;
+}
+
 /** One-off conversion settings for custom_convert. */
 export interface CustomConfig {
   targetMb: number;
@@ -240,6 +250,20 @@ export const copyFiles = (paths: string[]): Promise<void> =>
 
 export const openFile = (path: string): Promise<void> =>
   invoke<void>("open_file", { path });
+
+/** Opens an external URL in the default browser via the Rust opener (so no CSP
+ *  widening / opener capability is needed on the panel window). */
+export const openUrl = (url: string): Promise<void> =>
+  invoke<void>("open_url", { url });
+
+/**
+ * Asks GitHub (via Rust) whether a newer tamp exists. Returns the newest release
+ * strictly newer than the installed build, or null when up to date. Rejects on
+ * any network/parse error — callers swallow that silently (never a toast). Only
+ * called when {@link Settings.updateCheckEnabled} is on.
+ */
+export const checkForUpdate = (): Promise<UpdateInfo | null> =>
+  invoke<UpdateInfo | null>("check_for_update");
 
 export const conversionThumb = (path: string): Promise<string | null> =>
   invoke<string | null>("conversion_thumb", { path });

@@ -3,6 +3,8 @@ import {
   notificationPrimingHint,
   reopenShortcut,
   trayLocationHint,
+  updateCheckConsentLine,
+  updateCheckPrivacyHint,
 } from "./onboarding";
 
 describe("reopenShortcut", () => {
@@ -36,5 +38,19 @@ describe("notificationPrimingHint", () => {
 
   it("says the choice is reversible in Preferences", () => {
     expect(notificationPrimingHint()).toContain("Preferences");
+  });
+});
+
+describe("update-check consent copy", () => {
+  it("frames the check as something tamp can do on start", () => {
+    const line = updateCheckConsentLine();
+    expect(line).toContain("tamp");
+    expect(line.toLowerCase()).toContain("version");
+  });
+
+  it("makes the privacy scope explicit (GitHub, nothing about you)", () => {
+    const hint = updateCheckPrivacyHint();
+    expect(hint).toContain("GitHub");
+    expect(hint.toLowerCase()).toContain("nothing about you");
   });
 });

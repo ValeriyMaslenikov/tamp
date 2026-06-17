@@ -1,5 +1,6 @@
 import "./styles.css";
 import {
+  checkForUpdate,
   getSettings,
   onEncodeState,
   onPanelShown,
@@ -12,6 +13,7 @@ import {
 import { createDrawer } from "./lib/drawer";
 import { initDragDrop } from "./lib/dragdrop";
 import { buildOnboardingNotice } from "./lib/onboarding";
+import { openUpdateModal, shouldShowUpdate } from "./lib/updatemodal";
 import { initPlatform } from "./lib/platform";
 import { applyTheme } from "./lib/theme";
 import { initToast, showToast } from "./lib/toast";
@@ -104,17 +106,21 @@ function main(): void {
 
   function maybeShowOnboarding(s: Settings): void {
     if (s.onboardingSeen || onboardingEl) return;
-    const notice = buildOnboardingNotice(() => {
-      // Dismiss: drop the notice immediately, then persist the seen flag so it
-      // never reshows. Spread the LATEST settings (not the show-time snapshot)
-      // so a preference changed meanwhile isn't reverted. A persist failure
-      // only means the notice may show once more.
+    const notice = buildOnboardingNotice((updateCheckEnabled) => {
+      // Dismiss: drop the notice immediately, then persist the seen flag plus the
+      // update-check consent the user left set. Spread the LATEST settings (not
+      // the show-time snapshot) so a preference changed meanwhile isn't reverted.
+      // A persist failure only means the notice may show once more.
       onboardingEl?.remove();
       onboardingEl = null;
       const base = settings ?? s;
-      void saveSettings({ ...base, onboardingSeen: true }).catch((e) =>
-        showToast(String(e), "error"),
-      );
+      const next: Settings = {
+        ...base,
+        onboardingSeen: true,
+        updateCheckEnabled,
+      };
+      settings = next;
+      void saveSettings(next).catch((e) => showToast(String(e), "error"));
     });
     onboardingEl = notice.el;
     panel.insertBefore(notice.el, content);
@@ -129,6 +135,54 @@ function main(): void {
   // platform that can deny notifications, denying then opening Preferences shows
   // the recoverable "Notifications are off" row with an Enable button; on
   // desktop the plugin reports "granted", so that row stays hidden by design.
+
+  // The update modal mounts here too (on the always-visible panel host, never a
+  // per-tab root). Tracked so a stale one is replaced rather than stacked.
+  let updateModalEl: HTMLElement | null = null;
+
+  // Run the opt-in update check at most once per launch. Gated on the setting
+  // and fire-and-forget: a failed/slow check never blocks the panel and never
+  // toasts (it's a passive convenience). If a newer-than-dismissed release comes
+  // back, one gentle, dismissible card shows over the panel; dismissing persists
+  // lastDismissedUpdateVersion so it never re-nags for that version.
+  let updateCheckRan = false;
+  function maybeRunUpdateCheck(): void {
+    if (updateCheckRan) return;
+    const s = settings;
+    if (!s || !s.updateCheckEnabled) return;
+    updateCheckRan = true;
+    void checkForUpdate()
+      .then((info) => {
+        // Re-read the live settings: the user may have dismissed this version in
+        // a prior session, or toggled the feature off while the request was in
+        // flight. shouldShowUpdate also narrows `info` to non-null.
+        const cur = settings;
+        if (!cur || !cur.updateCheckEnabled) return;
+        if (!shouldShowUpdate(info, cur.lastDismissedUpdateVersion)) return;
+        if (updateModalEl) return; // never stack two
+        const modal = openUpdateModal({
+          host: panel,
+          info,
+          onDismiss: (version) => {
+            updateModalEl = null;
+            // Persist the dismissed version off the LATEST settings so a
+            // meanwhile-changed preference isn't reverted. A persist failure
+            // only means the card may show once more next launch.
+            const base = settings ?? cur;
+            const next: Settings = {
+              ...base,
+              lastDismissedUpdateVersion: version,
+            };
+            settings = next;
+            void saveSettings(next).catch(() => {});
+          },
+        });
+        updateModalEl = modal.el;
+      })
+      .catch(() => {
+        // Swallow silently: a failed update check must never surface a toast.
+      });
+  }
 
   const segButtons = Array.from(
     app.querySelectorAll<HTMLButtonElement>(".seg-btn"),
@@ -217,6 +271,9 @@ function main(): void {
   void onPanelShown(() => {
     void listView.refresh();
     listView.focusFilter();
+    // First panel:shown after settings load is the moment to run the once-per-
+    // launch update check (no-op until settings exist; gated on the setting).
+    maybeRunUpdateCheck();
   });
   void onEncodeState((state) => {
     listView.updateJob(state);
@@ -250,6 +307,10 @@ function main(): void {
       // First-run notice (tray-location hint + reopen shortcut + notification
       // rationale) + permission priming, once the real seen-flag is known.
       maybeShowOnboarding(settings);
+      // The panel is already shown at launch, so a panel:shown event may have
+      // fired (and no-op'd) before settings loaded. Run the gated check now that
+      // settings are known; the once-guard makes a later panel:shown harmless.
+      maybeRunUpdateCheck();
     } catch (e) {
       showToast(String(e), "error");
     }

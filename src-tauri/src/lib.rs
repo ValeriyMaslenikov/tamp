@@ -314,6 +314,7 @@ pub fn run() {
             commands::set_pin,
             commands::pick_videos,
             commands::open_file,
+            commands::open_url,
             commands::conversion_thumb,
             commands::recent_thumb,
             commands::recent_duration,

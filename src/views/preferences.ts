@@ -487,6 +487,18 @@ export function createPreferencesView(opts: {
     return card;
   }
 
+  /** The privacy sub-label under the "Check for updates automatically" switch:
+   *  the single outbound request is a pull to GitHub and sends nothing about the
+   *  user. Mirrors the first-run consent wording so the choice reads the same in
+   *  both places. */
+  function updateCheckHint(): HTMLElement {
+    const hint = document.createElement("div");
+    hint.className = "field-hint toggle-hint";
+    hint.textContent =
+      "Only asks GitHub for the latest version — nothing about you is sent.";
+    return hint;
+  }
+
   function behaviorCard(): HTMLElement {
     const s = current as Settings;
     const card = document.createElement("div");
@@ -515,6 +527,15 @@ export function createPreferencesView(opts: {
           d.launchAtLogin = v;
         }),
       ),
+      toggleRow(
+        "Check for updates automatically",
+        s.updateCheckEnabled,
+        (v) =>
+          void persist((d) => {
+            d.updateCheckEnabled = v;
+          }),
+      ),
+      updateCheckHint(),
       radioRow<OpenAfterConvert>(
         "Open in file manager after converting",
         s.openAfterConvert,

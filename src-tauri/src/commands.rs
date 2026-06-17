@@ -540,6 +540,18 @@ pub fn open_file(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| format!("couldn't open {path}: {e}"))
 }
 
+/// Opens an external `url` in the default browser. Backs the update-available
+/// modal's "What's new" / "Download" actions: opening through Rust keeps the
+/// panel window's CSP and capabilities unchanged (no opener permission for the
+/// frontend). Mirrors `open_notification_settings`' opener use.
+#[tauri::command]
+pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt as _;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("couldn't open {url}: {e}"))
+}
+
 /// Ensures (generating on miss) a thumbnail for a single video and returns its
 /// cached path, or None on failure. Backs the Converted tab's per-row preview.
 #[tauri::command]
