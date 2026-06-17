@@ -90,6 +90,20 @@ export function presetIndexForDigit(key: string, count: number): number | null {
   return Number.isInteger(n) && n >= 0 && n < count ? n : null;
 }
 
+/** Clicking a failed row's retry: re-run the SAME preset the failed job used
+ *  when it still exists (the row is the obvious retry target), or fall back to
+ *  the preset picker when that preset has since been deleted. Returns the
+ *  decision so the caller just dispatches it. `presets` is the current set;
+ *  `failedPresetId` is the id the failed job ran with. */
+export function failedRetryDecision(
+  failedPresetId: string,
+  presets: ReadonlyArray<Pick<Preset, "id">>,
+): { kind: "retry"; presetId: string } | { kind: "pick" } {
+  return presets.some((p) => p.id === failedPresetId)
+    ? { kind: "retry", presetId: failedPresetId }
+    : { kind: "pick" };
+}
+
 /** Identity of the visible video list; job statuses are painted separately.
  *  `unreachable` (the offline/permission-denied watched folders) folds in so the
  *  Videos tab re-renders when a share goes offline or comes back even if the
@@ -999,7 +1013,7 @@ export function createListView(getSettings: () => Settings | null): ListView {
         const retryId = j.presetId;
         dismiss(j);
         const s = getSettings();
-        if (s && s.presets.some((p) => p.id === retryId)) {
+        if (s && failedRetryDecision(retryId, s.presets).kind === "retry") {
           void doEnqueue(v, retryId);
           return;
         }

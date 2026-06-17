@@ -38,6 +38,24 @@ export interface PreferencesView {
 const newPresetId = (): string =>
   `preset-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * Whether `name` collides with another preset's name. Comparison is
+ * case-insensitive and trimmed (so " Slack " duplicates "slack"), and the
+ * preset being edited (`editingId`) is excluded so re-saving it with the same
+ * name isn't flagged as a self-collision. A new preset passes `editingId =
+ * null`, which excludes nothing. Keeps the pickers able to tell presets apart.
+ */
+export function isDuplicatePresetName(
+  name: string,
+  presets: ReadonlyArray<Pick<Preset, "id" | "name">>,
+  editingId: string | null,
+): boolean {
+  const lower = name.trim().toLowerCase();
+  return presets.some(
+    (x) => x.id !== editingId && x.name.trim().toLowerCase() === lower,
+  );
+}
+
 export function createPreferencesView(opts: {
   onSettings: (s: Settings) => void;
 }): PreferencesView {
@@ -299,12 +317,7 @@ export function createPreferencesView(opts: {
       }
       // Block a name already used by another preset (case-insensitive) so the
       // pickers can always tell presets apart; excludes the one being edited.
-      const lower = name.toLowerCase();
-      if (
-        (current?.presets ?? []).some(
-          (x) => x.id !== p?.id && x.name.trim().toLowerCase() === lower,
-        )
-      ) {
+      if (isDuplicatePresetName(name, current?.presets ?? [], p?.id ?? null)) {
         showToast(t("prefs.errDuplicateName", { name }));
         return;
       }

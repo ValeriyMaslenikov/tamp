@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  failedRetryDecision,
   isTerminal,
   presetIndexForDigit,
   shouldPickPreset,
@@ -46,6 +47,25 @@ describe("presetIndexForDigit", () => {
   });
   it("returns null for a non-digit", () => {
     expect(presetIndexForDigit("x", 3)).toBeNull();
+  });
+});
+
+describe("failedRetryDecision", () => {
+  const presets = [{ id: "preset-fast" }, { id: "preset-tiny" }];
+
+  it("retries the same preset when it still exists", () => {
+    expect(failedRetryDecision("preset-tiny", presets)).toEqual({
+      kind: "retry",
+      presetId: "preset-tiny",
+    });
+  });
+
+  it("falls back to the picker when the failed job's preset was deleted", () => {
+    expect(failedRetryDecision("preset-gone", presets)).toEqual({ kind: "pick" });
+  });
+
+  it("falls back to the picker when there are no presets at all", () => {
+    expect(failedRetryDecision("preset-fast", [])).toEqual({ kind: "pick" });
   });
 });
 

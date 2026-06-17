@@ -28,6 +28,41 @@ export function nextNavIndex(cur: number, dir: number, len: number): number {
   return Math.min(len - 1, Math.max(0, cur + dir));
 }
 
+/** A pre-rebuild snapshot of the Converted tab's keyboard selection: whether a
+ *  row was selected at all, and that row's stable key (its `navKey`). */
+export interface SelectionSnapshot {
+  hadSelection: boolean;
+  selectedKey: string | null;
+}
+
+/** What to re-select after a rebuild: the row carrying the previously selected
+ *  key ("preserve"), the first row ("first"), or nothing ("none"). */
+export type SelectionRestore =
+  | { kind: "preserve"; key: string }
+  | { kind: "first" }
+  | { kind: "none" };
+
+/**
+ * Decide what to re-select after the Converted list is rebuilt, from a
+ * pre-rebuild `snapshot` and whether the previously selected key still exists
+ * (`keyPresent`). The previously selected row is preserved when its key still
+ * exists; otherwise the first row is selected ONLY on a true first load (no
+ * prior selection), so a background refresh (tab switch / a finished encode)
+ * never yanks the cursor to the top just because the selected row vanished —
+ * returning "none" instead. (Key derivation — `single:`/`part:`/`group:` —
+ * lives at row-build time; this decides which outcome wins.)
+ */
+export function restoreSelection(
+  snapshot: SelectionSnapshot,
+  keyPresent: boolean,
+): SelectionRestore {
+  if (snapshot.selectedKey != null && keyPresent) {
+    return { kind: "preserve", key: snapshot.selectedKey };
+  }
+  if (!snapshot.hadSelection) return { kind: "first" };
+  return { kind: "none" };
+}
+
 function basename(p: string): string {
   return p.split(/[\\/]/).pop() ?? p;
 }
@@ -517,8 +552,9 @@ export function createConvertedView(): ConvertedView {
     // by stored key rather than a CSS attribute selector to sidestep escaping the
     // path characters (\, /, etc.) the keys contain.
     const restored = selectedKey ? findRowByKey(selectedKey) : null;
-    if (restored) setSelected(restored);
-    else if (!hadSelection) setSelected(navRows()[0] ?? null);
+    const decision = restoreSelection({ hadSelection, selectedKey }, restored !== null);
+    if (decision.kind === "preserve") setSelected(restored);
+    else if (decision.kind === "first") setSelected(navRows()[0] ?? null);
     // manual: scroll down, select a row, expand a split group, then trigger a
     // refresh (tab away/back, or let a queued conversion finish) — the selection
     // and the expanded group are preserved, and no stray time tooltip is left
