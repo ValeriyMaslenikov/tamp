@@ -21,6 +21,7 @@
     "tag": "changeset tag"
   },
   "dependencies": {
+    "@fontsource/montserrat": "^5.2.8",
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {

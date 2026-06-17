@@ -1,0 +1,17 @@
+/* UI typeface: Montserrat (geometric, like the previous Poppins) self-hosted
+   via @fontsource so it works offline and ships no telemetry. We pull only the
+   Latin + Cyrillic subsets for the three weights the app uses (400/500/600) —
+   Latin covers English, Cyrillic covers Ukrainian. Fontsource registers one
+   @font-face per subset with the correct `unicode-range`, so the browser fetches
+   only the subset a given glyph needs and both scripts render in ONE typeface
+   (no per-script fallback mismatch). The system fallback stack in styles.css
+   (Segoe UI / -apple-system) also covers Cyrillic for the swap window.
+   manual: with the locale set to Ukrainian, Cyrillic and Latin both render in
+   Montserrat — one consistent geometric typeface, no per-script fallback
+   mismatch. */
+@import "@fontsource/montserrat/latin-400.css";
+@import "@fontsource/montserrat/latin-500.css";
+@import "@fontsource/montserrat/latin-600.css";
+@import "@fontsource/montserrat/cyrillic-400.css";
+@import "@fontsource/montserrat/cyrillic-500.css";
+@import "@fontsource/montserrat/cyrillic-600.css";
