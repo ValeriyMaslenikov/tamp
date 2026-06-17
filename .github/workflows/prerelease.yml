@@ -15,14 +15,71 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Create-if-absent with loud failures. The previous `gh release create ...
+      # || echo "release already exists"` masked EVERY error (auth, API outage,
+      # malformed notes, tag mismatch) as a green step, after which the build
+      # job's `gh release upload --clobber` either failed confusingly or
+      # clobbered a stale same-named release. Instead we explicitly probe for an
+      # existing release with `gh release view` and only `create` when it is
+      # absent; `set -euo pipefail` makes any other (real) failure surface red.
+      # Re-pushing the same beta tag intentionally reuses the existing release
+      # so the build job's --clobber refreshes its assets (no duplicate / stale
+      # release); a genuine create failure with no existing release is no longer
+      # swallowed. Notes come from the CHANGELOG.md entry for this version (the
+      # `## X.Y.Z` section), falling back to a generic line for betas that have
+      # no changelog entry yet; the unsigned-binary bypass note is always kept
+      # as a footer.
       - name: Create GitHub prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
+          # Reuse an existing release for a re-pushed tag; surface any other
+          # `gh release view` failure (auth/API) instead of hiding it. `view`
+          # exits non-zero only when the release is absent, so we capture stderr
+          # and re-raise unless it is the expected "release not found" case.
+          if view_err=$(gh release view "$GITHUB_REF_NAME" 2>&1 >/dev/null); then
+            echo "Release $GITHUB_REF_NAME already exists; reusing it."
+            exit 0
+          elif ! grep -qi 'release not found\|not found' <<<"$view_err"; then
+            echo "::error::Unexpected failure querying release $GITHUB_REF_NAME:" >&2
+            echo "$view_err" >&2
+            exit 1
+          fi
+
+          # Build release notes from CHANGELOG.md. The tag is vX.Y.Z-beta.N, so
+          # the base version (X.Y.Z) is the changelog heading to match; for a
+          # beta with no entry yet this finds nothing and we fall back.
+          VERSION="${GITHUB_REF_NAME#v}"
+          BASE_VERSION="${VERSION%%-*}"
+          NOTES_FILE="$(mktemp)"
+          FOOTER='Unsigned binaries — see the README install notes for the Gatekeeper/SmartScreen bypass.'
+
+          # Extract the `## <version>` section body, stopping at the next
+          # `## ` heading. Try the full tag version first, then the base version.
+          extract_changelog() {
+            awk -v ver="$1" '
+              $0 == "## " ver { capture = 1; next }
+              capture && /^## / { exit }
+              capture { print }
+            ' CHANGELOG.md
+          }
+          CHANGELOG_BODY="$(extract_changelog "$VERSION")"
+          if [ -z "${CHANGELOG_BODY//[$'\n\t ']/}" ]; then
+            CHANGELOG_BODY="$(extract_changelog "$BASE_VERSION")"
+          fi
+
+          if [ -n "${CHANGELOG_BODY//[$'\n\t ']/}" ]; then
+            printf '%s\n' "$CHANGELOG_BODY" >"$NOTES_FILE"
+          else
+            printf 'Beta build.\n' >"$NOTES_FILE"
+          fi
+          printf '\n---\n\n%s\n' "$FOOTER" >>"$NOTES_FILE"
+
           gh release create "$GITHUB_REF_NAME" --prerelease \
             --title "$GITHUB_REF_NAME" \
-            --notes "Beta build. Unsigned binaries — see the README install notes for the Gatekeeper/SmartScreen bypass." \
-            || echo "release already exists"
+            --notes-file "$NOTES_FILE"
 
   build:
     name: Build (${{ matrix.os }})
