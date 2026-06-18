@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128@2x.png" width="128" alt="tamp icon" />
+  <img src="src-tauri/icons/128x128@2x.png" width="128" alt="Tamp icon" />
 </p>
 
-<h1 align="center">tamp</h1>
+<h1 align="center">Tamp</h1>
 
 <p align="center">
   <strong>Shrink screen recordings to a target size, right from your menu bar.</strong>
@@ -11,174 +11,97 @@
 <p align="center">
   <a href="https://github.com/ValeriyMaslenikov/tamp/releases/latest"><img src="https://img.shields.io/github/v/release/ValeriyMaslenikov/tamp?color=7C5CFC" alt="Latest release"></a>
   <a href="https://github.com/ValeriyMaslenikov/tamp/actions/workflows/ci.yml"><img src="https://github.com/ValeriyMaslenikov/tamp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ValeriyMaslenikov/tamp/wiki"><img src="https://img.shields.io/badge/docs-wiki-7C5CFC" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
 </p>
 
 ---
 
-You record your screen with <kbd>⌘⇧5</kbd> (or <kbd>Win⇧R</kbd> on Windows), and your OS
-hands you a 300 MB recording that Discord (10 MB), Slack, or your bug tracker refuses to
-accept. tamp fixes that in one click:
+You record your screen, and your OS hands you a 300 MB file that Discord (10 MB),
+Slack, or your bug tracker refuses to accept. Tamp fixes that in one click:
 
-1. **Click the tamp icon** in your menu bar (system tray on Windows) — it lists your
-   latest recordings.
-2. **Click a video** — tamp computes the exact bitrate to land *just under* your target
-   size (say, 10 MB) and encodes on the GPU, no codec knowledge required. It will never
-   hand you a file over the target.
-3. **Paste.** The compressed file is saved next to the original and (optionally) already
-   on your clipboard, ready to drop into any chat.
+1. **Click the Tamp icon** in your menu bar (system tray on Windows) — it lists
+   your latest recordings.
+2. **Click a video** — Tamp computes the exact bitrate to land *just under* your
+   target size and encodes on the GPU. It never hands you a file over the target.
+3. **Paste.** The compressed file is saved next to the original and (optionally)
+   already on your clipboard, ready to drop into any chat.
+
+Everything runs on your machine with a bundled FFmpeg — no uploads, no telemetry,
+no account.
 
 <p align="center">
-  <img src="docs/panel.png" width="420" alt="tamp panel showing recent recordings" />
+  <img src="docs/panel.png" width="420" alt="Tamp panel showing recent recordings" />
 </p>
 
 <p align="center">
   <img src="docs/convert.gif" width="360" alt="compressing a recording in one click — click a video, watch it shrink under the target" />
 </p>
 
+## 📖 Documentation
+
+Full guides live in the **[Tamp Wiki](https://github.com/ValeriyMaslenikov/tamp/wiki)**:
+
+- [**Installing Tamp**](https://github.com/ValeriyMaslenikov/tamp/wiki/Installing-Tamp) ·
+  [**Getting Started**](https://github.com/ValeriyMaslenikov/tamp/wiki/Getting-Started)
+- [**FAQ & Troubleshooting**](https://github.com/ValeriyMaslenikov/tamp/wiki/FAQ-and-Troubleshooting)
+
 ## Features
 
-- 🎯 **Size-first presets** — "fit under N MB" is the primary control, with optional FPS caps,
-  downscaling, and audio stripping. Ships with a *Discord (10 MB)* preset; add your own for
-  Slack, email, etc.
-- 🎚️ **Two ways to pick a preset** — pick the flow that fits how you work (Preferences →
-  *Videos screen*): a **quick-pick menu** that opens on click with your default preselected
-  (press <kbd>1</kbd>–<kbd>9</kbd> for the rest), or a persistent **active-preset bar** you set
-  once (<kbd>‹</kbd> <kbd>›</kbd> / <kbd>[</kbd> <kbd>]</kbd>) and apply to every clip with one click.
-
-  <p align="center">
-    <img src="docs/preset-quickpick.png" width="300" alt="quick-pick preset menu, default preselected" />
-    &nbsp;&nbsp;
-    <img src="docs/preset-active-bar.png" width="300" alt="active-preset bar above the recordings list" />
-  </p>
-- 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated — VideoToolbox on macOS;
-  NVENC/QSV/AMF/Media Foundation on Windows), WebM (two-pass VP9 + Opus) for the web, and
-  GIF (palette-optimized, size-targeted) for the messengers that still insist on it.
-- ⚡ **One click, zero imports** — tamp watches your recording folders (Desktop on macOS;
-  Desktop plus `Videos\Screen Recordings` and `Videos\Captures` on Windows).
-  Click a row and it's encoding; click again later and tamp *reuses* the existing output
-  instantly instead of re-encoding (outputs carry a tiny config fingerprint in the name).
-- ⌨️ **Keyboard-first** — a global shortcut (<kbd>⌘⌥T</kbd> / <kbd>Ctrl+Alt+T</kbd>)
-  compresses your latest recording without even opening the panel; <kbd>⌘⌥O</kbd> /
-  <kbd>Ctrl+Alt+O</kbd> toggles the panel; inside, type to filter, arrows select,
-  <kbd>⏎</kbd>/<kbd>d</kbd> run the default preset, <kbd>e</kbd> expands,
-  <kbd>esc</kbd> backs out.
-- 🔍 **Preview before you commit** — expand any row for a generated mini-montage preview
-  (TikTok-style cuts, instant even for gigabyte files), pick a preset, or run a one-off
-  **Custom conversion** with its own size/fps/scale/format.
-
-  <img src="docs/expanded.png" width="345" alt="expanded row with preview, presets, and custom conversion" />
-- 📊 **Progress in the menu bar** — a live percentage next to the tray icon; queue more
-  videos while one is encoding.
-- 📋 **Clipboard-ready output** — the finished file is copied as a *file* (not a path),
-  so ⌘V attaches it directly in Discord/Slack.
-- 🗑️ **Reclaim disk space** — optionally move the bulky original to the Trash (recoverable)
-  after a successful compress. Deleted the original? The compressed copy stays in the list
-  with its before/after sizes.
-- 🧭 **Built to be debugged** — reveal any video in Finder/Explorer from its row; rotating logs
-  (10 MB cap) capture every ffmpeg command line and error: right-click the menu bar
-  icon → *Open Logs*. The app version sits at the bottom of Preferences.
-- 🔒 **Local and private** — everything runs on your machine with a bundled static FFmpeg.
-  No uploads, no telemetry, no account.
+- 🎯 **Size-first presets** — say "fit under N MB" and Tamp computes the rest, with
+  optional FPS caps, downscaling, and audio stripping. Ships with a *Discord (10 MB)*
+  preset. → [Presets & Splitting](https://github.com/ValeriyMaslenikov/tamp/wiki/Presets-and-Splitting)
+- 🎚️ **Two ways to pick a preset** — a quick-pick menu (default preselected, <kbd>1</kbd>–<kbd>9</kbd>
+  for the rest) or a persistent active-preset bar you set once. → [Compressing Videos](https://github.com/ValeriyMaslenikov/tamp/wiki/Compressing-Videos)
+- 🎞️ **Three output formats** — MP4 (H.264, hardware-accelerated), WebM (two-pass
+  VP9 + Opus), and GIF (palette-optimized). → [How It Works](https://github.com/ValeriyMaslenikov/tamp/wiki/How-It-Works-and-Privacy#choosing-a-format)
+- ✂️ **Split long clips** — turn one too-long recording into several parts that each
+  fit your target, automatically or on your terms. → [Splitting](https://github.com/ValeriyMaslenikov/tamp/wiki/Presets-and-Splitting#splitting-into-parts)
+- ⚡ **One click, zero imports** — Tamp watches your recording folders and reuses an
+  existing output instantly instead of re-encoding. → [Compressing Videos](https://github.com/ValeriyMaslenikov/tamp/wiki/Compressing-Videos)
+- ⌨️ **Keyboard-first** — global shortcuts compress your latest recording or toggle the
+  panel; inside, type to filter and drive everything from the keyboard. → [Shortcuts](https://github.com/ValeriyMaslenikov/tamp/wiki/Preferences-and-Shortcuts#keyboard-shortcuts)
+- 🔍 **Preview & custom one-offs** — expand any row for a montage preview, or run a
+  one-off conversion with its own settings. → [Compressing Videos](https://github.com/ValeriyMaslenikov/tamp/wiki/Compressing-Videos#custom-one-off-conversion)
+- 📋 **Clipboard-ready output** — the finished file is copied as a *file*, so <kbd>⌘V</kbd>
+  attaches it directly in Discord/Slack. → [Output files](https://github.com/ValeriyMaslenikov/tamp/wiki/Converted-History-and-Output)
+- 🗂️ **Durable history** — every conversion lands in the Converted tab with before/after
+  sizes, play/copy/reveal, even after the original is gone. → [Converted History](https://github.com/ValeriyMaslenikov/tamp/wiki/Converted-History-and-Output)
+- 🗑️ **Reclaim disk space** — optionally move the bulky original to the Trash after a
+  successful compress. → [Behavior](https://github.com/ValeriyMaslenikov/tamp/wiki/Preferences-and-Shortcuts#behavior)
+- 🔒 **Local and private** — bundled static FFmpeg, no uploads, no telemetry, no account.
+  → [Privacy](https://github.com/ValeriyMaslenikov/tamp/wiki/How-It-Works-and-Privacy#privacy--your-data)
 
 ## Install
 
-### Download — Windows
+**Windows** — grab `tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe`) from
+[**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest) and run it
+(per-user, no admin). The build is unsigned, so SmartScreen will warn — click
+**More info → Run anyway**.
 
-1. Grab `tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe` for Windows on ARM)
-   from [**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
-2. Run it — tamp installs per-user, no admin rights needed.
-3. The build is unsigned, so SmartScreen will warn you: click **More info → Run anyway**.
-4. Look for the compress-arrows icon in the system tray (Windows may tuck it behind the
-   `^` overflow — drag it onto the taskbar to keep it visible). tamp watches your Desktop
-   and the `Videos\Screen Recordings` / `Videos\Captures` folders out of the box.
+**macOS (Apple Silicon)** — grab the `.dmg`, drag **Tamp** to Applications. It's
+ad-hoc signed, so on first launch **right-click → Open → Open** (or
+`xattr -dr com.apple.quarantine /Applications/tamp.app`).
 
-### Download — macOS (Apple Silicon)
-
-1. Grab the latest `.dmg` from [**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
-2. Open it and drag **tamp** into **Applications**.
-3. First launch: tamp is ad-hoc signed (no Apple Developer certificate), so macOS will warn you.
-   Either **right-click the app → Open → Open**, or run:
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/tamp.app
-   ```
-4. Look for the compress-arrows icon in your menu bar. There's no Dock icon — tamp lives
-   entirely in the menu bar.
-
-On first use macOS will ask for permission to access your Desktop — that's tamp reading
-your screen recordings.
-
-> **Intel Macs:** not prebuilt yet, but `bun scripts/fetch-ffmpeg.ts x64` + `bun tauri build`
-> produces a working Intel binary. See [Build from source](#build-from-source).
-
-### Build from source
-
-```bash
-git clone https://github.com/ValeriyMaslenikov/tamp.git && cd tamp
-bun install
-bun scripts/fetch-ffmpeg.ts      # fetch static FFmpeg/ffprobe sidecars
-bun tauri build                  # → src-tauri/target/release/bundle/{macos,dmg}
-```
-
-Requires [Bun](https://bun.sh) and [Rust](https://rustup.rs).
-
-## Usage notes
-
-- **Default preset on click** — clicking a video row immediately compresses with the
-  default preset (★ in Preferences). The chevron (or <kbd>e</kbd>) expands the row for a
-  preview, per-video preset choice, or a custom one-off conversion.
-- **Presets** — each preset sets a max file size, an output format (MP4/WebM/GIF), and
-  optionally: cap FPS, limit width (or scale by percentage), strip audio. tamp computes
-  the bitrate from the video's duration to hit the size, with a small safety margin —
-  and never exceeds the source's own bitrate, so files don't grow.
-- **Global shortcuts** — <kbd>⌘⌥T</kbd> compresses the newest recording with the default
-  preset and puts the result on your clipboard (a notification warns if the latest
-  recording is older than 10 minutes — both configurable); <kbd>⌘⌥O</kbd> opens the panel.
-- **Output** — saved as `<name> (tamped 823f).mp4` next to the original (the 4 characters
-  fingerprint the preset's settings, so each config keeps exactly one output and re-clicks
-  reuse it). tamp's own outputs never show up in the recordings list while their original
-  exists.
-- **One preset per video with Trash enabled** — when "Move original to Trash" is on, the
-  original is gone after the first conversion, so tamp blocks a second preset on the same
-  video instead of failing halfway. Turn the toggle off to export several formats.
-- **Watched folders** — Preferences → Watched folders. Desktop is the default; add
-  wherever your recorder saves.
-
-  <img src="docs/preferences.png" width="340" alt="tamp preferences" />
-- **"Target too small"** — a long video may not fit the target even at minimum quality;
-  tamp tells you instead of producing unwatchable output. Lower the FPS / resolution in
-  the preset or pick a larger target.
-
-## How it works
-
-tamp bundles a static [FFmpeg](https://ffmpeg.org). The bitrate is computed from the
-target: video bitrate = (target size − audio budget) ÷ duration, minus a ~5% container
-margin, `aac 96k` audio, `+faststart` for instant remote playback. When the target
-would starve that bitrate (think a 4K screen recording into 10 MB), tamp automatically
-caps the frame rate at 30 fps and steps the resolution down just enough to keep the
-result legible — at which point the OS's hardware encoder (VideoToolbox on macOS;
-NVENC/QSV/AMF/Media Foundation on Windows) hits the size reliably and fast. If a result
-ever overshoots, tamp converges with corrected re-encodes
-(switching to precise two-pass software x264 when needed) and **never delivers a file
-over the target** — if a target is truly unreachable it tells you instead.
-The panel is a [Tauri 2](https://tauri.app) webview; the engine, folder scanning, and
-clipboard integration are Rust.
+Full steps, first-run details, Intel Macs, and building from source:
+**[Installing Tamp](https://github.com/ValeriyMaslenikov/tamp/wiki/Installing-Tamp)**.
 
 ## Development
 
 ```bash
 bun tauri dev        # run the app with hot reload
 bun run test         # frontend unit tests (vitest)
+bunx playwright test # frontend UI E2E
 cd src-tauri && cargo test   # Rust unit + integration tests
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and release process.
+See [AGENTS.md](AGENTS.md) for the project layout and architecture rules, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and release process.
 
 ## Roadmap
 
-- Drag & drop videos onto the panel for quick one-off compression
 - Linux (the platform layer is ready; needs a clipboard/tray strategy and CI target)
-- Notarized/signed builds
+- Notarized / signed builds
 
 ## License
 
@@ -187,4 +110,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and release process
 The installers bundle GPL-licensed static FFmpeg binaries built by
 [martin-riedl.de](https://ffmpeg.martin-riedl.de/) (macOS) and
 [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (Windows); FFmpeg is a
-trademark of Fabrice Bellard. tamp invokes these binaries as separate processes.
+trademark of Fabrice Bellard. Tamp invokes these binaries as separate processes.
