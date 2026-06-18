@@ -94,8 +94,10 @@ impl Platform for MacOs {
     }
 
     fn primary_mouse_button_down(&self) -> bool {
-        // Bit 0 of the pressed-button mask is the left button.
-        (unsafe { objc2_app_kit::NSEvent::pressedMouseButtons() } & 1) != 0
+        // Bit 0 of the pressed-button mask is the left button. The pinned
+        // objc2-app-kit marks this call safe, so no `unsafe` block is needed
+        // (an unnecessary one is a hard error under `-D warnings`).
+        (objc2_app_kit::NSEvent::pressedMouseButtons() & 1) != 0
     }
 
     fn resolve_accelerator(&self, accelerator: &str) -> String {
