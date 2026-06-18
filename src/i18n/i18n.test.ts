@@ -13,7 +13,7 @@ describe("t() key lookup", () => {
   it("resolves a nested dotted key", () => {
     setLocale("en");
     expect(t("common.save")).toBe("Save");
-    expect(t("app.name")).toBe("tamp");
+    expect(t("app.name")).toBe("Tamp");
   });
 
   it("reads from the active locale's dictionary", () => {
@@ -44,7 +44,7 @@ describe("t() fallback", () => {
     // resolving identically when uk is missing nothing; the fallback path is
     // covered by the missing-key case below.
     setLocale("uk");
-    expect(t("app.name")).toBe("tamp");
+    expect(t("app.name")).toBe("Tamp");
   });
 
   it("falls back to the raw key when missing from every dictionary", () => {

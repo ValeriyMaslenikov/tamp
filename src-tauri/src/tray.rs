@@ -6,13 +6,13 @@ use crate::platform::Platform as _;
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let open_logs = MenuItemBuilder::with_id("open-logs", "Open Logs").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit tamp").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit Tamp").build(app)?;
     let menu = MenuBuilder::new(app).item(&open_logs).item(&quit).build()?;
 
     TrayIconBuilder::with_id("main")
         .icon(tauri::include_image!("icons/trayicon.png"))
         .icon_as_template(true)
-        .tooltip("tamp")
+        .tooltip("Tamp")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {

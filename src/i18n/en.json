@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "tamp"
+    "name": "Tamp"
   },
   "common": {
     "save": "Save",
@@ -165,7 +165,7 @@
     "openAfterOff": "Off",
     "openAfterMultipart": "Multi-part splits only",
     "openAfterAll": "All conversions",
-    "contextMenu": "Add “Compress with tamp” to Explorer’s right-click menu",
+    "contextMenu": "Add “Compress with Tamp” to Explorer’s right-click menu",
     "shortcutCompressLatest": "Compress latest recording",
     "shortcutTogglePanel": "Show / hide panel",
     "staleWarnField": "Warn when the latest video is older than N minutes",
@@ -205,8 +205,8 @@
     "updatePrivacyHint": "Only asks GitHub for the latest version — nothing about you is sent."
   },
   "update": {
-    "available": "tamp {version} is available",
-    "body": "A newer version of tamp is ready. Update whenever it suits you — this won't change anything until you choose to.",
+    "available": "Tamp {version} is available",
+    "body": "A newer version of Tamp is ready. Update whenever it suits you — this won't change anything until you choose to.",
     "whatsNew": "What's new",
     "download": "Download",
     "later": "Later"

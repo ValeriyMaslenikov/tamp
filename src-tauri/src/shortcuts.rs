@@ -77,10 +77,10 @@ fn msg_no_recent_videos(lang: NotifLang) -> &'static str {
 fn msg_stale_warning(lang: NotifLang, name: &str, age_minutes: u64) -> String {
     match lang {
         NotifLang::En => format!(
-            "Compressing {name}, recorded {age_minutes}m ago — open tamp to cancel if that wasn't intended"
+            "Compressing {name}, recorded {age_minutes}m ago — open Tamp to cancel if that wasn't intended"
         ),
         NotifLang::Uk => format!(
-            "Стискаємо {name}, записано {age_minutes} хв тому — відкрийте tamp, щоб скасувати, якщо це не те, що ви хотіли"
+            "Стискаємо {name}, записано {age_minutes} хв тому — відкрийте Tamp, щоб скасувати, якщо це не те, що ви хотіли"
         ),
     }
 }
@@ -212,7 +212,7 @@ pub fn notify(app: &AppHandle, body: String) {
         crate::log_warn!("notifications not permitted; wanted to say: {body}");
         return;
     }
-    if let Err(e) = notifications.builder().title("tamp").body(&body).show() {
+    if let Err(e) = notifications.builder().title("Tamp").body(&body).show() {
         crate::log_warn!("failed to show notification: {e}");
     }
 }

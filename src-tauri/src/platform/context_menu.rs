@@ -1,4 +1,4 @@
-//! Registers (and removes) the per-user "Compress with tamp" Explorer entry by
+//! Registers (and removes) the per-user "Compress with Tamp" Explorer entry by
 //! writing HKCU registry keys for each video extension. Per-user (HKCU) needs
 //! no admin. On Windows 11 the entry appears under "Show more options".
 
@@ -22,7 +22,7 @@ use winreg::RegKey;
 /// `register` can attempt one extension, then roll back on a later failure.
 fn write_ext(hkcu: &RegKey, ext: &str, exe: &str) -> std::io::Result<()> {
     let (verb, _) = hkcu.create_subkey(verb_key(ext))?;
-    verb.set_value("", &"Compress with tamp")?;
+    verb.set_value("", &"Compress with Tamp")?;
     verb.set_value("Icon", &format!("\"{exe}\""))?;
     let (command, _) = hkcu.create_subkey(format!("{}\\command", verb_key(ext)))?;
     command.set_value("", &command_value(exe))?;
@@ -87,7 +87,7 @@ where
     }
 }
 
-/// Adds the "Compress with tamp" entry for every video extension, pointing at
+/// Adds the "Compress with Tamp" entry for every video extension, pointing at
 /// `exe`. All-or-nothing: if any extension fails to register, the ones already
 /// written this call are rolled back (deleted) and the original error is
 /// returned, so the on-disk state matches the (reverted) UI toggle rather than
@@ -113,7 +113,7 @@ pub fn unregister() -> std::io::Result<()> {
 // HKCU writes can't be driven from tests without mutating the dev machine's
 // registry. On-device: with a policy-locked or contended key partway through,
 // toggling the context menu ON rejects (the UI toggle stays OFF) and leaves NO
-// stale "Compress with tamp" entry on any extension; toggling OFF removes the
+// stale "Compress with Tamp" entry on any extension; toggling OFF removes the
 // entry from every extension even if one delete transiently fails.
 
 /// `register`/`unregister` keyed on `enabled`, using the running executable's

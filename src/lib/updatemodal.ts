@@ -36,7 +36,7 @@ export interface UpdateModal {
  * focus moved inside, Esc closes, Tab is trapped.
  *
  * manual: with a newer release present and the feature on, opening the panel
- * shows one card titled "tamp <version> is available"; "What's new"/"Download"
+ * shows one card titled "Tamp <version> is available"; "What's new"/"Download"
  * open the release page; "Later"/Esc/backdrop dismiss; the card never reshows
  * for that version (only a strictly newer one does).
  */
