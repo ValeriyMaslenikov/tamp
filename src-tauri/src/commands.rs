@@ -670,17 +670,36 @@ mod scope_tests {
     use super::dir_to_allow;
     use std::path::{Path, PathBuf};
 
+    // `dir_to_allow`'s containment/parent logic is the same on every OS, but the
+    // literals must use the test platform's own separators and root — a Windows
+    // `C:\…` string is a single (parent-less) component on Unix, so reuse one set
+    // of paths per OS.
+    #[cfg(windows)]
+    mod paths {
+        pub const WATCHED: &str = "C:\\Users\\me\\Videos";
+        pub const OUTSIDE_FILE: &str = "C:\\Downloads\\clip.mp4";
+        pub const OUTSIDE_DIR: &str = "C:\\Downloads";
+        pub const INSIDE_FILE: &str = "C:\\Users\\me\\Videos\\rec.mp4";
+    }
+    #[cfg(not(windows))]
+    mod paths {
+        pub const WATCHED: &str = "/home/me/Videos";
+        pub const OUTSIDE_FILE: &str = "/home/me/Downloads/clip.mp4";
+        pub const OUTSIDE_DIR: &str = "/home/me/Downloads";
+        pub const INSIDE_FILE: &str = "/home/me/Videos/rec.mp4";
+    }
+
     #[test]
     fn allows_parent_of_a_file_outside_watched_folders() {
-        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
-        let got = dir_to_allow(Path::new("C:\\Downloads\\clip.mp4"), &watched);
-        assert_eq!(got, Some(PathBuf::from("C:\\Downloads")));
+        let watched = vec![paths::WATCHED.to_string()];
+        let got = dir_to_allow(Path::new(paths::OUTSIDE_FILE), &watched);
+        assert_eq!(got, Some(PathBuf::from(paths::OUTSIDE_DIR)));
     }
 
     #[test]
     fn skips_files_already_inside_a_watched_folder() {
-        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
-        let got = dir_to_allow(Path::new("C:\\Users\\me\\Videos\\rec.mp4"), &watched);
+        let watched = vec![paths::WATCHED.to_string()];
+        let got = dir_to_allow(Path::new(paths::INSIDE_FILE), &watched);
         assert_eq!(got, None);
     }
 }
