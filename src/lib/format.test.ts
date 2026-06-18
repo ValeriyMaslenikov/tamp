@@ -130,44 +130,48 @@ describe("formatBytes", () => {
   });
 });
 
+// Relative time is now fully relative for ANY age via dayjs (no flip to an
+// absolute date). dayjs output is locale-dependent, so every assertion pins an
+// explicit dayjs locale: "en" (dayjs's default) for the reference strings, plus
+// one "uk" case to prove Ukrainian relative time loads.
 describe("formatRelativeTime", () => {
   const now = new Date(2026, 5, 11, 18, 0).getTime(); // Jun 11 2026, 18:00 local
+  const DAY = 86_400_000;
 
-  it("returns Just now under a minute", () => {
-    expect(formatRelativeTime(now - 30_000, now, "en-US")).toBe("Just now");
+  it("says 'a few seconds ago' under a minute", () => {
+    expect(formatRelativeTime(now - 30_000, now, "en")).toBe(
+      "a few seconds ago",
+    );
   });
 
-  it("returns minutes ago under an hour", () => {
-    expect(formatRelativeTime(now - 2 * 60_000, now, "en-US")).toBe("2m ago");
-    expect(formatRelativeTime(now - 59 * 60_000, now, "en-US")).toBe("59m ago");
+  it("counts minutes within the hour", () => {
+    expect(formatRelativeTime(now - 5 * 60_000, now, "en")).toBe(
+      "5 minutes ago",
+    );
   });
 
-  it("returns hours ago for same calendar day", () => {
-    const ms = new Date(2026, 5, 11, 14, 3).getTime();
-    expect(formatRelativeTime(ms, now, "en-US")).toBe("3h ago");
+  it("counts hours within the day", () => {
+    expect(formatRelativeTime(now - 3 * 3_600_000, now, "en")).toBe(
+      "3 hours ago",
+    );
   });
 
-  it("returns Yesterday with clock time", () => {
-    const ms = new Date(2026, 5, 10, 14, 3).getTime();
-    expect(formatRelativeTime(ms, now, "en-GB")).toBe("Yesterday 14:03");
+  it("stays relative for days — no flip to an absolute date", () => {
+    expect(formatRelativeTime(now - 5 * DAY, now, "en")).toBe("5 days ago");
   });
 
-  it("returns month/day with clock time within the year", () => {
-    // Pinned to en-US: "May 2" month/day ordering + a 12h "09:30 AM" clock.
-    const ms = new Date(2026, 4, 2, 9, 30).getTime();
-    expect(formatRelativeTime(ms, now, "en-US")).toBe("May 2 09:30 AM");
+  it("stays relative for months and years", () => {
+    expect(formatRelativeTime(now - 35 * DAY, now, "en")).toBe("a month ago");
+    expect(formatRelativeTime(now - 2 * 365 * DAY, now, "en")).toBe(
+      "2 years ago",
+    );
   });
 
-  it("returns month/day with year for older timestamps", () => {
-    const ms = new Date(2025, 11, 31, 9, 30).getTime();
-    expect(formatRelativeTime(ms, now, "en-US")).toBe("Dec 31, 2025");
-  });
-
-  it("follows the locale's month names and clock convention", () => {
-    // en-US uses a 12h clock with AM/PM; de-DE uses 24h and "Mai" for May.
-    const ms = new Date(2026, 4, 2, 9, 30).getTime();
-    expect(formatRelativeTime(ms, now, "en-US")).toContain("AM");
-    expect(formatRelativeTime(ms, now, "de-DE")).toContain("Mai");
+  it("localizes to Ukrainian when the dayjs locale is uk", () => {
+    // Cyrillic relative string: "5 хвилин тому".
+    const out = formatRelativeTime(now - 5 * 60_000, now, "uk");
+    expect(out).toBe("5 хвилин тому");
+    expect(out).toMatch(/[Ѐ-ӿ]/); // contains Cyrillic
   });
 });
 

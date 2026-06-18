@@ -96,16 +96,6 @@
     "revealAria": "Reveal",
     "revealInFileManager": "Show in file manager",
     "revealOutputFolder": "Open output folder",
-    "justNow": "Just now",
-    "minutesAgo": {
-      "one": "{count}m ago",
-      "other": "{count}m ago"
-    },
-    "hoursAgo": {
-      "one": "{count}h ago",
-      "other": "{count}h ago"
-    },
-    "yesterday": "Yesterday {time}",
     "percentSmaller": "{percent}% smaller",
     "smartSplit": "smart split",
     "splitInterval": "split {interval}",

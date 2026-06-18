@@ -4,6 +4,7 @@
 
 import en from "./en.json";
 import uk from "./uk.json";
+import dayjs from "../lib/dayjs";
 
 export type Locale = "en" | "uk";
 
@@ -31,13 +32,19 @@ export function resolveLocale(setting: string, navLang: string): Locale {
 }
 
 /**
- * Activate a locale: swap the active dictionary, rebuild the plural rules, and
- * reflect it on `<html lang>` so the platform picks correct hyphenation/fonts.
+ * Activate a locale: swap the active dictionary, rebuild the plural rules,
+ * point dayjs at the matching locale (so relative times follow the active
+ * language), and reflect it on `<html lang>` so the platform picks correct
+ * hyphenation/fonts.
  */
 export function setLocale(locale: Locale): void {
   activeLocale = locale;
   activeDict = DICTS[locale] ?? DICTS.en;
   pluralRules = new Intl.PluralRules(locale);
+  // Keep dayjs's relative-time output ("5 minutes ago" / "5 хвилин тому") in
+  // sync with the UI language. "en" is dayjs's default; "uk" is loaded in
+  // ../lib/dayjs.
+  dayjs.locale(locale);
   // `document` is absent under non-DOM test/SSR contexts; guard so t() stays
   // usable everywhere. manual: in the running webview this sets <html lang>.
   if (typeof document !== "undefined") {

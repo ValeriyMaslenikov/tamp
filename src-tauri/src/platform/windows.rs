@@ -182,9 +182,9 @@ impl Platform for Windows {
             Some(p) => {
                 let pct = p.percent();
                 let tooltip = if p.queued > 0 {
-                    format!("tamp — {pct}% (+{} queued)", p.queued)
+                    format!("Tamp — {pct}% (+{} queued)", p.queued)
                 } else {
-                    format!("tamp — {pct}%")
+                    format!("Tamp — {pct}%")
                 };
                 const SIZE: u32 = 32;
                 let icon = tauri::image::Image::new_owned(
@@ -197,7 +197,7 @@ impl Platform for Windows {
             }
             None => tray
                 .set_icon(Some(idle_icon(ink)))
-                .and_then(|()| tray.set_tooltip(Some("tamp"))),
+                .and_then(|()| tray.set_tooltip(Some("Tamp"))),
         };
         if let Err(e) = result {
             crate::log_warn!("failed to update tray progress: {e}");

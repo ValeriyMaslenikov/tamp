@@ -6,7 +6,8 @@
 // by host locale, so tests must never assert a bare default-locale string).
 
 import type { SplitConfig } from "./ipc";
-import { t } from "../i18n";
+import { t, getLocale } from "../i18n";
+import dayjs from "./dayjs";
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -51,45 +52,20 @@ export function formatClock(ms: number, locale?: string): string {
   }).format(new Date(ms));
 }
 
-/** "Just now", "2m ago", "3h ago", "Yesterday 14:03", "May 2 09:30",
- *  "Dec 31, 2025" — month names and 12/24h follow the OS locale. Recent
- *  timestamps stay relative; older ones become absolute (compact style). */
+/** Fully relative, localized age via dayjs: "a few seconds ago", "5 minutes
+ *  ago", "5 days ago", "a month ago", "2 years ago" (uk: "5 хвилин тому",
+ *  "5 днів тому", …). Never flips to an absolute date — that's formatAbsolute's
+ *  job (the hover tooltip). The optional `locale` pins the dayjs locale for
+ *  deterministic tests; otherwise the active UI locale (set via i18n's
+ *  setLocale → dayjs.locale) is used. */
 export function formatRelativeTime(
   ms: number,
   now: number = Date.now(),
   locale?: string,
 ): string {
-  const diff = now - ms;
-  if (diff < 60_000) return t("converted.justNow");
-  if (diff < 3_600_000) {
-    return t("converted.minutesAgo", { count: Math.floor(diff / 60_000) });
-  }
-
-  const d = new Date(ms);
-  const n = new Date(now);
-  const startOfDay = (x: Date) =>
-    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const dayDiff = Math.round((startOfDay(n) - startOfDay(d)) / 86_400_000);
-
-  if (dayDiff <= 0) {
-    return t("converted.hoursAgo", { count: Math.floor(diff / 3_600_000) });
-  }
-  if (dayDiff === 1) {
-    return t("converted.yesterday", { time: formatClock(ms, locale) });
-  }
-
-  const monthDay = new Intl.DateTimeFormat(locale, {
-    month: "short",
-    day: "numeric",
-  }).format(d);
-  if (d.getFullYear() === n.getFullYear()) {
-    return `${monthDay} ${formatClock(ms, locale)}`;
-  }
-  return new Intl.DateTimeFormat(locale, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(d);
+  return dayjs(ms)
+    .locale(locale ?? getLocale())
+    .from(dayjs(now));
 }
 
 /** "Jun 12, 2026 · 23:41" for a tooltip — month names and 12/24h follow the OS

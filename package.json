@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@fontsource/montserrat": "^5.2.8",
-    "@tauri-apps/api": "^2"
+    "@tauri-apps/api": "^2",
+    "dayjs": "^1.11.21"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
