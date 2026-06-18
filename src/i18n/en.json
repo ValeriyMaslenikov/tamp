@@ -195,12 +195,16 @@
     "errSplitDuration": "Split duration must be a whole number of seconds (10 or more)"
   },
   "onboarding": {
-    "title": "Welcome to tamp",
-    "trayLocationWindows": "tamp now lives in your system tray, near the clock. Windows often hides it under the ^ overflow arrow — drag it out to keep it handy.",
-    "trayLocationMac": "tamp now lives in your menu bar, near the clock at the top-right of your screen.",
-    "reopenShortcut": "Press {shortcut} any time to show or hide this panel.",
-    "notificationPriming": "tamp may ask to send notifications so it can warn you when your latest recording goes stale — you can change this any time in Preferences.",
-    "updateConsentLine": "tamp can quietly check for new versions when it starts.",
+    "title": "Welcome to Tamp 👋",
+    "lead": "Shrink screen recordings to a size you can share — in four steps.",
+    "step1Title": "Open it",
+    "step1Detail": "Tamp sits in your tray, near the clock. On Windows it hides under the ^ overflow arrow. Press {shortcut} to show or hide this panel anytime.",
+    "step2Title": "Make a preset",
+    "step2Detail": "In Preferences, create one for where you share — say \"Discord\", capped at 10 MB. (Discord (10 MB) comes built in.)",
+    "step3Title": "Convert a recording",
+    "step3Detail": "Drop a video here, right-click one in Explorer → \"Compress with Tamp\", or press {shortcut} to shrink your latest.",
+    "step4Title": "Use it",
+    "step4Detail": "The smaller file is copied to your clipboard — just paste it wherever you're sharing.",
     "updateConsentTitle": "Check for new versions automatically",
     "updatePrivacyHint": "Only asks GitHub for the latest version — nothing about you is sent."
   },

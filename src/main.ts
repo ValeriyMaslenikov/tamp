@@ -112,11 +112,11 @@ async function main(): Promise<void> {
   function primeNotifications(): void {
     if (primedNotifications) return;
     primedNotifications = true;
-    // No blocking dialog: we simply trigger the request in context. The notice
-    // mounted just above carries the notification rationale line, so on a
-    // platform that surfaces an OS prompt the user has already read why tamp
-    // wants to notify. Failures are swallowed — notifications are an optional
-    // convenience.
+    // No blocking dialog: we simply trigger the request in context, right after
+    // the welcome notice mounts, so on a platform that surfaces an OS prompt it
+    // appears while the user is reading the first-run flow rather than silently
+    // on the first shortcut fire. Failures are swallowed — notifications are an
+    // optional convenience.
     void requestNotificationPermission().catch(() => {});
   }
 
@@ -141,13 +141,13 @@ async function main(): Promise<void> {
     onboardingEl = notice.el;
     panel.insertBefore(notice.el, content);
     // First run is also the moment to prime notifications, in context: the
-    // notice explains where tamp lives AND why it may notify (its rationale
-    // line); the permission request follows immediately after.
+    // welcome notice is on screen, so any OS permission prompt that follows
+    // arrives while the user is actively onboarding rather than out of the blue.
     primeNotifications();
   }
 
-  // manual: on a fresh profile (no settings.json), the one-time tray-location +
-  // reopen-shortcut notice shows once and never again after "Got it". On a
+  // manual: on a fresh profile (no settings.json), the one-time four-step
+  // welcome notice shows once and never again after "Got it". On a
   // platform that can deny notifications, denying then opening Preferences shows
   // the recoverable "Notifications are off" row with an Enable button; on
   // desktop the plugin reports "granted", so that row stays hidden by design.
@@ -320,8 +320,8 @@ async function main(): Promise<void> {
       // setTab ran before settings loaded (defaulting the hint to quick-pick);
       // refresh it now that the real videos-layout is known.
       if (!listView.el.hidden) footer.textContent = listView.footerHint();
-      // First-run notice (tray-location hint + reopen shortcut + notification
-      // rationale) + permission priming, once the real seen-flag is known.
+      // First-run notice (the guided four-step welcome flow) + notification
+      // permission priming, once the real seen-flag is known.
       maybeShowOnboarding(settings);
       // The panel is already shown at launch, so a panel:shown event may have
       // fired (and no-op'd) before settings loaded. Run the gated check now that

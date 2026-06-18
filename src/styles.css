@@ -360,6 +360,59 @@ textarea {
   border-left-color: var(--accent);
 }
 
+/* The one-line lead under the welcome title: a calm framing sentence above the
+   numbered steps. */
+.onboarding-lead {
+  margin-top: 4px;
+  color: var(--text);
+}
+
+/* The guided four-step flow: each step is a number badge beside a bold title
+   and one detail line. A little extra top spacing sets the list off from the
+   lead. */
+.onboarding-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* The accent number badge: a small, filled circle carrying the step number, so
+   the flow reads as an ordered list at a glance. */
+.onboarding-step-badge {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
+
+.onboarding-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.onboarding-step-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.onboarding-step-detail {
+  opacity: 0.8;
+}
+
 /* Action row inside a notice card (the onboarding "Got it" / the notifications
    "Enable" recovery button): right-aligned, a touch of top spacing. */
 .onboarding-actions {
