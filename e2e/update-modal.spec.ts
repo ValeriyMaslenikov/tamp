@@ -22,7 +22,7 @@ test.describe("update modal", () => {
     // The modal mounts on the panel after the (fire-and-forget) check resolves.
     const modal = page.getByRole("dialog");
     await expect(modal).toBeVisible();
-    await expect(modal).toContainText("tamp 9.9.9 is available");
+    await expect(modal).toContainText("Tamp 9.9.9 is available");
 
     // "Later" dismisses and persists lastDismissedUpdateVersion = the version.
     await modal.getByRole("button", { name: "Later" }).click();

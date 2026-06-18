@@ -11,10 +11,13 @@ test.describe("onboarding", () => {
     await tamp.seedSettings({ onboardingSeen: false });
     await tamp.goto();
 
-    // The one-time notice mounts above the content, titled "Welcome to tamp".
+    // The one-time notice mounts above the content: the guided 4-step
+    // "Welcome to Tamp" flow (Open → Make a preset → Convert → Use it).
     const notice = page.locator(".onboarding-notice");
     await expect(notice).toBeVisible();
-    await expect(notice).toContainText("Welcome to tamp");
+    await expect(notice).toContainText("Welcome to Tamp");
+    await expect(notice).toContainText("Open it");
+    await expect(notice).toContainText("Make a preset");
 
     // "Got it" dismisses and persists the seen flag.
     await notice.getByRole("button", { name: "Got it" }).click();
