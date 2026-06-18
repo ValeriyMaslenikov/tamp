@@ -229,6 +229,16 @@ export function createConvertedView(): ConvertedView {
     return rev;
   }
 
+  /** A "·" middot kept out of the truncating sub-line text (and off the time's
+   *  dotted underline) so it always sits between the meta and the pinned time. */
+  function separator(): HTMLElement {
+    const sep = document.createElement("span");
+    sep.className = "conv-sep";
+    sep.textContent = "·";
+    sep.setAttribute("aria-hidden", "true");
+    return sep;
+  }
+
   /** The time element, carrying a Recorded-vs-Converted tooltip on hover. */
   function timeEl(recordedMs: number, convertedMs: number): HTMLElement {
     const wrap = document.createElement("span");
@@ -236,14 +246,25 @@ export function createConvertedView(): ConvertedView {
     wrap.textContent = formatRelativeTime(convertedMs);
     const tip = document.createElement("span");
     tip.className = "conv-tip";
-    tip.innerHTML =
-      `<span class="conv-tip-row"><b class="rec"></b><span></span></span>` +
-      `<span class="conv-tip-row"><b class="conv"></b><span></span></span>`;
-    (tip.querySelector("b.rec") as HTMLElement).textContent = t("converted.tipCreated");
-    (tip.querySelector("b.conv") as HTMLElement).textContent = t("converted.tipConverted");
-    const vals = tip.querySelectorAll("span span");
-    (vals[0] as HTMLElement).textContent = formatAbsolute(recordedMs);
-    (vals[1] as HTMLElement).textContent = formatAbsolute(convertedMs);
+    // Build each row explicitly. (A prior `querySelectorAll("span span")` also
+    // matched the row <span>s themselves — tip is a <span> — so writing the
+    // first value's textContent wiped that row's label, leaving the original
+    // recorded date under a bare "Converted" label: the exact mislabel users hit.)
+    const tipRow = (labelClass: string, label: string, value: string): HTMLElement => {
+      const row = document.createElement("span");
+      row.className = "conv-tip-row";
+      const b = document.createElement("b");
+      b.className = labelClass;
+      b.textContent = label;
+      const v = document.createElement("span");
+      v.textContent = value;
+      row.append(b, v);
+      return row;
+    };
+    tip.append(
+      tipRow("rec", t("converted.tipRecorded"), formatAbsolute(recordedMs)),
+      tipRow("conv", t("converted.tipConverted"), formatAbsolute(convertedMs)),
+    );
     // The sub-line and scroll container clip overflow, so the popover is
     // attached to <body> and positioned over the viewport on hover instead of
     // nesting it (where it would be clipped and never show).
@@ -292,13 +313,15 @@ export function createConvertedView(): ConvertedView {
     name.title = node.inputPath;
     const sub = document.createElement("div");
     sub.className = "conv-sub";
+    const subMain = document.createElement("span");
+    subMain.className = "conv-sub-main";
     const before = node.inputBytes ? formatBytes(node.inputBytes) : "—";
     const after = formatBytes(node.output.bytes);
-    sub.innerHTML =
+    subMain.innerHTML =
       `${before} → <b class="conv-after">${after}</b> · ` +
-      `<span class="conv-where"></span> · `;
-    (sub.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
-    sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
+      `<span class="conv-where"></span>`;
+    (subMain.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
+    sub.append(subMain, separator(), timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
 
     r.append(meta, playButton(outputPath), copyButton(outputPath), revealButton(outputPath, t("converted.revealInFileManager")));
@@ -366,16 +389,18 @@ export function createConvertedView(): ConvertedView {
     name.title = node.inputPath;
     const sub = document.createElement("div");
     sub.className = "conv-sub";
+    const subMain = document.createElement("span");
+    subMain.className = "conv-sub-main";
     const before = node.inputBytes ? formatBytes(node.inputBytes) : "—";
     const after = formatBytes(node.totalBytes);
-    sub.innerHTML =
+    subMain.innerHTML =
       `${before} → <b class="conv-after">${after}</b> · ` +
       `<span class="badge-parts"></span> · ` +
-      `<span class="conv-where"></span> · `;
-    (sub.querySelector(".badge-parts") as HTMLElement).textContent =
+      `<span class="conv-where"></span>`;
+    (subMain.querySelector(".badge-parts") as HTMLElement).textContent =
       pluralParts(node.parts.length);
-    (sub.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
-    sub.append(timeEl(node.inputCreatedMs, node.completedAtMs));
+    (subMain.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
+    sub.append(subMain, separator(), timeEl(node.inputCreatedMs, node.completedAtMs));
     meta.append(name, sub);
 
     const copyAll = actionButton(

@@ -84,7 +84,7 @@
   "converted": {
     "loading": "Loading…",
     "empty": "No conversions yet.\nCompress a video and it'll show up here — including files from outside your watched folders.",
-    "tipCreated": "Created",
+    "tipRecorded": "Recorded",
     "tipConverted": "Converted",
     "copiedToClipboard": "Copied to clipboard",
     "playAria": "Play",

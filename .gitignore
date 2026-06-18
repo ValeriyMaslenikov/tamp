@@ -35,3 +35,6 @@ public/mock/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# Local UI mockup/scratch renders (not committed)
+.mockups/

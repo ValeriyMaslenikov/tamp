@@ -1020,12 +1020,31 @@ textarea {
   margin-bottom: 6px;
 }
 
+/* A field that opens a new sub-group inside a card (e.g. "Recent videos shown"
+   under the layout-picker radios): a hairline + breathing room so it doesn't
+   crowd the control above it. */
+.field-divided {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
 /* A sub-label that belongs to the toggle row just above it (e.g. the
-   update-check privacy line): pull it up snug under the switch and indent it
-   slightly so it reads as that toggle's explanation, not a loose hint. */
+   update-check privacy line). The toggle's own bottom divider would otherwise
+   fall BETWEEN the toggle and this hint, orphaning the hint past the line; so
+   drop that divider and let the hint carry it instead — toggle + hint now read
+   as one unit, with the divider closing it off below. */
+/* `.card` prefix raises specificity to (0,3,0) so this reliably beats
+   `.toggle-row:not(:last-child)` (0,2,0) regardless of source order — a bare
+   `.toggle-row:has(...)` ties at (0,2,0) and would lose to the later rule. */
+.card .toggle-row:has(+ .toggle-hint) {
+  border-bottom: none;
+}
 .toggle-hint {
-  margin-top: -4px;
-  margin-bottom: 8px;
+  margin-top: -2px;
+  margin-bottom: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* ---------- "Split into parts" control (preset editor + custom page) ---------- */
@@ -1260,6 +1279,10 @@ select.input {
 .switch .track::after {
   content: "";
   position: absolute;
+  /* `* { box-sizing }` doesn't reach pseudo-elements and box-sizing isn't
+     inherited, so without this the 1px border below made the knob 18px and it
+     poked out of the 20px track top/bottom. Pin it to border-box → a true 16px. */
+  box-sizing: border-box;
   top: 2px;
   left: 2px;
   width: 16px;
@@ -1370,13 +1393,30 @@ select.input {
   text-overflow: ellipsis;
 }
 
+/* A flex line so the relative time stays pinned to the right and the variable
+   part (size · parts · preset name) is the only thing that truncates. Before,
+   the whole line ellipsized at its end — so on long/group rows the time (and its
+   dotted-underline tooltip affordance) got cut off, making the underline look
+   like it appeared on some rows but not others. */
 .conv-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 10.5px;
   color: var(--text-dim);
   margin-top: 3px;
-  white-space: nowrap;
+}
+
+.conv-sub-main {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-sep {
+  flex: none;
+  color: var(--text-dim);
 }
 
 .conv-after {
@@ -1564,7 +1604,9 @@ select.input {
 }
 
 .conv-time {
+  flex: none;
   cursor: help;
+  white-space: nowrap;
   border-bottom: 1px dotted var(--text-dim);
 }
 

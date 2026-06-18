@@ -488,7 +488,11 @@ export function createPreferencesView(opts: {
         d.recentsLimit = n;
       });
     });
-    card.append(field(t("prefs.recentVideosShown"), limitInput));
+    // A hairline separates this from the layout-picker radios above so it reads
+    // as its own setting, not a tail of the last radio's description.
+    const limitField = field(t("prefs.recentVideosShown"), limitInput);
+    limitField.classList.add("field-divided");
+    card.append(limitField);
 
     return card;
   }

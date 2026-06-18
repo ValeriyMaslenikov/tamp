@@ -61,4 +61,30 @@ test.describe("converted tab", () => {
     // It must NOT fall back to the single-file copy command for a split.
     expect(calls.some((c) => c.cmd === "copy_file")).toBe(false);
   });
+
+  test("the row time is pinned + carries a Recorded → Converted tooltip", async ({
+    tamp,
+    page,
+  }) => {
+    await tamp.setMock("list_conversions", sampleConversions());
+    await tamp.goto();
+    await page.locator("#tab-converted").click();
+    const view = page.locator(".view-converted");
+    await expect(view).toBeVisible();
+
+    // Every row shows its (pinned) relative time — single and group alike — so
+    // the dotted-underline affordance is consistent, never truncated away.
+    const single = view.locator(".conv-row");
+    const groupParent = view.locator(".conv-tree .conv-tree-parent");
+    await expect(single.locator(".conv-time")).toBeVisible();
+    await expect(groupParent.locator(".conv-time")).toBeVisible();
+
+    // Hovering pops a body-attached tooltip whose two rows are clearly labelled
+    // "Recorded" (the original) then "Converted" — no more "Created" mislabel.
+    await single.locator(".conv-time").hover();
+    const tip = page.locator(".conv-tip");
+    await expect(tip).toBeVisible();
+    await expect(tip).toContainText("Recorded");
+    await expect(tip).toContainText("Converted");
+  });
 });
