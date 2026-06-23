@@ -56,8 +56,8 @@
       "withName": "Drop to compress with {name}"
     },
     "footer": {
-      "activeBar": "↑↓ select · ←→ profile · 1–9 quick profile · ⏎ convert · esc back",
-      "quickPick": "↑↓ select · ⏎ pick preset · 1–9 quick profile · e expand · esc back"
+      "activeBar": "↑↓ select · →← expand · [ ] preset · ⏎ convert · esc close",
+      "quickPick": "↑↓ select · →← expand · ⏎ pick preset · 1–9 preset · esc close"
     },
     "status": {
       "queued": "Queued",
@@ -247,9 +247,9 @@
     "tabConverted": "Converted",
     "tabPrefs": "Preferences",
     "pinTitle": "Keep panel open",
-    "footerVideos": "↑↓ select · ⏎/d default · e expand · esc back",
-    "footerConverted": "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc back",
-    "footerPrefs": "esc back"
+    "footerVideos": "↑↓ select · →← expand · ⏎ pick preset · 1–9 preset · esc close",
+    "footerConverted": "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc close",
+    "footerPrefs": "esc close"
   },
   "errors": {
     "generic": "Something went wrong. Check the logs (tray → Open Logs) for details.",

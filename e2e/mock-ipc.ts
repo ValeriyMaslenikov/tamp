@@ -248,8 +248,14 @@ export function installTauriMock(defaultSettings: Record<string, unknown>): void
     if (cmd === "plugin:app|name") return "tamp";
     if (cmd === "plugin:app|tauri_version") return "2.0.0";
 
-    // Window plugin: getCurrentWindow().hide() (Esc) and friends — accept all.
-    if (cmd.startsWith("plugin:window|")) return null;
+    // Window plugin: getCurrentWindow().hide() (Esc) and friends. Record them
+    // (mirrored to sessionStorage) so a spec can assert e.g. that Esc hid the
+    // panel via "plugin:window|hide", then accept.
+    if (cmd.startsWith("plugin:window|")) {
+      bridge.calls.push({ cmd, args: a });
+      writeStored(CALLS_KEY, bridge.calls);
+      return null;
+    }
     if (cmd.startsWith("plugin:webview|")) return null;
     if (cmd.startsWith("plugin:")) return null;
 

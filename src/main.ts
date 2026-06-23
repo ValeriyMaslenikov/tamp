@@ -204,7 +204,10 @@ async function main(): Promise<void> {
     app.querySelectorAll<HTMLButtonElement>(".seg-btn"),
   );
 
-  function setTab(tab: Tab): void {
+  let activeTab: Tab = "videos";
+
+  function setTab(tab: Tab, focusContent = true): void {
+    activeTab = tab;
     // A drop can float the preset picker over any tab; close a stale one on
     // every tab change so it can't linger or resurface on the wrong tab.
     listView.closeQuickPick();
@@ -229,6 +232,14 @@ async function main(): Promise<void> {
     } else {
       footer.textContent = t("main.footerPrefs");
     }
+    // Drop focus from the tab strip into the content so the freed ← → arrows
+    // drive expand/collapse in the list instead of the ARIA tablist. Skipped
+    // for keyboard tab-nav (focusContent=false), which keeps focus on the chip
+    // for continued arrowing; Videos already hands focus to its filter above.
+    if (focusContent && tab !== "videos") {
+      const a = document.activeElement;
+      if (a instanceof HTMLElement && a.classList.contains("seg-btn")) a.blur();
+    }
   }
 
   // Move to the tab at `index` (wrapping): focus it AND activate it, per the
@@ -236,9 +247,21 @@ async function main(): Promise<void> {
   function activateTabAt(index: number): void {
     const count = segButtons.length;
     const b = segButtons[((index % count) + count) % count];
-    setTab(b.dataset.tab as Tab);
+    setTab(b.dataset.tab as Tab, false); // keep focus on the chip for continued arrowing
     b.focus();
   }
+
+  // Ctrl+Tab / Ctrl+Shift+Tab cycle the top tabs from anywhere. (Cmd+Tab is the
+  // OS app switcher on macOS, so this stays on Ctrl.) setTab moves focus into the
+  // content, so the now-freed ← → arrows act on the list, not the tab strip.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || !e.ctrlKey) return;
+    e.preventDefault();
+    const order: Tab[] = ["videos", "converted", "prefs"];
+    const dir = e.shiftKey ? -1 : 1;
+    const next = (order.indexOf(activeTab) + dir + order.length) % order.length;
+    setTab(order[next]);
+  });
 
   for (const b of segButtons) {
     b.addEventListener("click", () => setTab(b.dataset.tab as Tab));

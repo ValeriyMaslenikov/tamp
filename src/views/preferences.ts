@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getSettings,
   notificationPermission,
@@ -810,6 +811,22 @@ export function createPreferencesView(opts: {
     card.append(add);
     return card;
   }
+
+  // Esc on the Preferences tab backs out of an open preset editor, otherwise
+  // hides the panel — matching the Videos/Converted tabs (Esc was previously a
+  // no-op here despite the footer hint). Gated on this view being the active tab.
+  document.addEventListener("keydown", (e) => {
+    if (el.hidden || e.key !== "Escape") return;
+    e.preventDefault();
+    if (editorOpen) {
+      closeEditor();
+      paint();
+      return;
+    }
+    void getCurrentWindow()
+      .hide()
+      .catch((err) => showToast(friendlyError(err), "error"));
+  });
 
   return { el, render };
 }

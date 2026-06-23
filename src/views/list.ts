@@ -502,14 +502,16 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
     if (inFilter) return; // everything else types into the filter natively
 
-    // Active-bar mode: [ ] and ← → cycle the active preset.
+    // Active-bar mode: [ and ] cycle the active preset. (← → are reserved for
+    // expand/collapse below, so the arrow keys mean one thing across both tabs;
+    // preset cycling lives on the brackets and the on-screen ‹ › buttons.)
     if (layoutMode() === "active-bar") {
-      if (e.key === "[" || e.key === "ArrowLeft") {
+      if (e.key === "[") {
         e.preventDefault();
         cycleActive(-1);
         return;
       }
-      if (e.key === "]" || e.key === "ArrowRight") {
+      if (e.key === "]") {
         e.preventDefault();
         cycleActive(1);
         return;
@@ -520,6 +522,18 @@ export function createListView(getSettings: () => Settings | null): ListView {
       ? videos.find((v) => v.path === selectedPath)
       : undefined;
     if (selected) {
+      // → expands the selected row (preview + presets); ← collapses it —
+      // mirroring the Converted tab so the arrows behave identically everywhere.
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        if (expandedPath !== selected.path) toggleExpand(selected);
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        if (expandedPath === selected.path) collapseExpanded();
+        return;
+      }
       if (e.key === "Enter" || e.key === "d") {
         e.preventDefault();
         onRowClick(selected);
