@@ -85,3 +85,9 @@ Note: Windows installers (both x64 and arm64) bundle the x64 FFmpeg build —
 BtbN's winarm64 zips lack libvpx (WebM), and Windows 11 runs x64 binaries
 transparently. Flip `scripts/fetch-ffmpeg.ts` back to winarm64 once it ships
 libvpx.
+
+## Code signing
+
+The macOS build is signed + notarized when the Apple secrets are configured (it
+falls back to unsigned otherwise). Setup, the exact secrets, and the
+open-source secret-safety model live in **[code-signing.md](code-signing.md)**.

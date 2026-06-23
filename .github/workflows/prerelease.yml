@@ -98,6 +98,15 @@ jobs:
     defaults:
       run:
         shell: bash
+    # macOS signing + notarization read these during `bun tauri build`. They
+    # resolve to empty on a run that has no secrets configured (and a fork PR
+    # never receives them), so the build cleanly falls back to unsigned rather
+    # than failing. Only set here — never in the pull_request CI workflow.
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -106,6 +115,27 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
+      # Import the Developer ID cert into a throwaway keychain so `tauri build`
+      # can sign with APPLE_SIGNING_IDENTITY (then notarize + staple). macOS only,
+      # and only when signing is configured — otherwise the build stays unsigned.
+      - name: Import Apple Developer ID certificate (macOS)
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" "login.keychain-db"
+          rm -f "$CERT"
       # Tag-driven beta version: strip the leading `v` from the tag, patch
       # package.json to it, then mirror that into Cargo.toml/Cargo.lock. The
       # checkout is ephemeral, so nothing is committed and there is nothing to
