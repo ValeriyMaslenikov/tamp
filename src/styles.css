@@ -215,7 +215,10 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 0 12px 8px;
+  /* Top padding leaves room for the filter input's focus ring (outline-offset
+     2px + box-shadow); .content clips overflow, so a flush row sliced the ring
+     flat across the top. */
+  padding: 5px 12px 8px;
 }
 .add-file-btn {
   flex: none;
