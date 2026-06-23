@@ -102,6 +102,30 @@ fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// Build a `RecentVideo` from a file's path + metadata and its already-decided
+/// output classification. The single construction point for both `scan` (folder
+/// walk) and `describe` (a dropped file). `thumb_path`/`duration_secs` stay
+/// `None`; the thumbnail and duration caches fill them later.
+fn build_video(
+    path: &Path,
+    meta: &std::fs::Metadata,
+    conversion: Option<ConversionMeta>,
+) -> RecentVideo {
+    RecentVideo {
+        path: path.to_string_lossy().into_owned(),
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        size_bytes: meta.len(),
+        created_ms: created_unix_ms(meta),
+        thumb_path: None,
+        duration_secs: None,
+        is_output: conversion.is_some(),
+        conversion,
+    }
+}
+
 pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
     let mut videos: Vec<RecentVideo> = Vec::new();
     for folder in folders {
@@ -114,7 +138,7 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
         };
         // Orphan detection needs the folder's full stem set before any output
         // can be classified, so collect first and classify second.
-        let mut files: Vec<(PathBuf, String, std::fs::Metadata)> = Vec::new();
+        let mut files: Vec<(PathBuf, std::fs::Metadata)> = Vec::new();
         let mut stems: HashSet<String> = HashSet::new();
         for entry in entries.flatten() {
             let path = entry.path();
@@ -129,10 +153,9 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
                 _ => continue,
             };
             stems.insert(stem.to_string());
-            let name = entry.file_name().to_string_lossy().into_owned();
-            files.push((path, name, meta));
+            files.push((path, meta));
         }
-        for (path, name, meta) in files {
+        for (path, meta) in files {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -148,20 +171,51 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
                 }),
                 None => None,
             };
-            videos.push(RecentVideo {
-                path: path.to_string_lossy().into_owned(),
-                name,
-                size_bytes: meta.len(),
-                created_ms: created_unix_ms(&meta),
-                thumb_path: None,
-                duration_secs: None,
-                is_output: conversion.is_some(),
-                conversion,
-            });
+            videos.push(build_video(&path, &meta, conversion));
         }
     }
     videos.sort_by_key(|v| std::cmp::Reverse(v.created_ms));
     videos.truncate(limit);
+    videos
+}
+
+/// Describe a single arbitrary file (a drag-and-drop target) as a `RecentVideo`.
+/// Unlike `scan`, there is no surrounding folder to consult, so a tamped-output
+/// name is classified as an output by its name alone (treated like an orphan —
+/// no sibling-original lookup). Returns `None` for non-video extensions or
+/// non-regular files (folders, symlinks to dirs, missing paths).
+pub fn describe(path: &Path) -> Option<RecentVideo> {
+    if !has_video_ext(path) {
+        return None;
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    let conversion = tamped_original_stem(stem).map(|_| ConversionMeta {
+        original_bytes: None,
+        output_bytes: meta.len(),
+        preset_name: None,
+    });
+    Some(build_video(path, &meta, conversion))
+}
+
+/// Describe many dropped paths, deduping by path and enriching with the same
+/// thumbnail + duration caches `list_recents` uses. Non-video / missing paths
+/// are silently skipped; order follows the input.
+pub async fn describe_paths(app: &tauri::AppHandle, paths: &[PathBuf]) -> Vec<RecentVideo> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut videos: Vec<RecentVideo> = Vec::new();
+    for path in paths {
+        if let Some(v) = describe(path) {
+            if seen.insert(v.path.clone()) {
+                videos.push(v);
+            }
+        }
+    }
+    crate::thumbs::ensure_thumbs(app, &mut videos).await;
+    crate::durations::fill(app, &mut videos).await;
     videos
 }
 
@@ -467,6 +521,33 @@ mod tests {
         }
         let limited = scan(&[dir.path().to_path_buf()], 2);
         assert_eq!(names(&limited), vec!["new.mov", "orphan (tamped a3f2).mp4"]);
+    }
+
+    #[test]
+    fn describe_classifies_single_files() {
+        let dir = tempfile::tempdir().unwrap();
+        touch(dir.path(), "clip.mov");
+        touch(dir.path(), "shot (tamped a3f2).mp4");
+        touch(dir.path(), "notes.txt");
+        std::fs::create_dir(dir.path().join("afolder.mov")).unwrap();
+
+        // Non-video extension, a directory (even with a video ext), and a
+        // missing path all describe to nothing.
+        assert!(describe(&dir.path().join("notes.txt")).is_none());
+        assert!(describe(&dir.path().join("afolder.mov")).is_none());
+        assert!(describe(&dir.path().join("missing.mov")).is_none());
+
+        let original = describe(&dir.path().join("clip.mov")).unwrap();
+        assert_eq!(original.name, "clip.mov");
+        assert!(!original.is_output);
+        assert!(original.conversion.is_none());
+
+        let output = describe(&dir.path().join("shot (tamped a3f2).mp4")).unwrap();
+        assert!(output.is_output);
+        let meta = output.conversion.as_ref().expect("output conversion meta");
+        assert_eq!(meta.output_bytes, output.size_bytes);
+        assert_eq!(meta.original_bytes, None);
+        assert_eq!(meta.preset_name, None);
     }
 
     #[test]

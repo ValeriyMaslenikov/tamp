@@ -1,4 +1,5 @@
 import "./styles.css";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   getSettings,
   onEncodeState,
@@ -26,6 +27,9 @@ function main(): void {
       </header>
       <main class="content" id="content"></main>
       <footer class="panel-footer">↑↓ select · ⏎/d default · e expand · esc back</footer>
+      <div class="drop-overlay" aria-hidden="true">
+        <div class="drop-overlay-inner">Drop videos to add to the list</div>
+      </div>
       <div class="toast" id="toast" hidden></div>
     </div>`;
 
@@ -64,6 +68,25 @@ function main(): void {
     b.addEventListener("click", () => setTab(b.dataset.tab as Tab));
   }
   setTab("videos");
+
+  // Drag-and-drop: Tauri delivers native file paths (dragDropEnabled). Dropping
+  // stages the files as rows on the Videos tab; the user then clicks to compress.
+  const panel = app.querySelector<HTMLElement>(".panel");
+  void getCurrentWebview().onDragDropEvent(async (event) => {
+    const p = event.payload;
+    if (p.type === "enter" || p.type === "over") {
+      panel?.classList.add("is-dropping");
+    } else if (p.type === "leave") {
+      panel?.classList.remove("is-dropping");
+    } else if (p.type === "drop") {
+      panel?.classList.remove("is-dropping");
+      setTab("videos");
+      const added = await listView.acceptDrop(p.paths);
+      if (added === 0) {
+        showToast("Drop video files (.mov, .mp4, .m4v, .webm, .mkv, .avi).");
+      }
+    }
+  });
 
   void onPanelShown(() => {
     void listView.refresh();

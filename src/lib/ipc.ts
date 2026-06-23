@@ -111,6 +111,10 @@ export interface JobState {
 export const listRecents = (): Promise<RecentVideo[]> =>
   invoke<RecentVideo[]>("list_recents");
 
+/** Describe drag-dropped file paths as videos (non-videos/missing are dropped). */
+export const describeDropped = (paths: string[]): Promise<RecentVideo[]> =>
+  invoke<RecentVideo[]>("describe_dropped", { paths });
+
 export const getSettings = (): Promise<Settings> =>
   invoke<Settings>("get_settings");
 

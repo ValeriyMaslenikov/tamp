@@ -3,6 +3,7 @@ import {
   cancelJob,
   convertFileSrc,
   copyFile,
+  describeDropped,
   enqueue,
   ensurePreview,
   listRecents,
@@ -46,6 +47,19 @@ export function isTerminal(phase: Phase): boolean {
   return TERMINAL.has(phase);
 }
 
+/**
+ * The list shown to the user: drag-dropped (staged) videos first, then scanned
+ * recordings, deduped by path so a file dropped from a watched folder appears
+ * once (at the top, where the user just dropped it).
+ */
+export function mergeDropped(
+  dropped: RecentVideo[],
+  scanned: RecentVideo[],
+): RecentVideo[] {
+  const staged = new Set(dropped.map((v) => v.path));
+  return [...dropped, ...scanned.filter((v) => !staged.has(v.path))];
+}
+
 /** Identity of the visible video list; job statuses are painted separately. */
 export function videoListSignature(videos: RecentVideo[]): string {
   return JSON.stringify(
@@ -68,6 +82,8 @@ export interface ListView {
   onSettingsChanged(): void;
   /** Put the cursor in the filter input (panel shown / tab switched). */
   focusFilter(): void;
+  /** Stage drag-dropped file paths as rows; returns the count added. */
+  acceptDrop(paths: string[]): Promise<number>;
 }
 
 export function createListView(getSettings: () => Settings | null): ListView {
@@ -86,7 +102,9 @@ export function createListView(getSettings: () => Settings | null): ListView {
   listScroll.className = "list-scroll";
   el.append(filterRow, listScroll);
 
-  let videos: RecentVideo[] = [];
+  let videos: RecentVideo[] = []; // what's rendered: mergeDropped(droppedVideos, scanned)
+  let scanned: RecentVideo[] = []; // latest watched-folder scan
+  let droppedVideos: RecentVideo[] = []; // drag-dropped this session, newest first
   const jobs = new Map<string, JobState>(); // job id -> latest state
   const jobByPath = new Map<string, string>(); // input path -> job id shown on the row
   const dismissed = new Set<string>(); // job ids no longer shown on rows
@@ -184,9 +202,10 @@ export function createListView(getSettings: () => Settings | null): ListView {
   async function refresh(): Promise<void> {
     try {
       const [vids, queue] = await Promise.all([listRecents(), queueState()]);
-      videos = vids;
+      scanned = vids;
       applySnapshot(queue);
-      const sig = videoListSignature(vids);
+      videos = mergeDropped(droppedVideos, scanned);
+      const sig = videoListSignature(videos);
       if (sig === lastSignature) {
         // Same videos: repaint statuses in place so an open preview (and its
         // playing <video>) survives routine panel:shown refreshes.
@@ -846,5 +865,34 @@ export function createListView(getSettings: () => Settings | null): ListView {
     }
   }
 
-  return { el, refresh, updateJob, onSettingsChanged, focusFilter };
+  /**
+   * Stage drag-dropped paths as rows at the top of the list and ring the first.
+   * Returns how many were added; 0 means nothing was droppable (caller toasts).
+   * The staged rows are ordinary `RecentVideo`s, so click / expand / Custom…
+   * and all job rendering work exactly as for scanned recordings.
+   */
+  async function acceptDrop(paths: string[]): Promise<number> {
+    let described: RecentVideo[];
+    try {
+      described = await describeDropped(paths);
+    } catch (e) {
+      showToast(String(e));
+      return 0;
+    }
+    if (described.length === 0) return 0;
+    // Newly dropped first; re-dropping a path refreshes its metadata and lifts
+    // it back to the top.
+    const fresh = new Set(described.map((v) => v.path));
+    droppedVideos = [
+      ...described,
+      ...droppedVideos.filter((v) => !fresh.has(v.path)),
+    ];
+    videos = mergeDropped(droppedVideos, scanned);
+    lastSignature = videoListSignature(videos);
+    render();
+    setSelected(described[0].path);
+    return described.length;
+  }
+
+  return { el, refresh, updateJob, onSettingsChanged, focusFilter, acceptDrop };
 }

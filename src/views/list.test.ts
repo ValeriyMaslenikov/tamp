@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTerminal, videoListSignature } from "./list";
+import { isTerminal, mergeDropped, videoListSignature } from "./list";
 import type { RecentVideo } from "../lib/ipc";
 
 const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
@@ -26,6 +26,35 @@ describe("isTerminal", () => {
     expect(isTerminal("pass1")).toBe(false);
     expect(isTerminal("pass2")).toBe(false);
     expect(isTerminal("verifying")).toBe(false);
+  });
+});
+
+describe("mergeDropped", () => {
+  it("puts dropped videos first, then scanned", () => {
+    const dropped = [video({ path: "/dl/d.mov", name: "d.mov" })];
+    const scanned = [video({ path: "/desk/s.mov", name: "s.mov" })];
+    expect(mergeDropped(dropped, scanned).map((v) => v.path)).toEqual([
+      "/dl/d.mov",
+      "/desk/s.mov",
+    ]);
+  });
+
+  it("dedups by path, keeping the dropped copy at the top", () => {
+    const shared = "/desk/clip.mov";
+    const dropped = [video({ path: shared, sizeBytes: 1 })];
+    const scanned = [
+      video({ path: shared, sizeBytes: 2 }),
+      video({ path: "/desk/other.mov" }),
+    ];
+    const merged = mergeDropped(dropped, scanned);
+    expect(merged.map((v) => v.path)).toEqual([shared, "/desk/other.mov"]);
+    // The dropped entry (its own metadata) wins, not the scanned duplicate.
+    expect(merged[0].sizeBytes).toBe(1);
+  });
+
+  it("returns scanned unchanged when nothing is dropped", () => {
+    const scanned = [video({ path: "/desk/s.mov" })];
+    expect(mergeDropped([], scanned)).toEqual(scanned);
   });
 });
 

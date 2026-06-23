@@ -46,6 +46,16 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
     Ok(videos)
 }
 
+/// Describe drag-and-dropped files as `RecentVideo`s so the panel can stage
+/// them as rows. Files may live anywhere (outside the watched folders); the
+/// encoder accepts arbitrary paths, so a staged row behaves like any other.
+/// Non-video / missing paths are skipped.
+#[tauri::command]
+pub async fn describe_dropped(app: AppHandle, paths: Vec<String>) -> Vec<RecentVideo> {
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    scanner::describe_paths(&app, &paths).await
+}
+
 #[tauri::command]
 pub fn get_settings(app: AppHandle, state: State<'_, SettingsState>) -> Settings {
     let mut settings = lock_settings(&state).clone();
