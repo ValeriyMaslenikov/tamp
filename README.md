@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ValeriyMaslenikov/tamp/releases/latest"><img src="https://img.shields.io/github/v/release/ValeriyMaslenikov/tamp?color=7C5CFC" alt="Latest release"></a>
+  <a href="https://github.com/ValeriyMaslenikov/tamp/releases"><img src="https://img.shields.io/github/v/release/ValeriyMaslenikov/tamp?include_prereleases&color=7C5CFC" alt="Latest release"></a>
   <a href="https://github.com/ValeriyMaslenikov/tamp/actions/workflows/ci.yml"><img src="https://github.com/ValeriyMaslenikov/tamp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/ValeriyMaslenikov/tamp/wiki"><img src="https://img.shields.io/badge/docs-wiki-7C5CFC" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
@@ -74,14 +74,14 @@ Full guides live in the **[Tamp Wiki](https://github.com/ValeriyMaslenikov/tamp/
 
 ## Install
 
-**Windows** — grab `tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe`) from
-[**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases/latest) and run it
-(per-user, no admin). The build is unsigned, so SmartScreen will warn — click
-**More info → Run anyway**.
+**Windows** — grab `Tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe`) from
+[**Releases**](https://github.com/ValeriyMaslenikov/tamp/releases) and run it
+(per-user, no admin). The Windows build isn't code-signed yet, so SmartScreen may
+warn — click **More info → Run anyway**.
 
-**macOS (Apple Silicon)** — grab the `.dmg`, drag **Tamp** to Applications. It's
-ad-hoc signed, so on first launch **right-click → Open → Open** (or
-`xattr -dr com.apple.quarantine /Applications/tamp.app`).
+**macOS (Apple Silicon)** — grab the `.dmg`, drag **Tamp** to Applications, and
+open it. The macOS build is **signed with a Developer ID and notarized by Apple**,
+so it launches with no Gatekeeper warning.
 
 Full steps, first-run details, Intel Macs, and building from source:
 **[Installing Tamp](https://github.com/ValeriyMaslenikov/tamp/wiki/Installing-Tamp)**.
@@ -101,7 +101,7 @@ See [AGENTS.md](AGENTS.md) for the project layout and architecture rules, and
 ## Roadmap
 
 - Linux (the platform layer is ready; needs a clipboard/tray strategy and CI target)
-- Notarized / signed builds
+- Windows code signing (macOS builds are already signed + notarized)
 
 ## License
 

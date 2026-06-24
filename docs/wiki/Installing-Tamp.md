@@ -5,14 +5,14 @@ It installs without admin rights and lives entirely in your menu bar / system
 tray — there's no Dock icon and no main window.
 
 Grab the latest build from the
-**[Releases page](https://github.com/ValeriyMaslenikov/tamp/releases/latest)**.
+**[Releases page](https://github.com/ValeriyMaslenikov/tamp/releases)**.
 
 ## Windows
 
-1. Download `tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe` for Windows on
-   ARM) from [Releases](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
+1. Download `Tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe` for Windows on
+   ARM) from [Releases](https://github.com/ValeriyMaslenikov/tamp/releases).
 2. Run it. Tamp installs per-user — no admin prompt.
-3. The build is **unsigned**, so SmartScreen will warn you. Click
+3. The Windows build isn't code-signed yet, so SmartScreen will warn you. Click
    **More info → Run anyway**. (See
    [Troubleshooting](FAQ-and-Troubleshooting#smartscreen-warns-me-on-windows).)
 4. Look for the compress-arrows icon in the system tray. Windows often tucks new
@@ -27,13 +27,10 @@ your own.
 ## macOS (Apple Silicon)
 
 1. Download the latest `.dmg` from
-   [Releases](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
+   [Releases](https://github.com/ValeriyMaslenikov/tamp/releases).
 2. Open it and drag **Tamp** into **Applications**.
-3. First launch: the app is **ad-hoc signed** (no Apple Developer certificate),
-   so macOS will warn you. Either **right-click the app → Open → Open**, or run:
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/tamp.app
-   ```
+3. Open Tamp. The build is **signed with a Developer ID and notarized by Apple**,
+   so it launches with no Gatekeeper warning — no right-click-Open needed.
 4. Look for the compress-arrows icon in your menu bar. There's no Dock icon —
    Tamp lives entirely in the menu bar.
 

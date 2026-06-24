@@ -62,13 +62,15 @@ with the icon or the toggle shortcut.
 ## Troubleshooting
 
 ### SmartScreen warns me on Windows
-The build is unsigned. Click **More info → Run anyway**. It installs per-user,
-no admin needed. See [Installing on Windows](Installing-Tamp#windows).
+The Windows build isn't code-signed yet. Click **More info → Run anyway**. It
+installs per-user, no admin needed. See [Installing on Windows](Installing-Tamp#windows).
 
-### macOS says the app can't be opened / is from an unidentified developer
-The build is ad-hoc signed (not notarized). **Right-click the app → Open →
-Open**, or run `xattr -dr com.apple.quarantine /Applications/tamp.app`. See
-[Installing on macOS](Installing-Tamp#macos-apple-silicon).
+### macOS won't open the app
+Current macOS builds are **signed with a Developer ID and notarized by Apple**, so
+they open with no warning. If you hit a Gatekeeper prompt, you're on an old
+unsigned build — grab the latest from
+[Releases](https://github.com/ValeriyMaslenikov/tamp/releases), or
+**right-click the app → Open → Open** once.
 
 ### Nothing shows up in the Videos list
 - Tamp only lists files in your **watched folders**. Point it at wherever your
