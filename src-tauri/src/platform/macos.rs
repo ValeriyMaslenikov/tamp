@@ -121,6 +121,7 @@ impl Platform for MacOs {
 ///   - `tamp.plist` — the lowercase product name used before the app was renamed
 ///     "tamp" -> "Tamp". (Safe to delete here only because this code ships with
 ///     productName "Tamp"; the active agent is "Tamp.plist".)
+///
 /// Mirrors the data-side `migrate_legacy_data` cleanup: runs once at startup
 /// before the current agent is re-enabled, and swallows every error.
 fn remove_legacy_launch_agent() {
