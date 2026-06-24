@@ -5,12 +5,12 @@ It installs without admin rights and lives entirely in your menu bar / system
 tray — there's no Dock icon and no main window.
 
 Grab the latest build from the
-**[Releases page](https://github.com/ValeriyMaslenikov/tamp/releases)**.
+**[Releases page](https://github.com/ValeriyMaslenikov/tamp/releases/latest)**.
 
 ## Windows
 
 1. Download `Tamp_<version>_x64-setup.exe` (or `_arm64-setup.exe` for Windows on
-   ARM) from [Releases](https://github.com/ValeriyMaslenikov/tamp/releases).
+   ARM) from [Releases](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
 2. Run it. Tamp installs per-user — no admin prompt.
 3. The Windows build isn't code-signed yet, so SmartScreen will warn you. Click
    **More info → Run anyway**. (See
@@ -27,7 +27,7 @@ your own.
 ## macOS (Apple Silicon)
 
 1. Download the latest `.dmg` from
-   [Releases](https://github.com/ValeriyMaslenikov/tamp/releases).
+   [Releases](https://github.com/ValeriyMaslenikov/tamp/releases/latest).
 2. Open it and drag **Tamp** into **Applications**.
 3. Open Tamp. The build is **signed with a Developer ID and notarized by Apple**,
    so it launches with no Gatekeeper warning — no right-click-Open needed.

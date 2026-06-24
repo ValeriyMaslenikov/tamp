@@ -69,7 +69,7 @@ installs per-user, no admin needed. See [Installing on Windows](Installing-Tamp#
 Current macOS builds are **signed with a Developer ID and notarized by Apple**, so
 they open with no warning. If you hit a Gatekeeper prompt, you're on an old
 unsigned build — grab the latest from
-[Releases](https://github.com/ValeriyMaslenikov/tamp/releases), or
+[Releases](https://github.com/ValeriyMaslenikov/tamp/releases/latest), or
 **right-click the app → Open → Open** once.
 
 ### Nothing shows up in the Videos list
