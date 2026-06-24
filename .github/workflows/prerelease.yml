@@ -54,7 +54,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           BASE_VERSION="${VERSION%%-*}"
           NOTES_FILE="$(mktemp)"
-          FOOTER='Unsigned binaries — see the README install notes for the Gatekeeper/SmartScreen bypass.'
+          FOOTER='macOS builds are signed & notarized. The Windows build is not yet code-signed — SmartScreen may warn (click More info → Run anyway). See the README install notes.'
 
           # Extract the `## <version>` section body, stopping at the next
           # `## ` heading. Try the full tag version first, then the base version.
