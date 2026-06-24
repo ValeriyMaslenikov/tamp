@@ -158,16 +158,16 @@ pub trait Platform {
     /// accelerator unchanged. See [`rewrite_accelerator_key`].
     fn resolve_accelerator(&self, accelerator: &str) -> String;
 
-    /// Best-effort removal of a stale launch-at-login agent left by a
-    /// pre-rebrand build, run once at startup BEFORE the current agent is
-    /// re-enabled. Only macOS leaves an orphan worth cleaning: the autostart
-    /// plugin names its LaunchAgent plist by the (rebrand-stable) product name
-    /// "tamp", so the modern plist is overwritten in place — but a build that
-    /// shipped the agent under the legacy bundle identifier
-    /// (`com.joystudios.tamp.plist`) is named differently and would otherwise
-    /// linger, firing a missing/old binary at every login. Windows has nothing
-    /// to clean here (the Run value is keyed by the same product name and is
-    /// rewritten on enable / dropped by the uninstaller), so it's a no-op.
+    /// Best-effort removal of stale launch-at-login agents left by older builds,
+    /// run once at startup BEFORE the current agent ("Tamp") is re-enabled. Only
+    /// macOS leaves orphans worth cleaning: the autostart plugin names its
+    /// LaunchAgent plist by the product name, so the active `Tamp.plist` is
+    /// overwritten in place — but a build under the legacy bundle identifier
+    /// (`com.joystudios.tamp.plist`) and the pre-rename lowercase `tamp.plist`
+    /// are named differently and would otherwise linger, firing a missing/old
+    /// binary at every login. Windows has nothing to clean at runtime (the Run
+    /// value is rewritten on enable, and the uninstaller drops both "Tamp" and
+    /// the legacy "tamp"), so it's a no-op.
     fn cleanup_legacy_autostart(&self);
 }
 

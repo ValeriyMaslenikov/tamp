@@ -247,9 +247,10 @@ impl Platform for Windows {
     }
 
     fn cleanup_legacy_autostart(&self) {
-        // Nothing to clean: the autostart Run value is keyed by the product
-        // name "tamp" (rewritten on enable) and the uninstaller drops it; there
-        // was never a legacy-identifier variant on Windows. See the macOS impl.
+        // Nothing to clean at runtime: the autostart Run value is keyed by the
+        // product name "Tamp" (rewritten on enable), and the uninstaller drops
+        // both "Tamp" and the pre-rename legacy "tamp" (see nsis-hooks.nsh).
+        // There was never a legacy-identifier variant on Windows. See macOS impl.
     }
 }
 

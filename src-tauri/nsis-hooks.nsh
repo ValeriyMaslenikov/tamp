@@ -4,9 +4,10 @@
 ; This .nsh is compiled only during `tauri build` on Windows; it is reviewed by
 ; hand here. After an uninstall on a machine where "Launch at login" was on,
 ; manually confirm:
-;   * HKCU\Software\Microsoft\Windows\CurrentVersion\Run has NO "tamp" value
-;     (and the matching StartupApproved\Run "tamp" value is gone) — no dead
-;     Run entry pointing at the removed exe.
+;   * HKCU\Software\Microsoft\Windows\CurrentVersion\Run has NO "Tamp" value
+;     (nor the legacy lowercase "tamp" from before the rename), and the matching
+;     StartupApproved\Run values are gone — no dead Run entry pointing at the
+;     removed exe.
 ;   * %LOCALAPPDATA%\io.github.valeriymaslenikov.tamp\{thumbs,previews,logs} and
 ;     durations.json are gone (transient caches/logs reclaimed).
 ;   * %APPDATA%\io.github.valeriymaslenikov.tamp\{settings.json,conversions.json}
@@ -25,9 +26,13 @@
 
   ; Remove the launch-at-login autostart entry the autostart plugin writes when
   ; "Launch at login" is enabled. The plugin (auto-launch) keys the value by the
-  ; package name "tamp" (tamp passes no override), writing both the Run value and
-  ; a StartupApproved\Run override; otherwise an uninstall leaves a dead Run entry
-  ; pointing at the removed exe. DeleteRegValue is a no-op if the value is absent.
+  ; product name — now "Tamp" (the app passes no override) — writing both the Run
+  ; value and a StartupApproved\Run override; otherwise an uninstall leaves a dead
+  ; Run entry pointing at the removed exe. We also drop the legacy lowercase
+  ; "tamp" value from before the rename, so an upgraded install leaves none behind.
+  ; DeleteRegValue is a no-op if the value is absent.
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Tamp"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Tamp"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "tamp"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "tamp"
 !macroend

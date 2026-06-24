@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tamp",
+  "productName": "Tamp",
   "version": "../package.json",
   "identifier": "io.github.valeriymaslenikov.tamp",
   "build": {
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "panel",
-        "title": "tamp",
+        "title": "Tamp",
         "width": 520,
         "height": 640,
         "visible": false,
