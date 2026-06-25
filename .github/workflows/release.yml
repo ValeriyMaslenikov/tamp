@@ -13,7 +13,7 @@ permissions:
 jobs:
   # Maintains the "Version Packages" PR (version bump + CHANGELOG) from pending
   # changesets. When that PR is merged, `changeset tag` creates vX.Y.Z and the
-  # `build` job below publishes the DMG for it.
+  # `build` matrix below publishes the installers for it.
   version:
     name: Version or tag
     runs-on: ubuntu-latest
@@ -25,6 +25,22 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+      # Guard main against a -beta version leaking in (a forgotten beta bump
+      # would poison the changesets stable-version computation), and against
+      # Cargo.toml drifting from package.json. Runs before changesets so a bad
+      # version fails loudly instead of being baked into the release PR.
+      - name: Guard version (no -beta, Cargo == package.json)
+        run: |
+          PKG_VERSION="$(jq -r .version package.json)"
+          if [[ "$PKG_VERSION" == *-beta* ]]; then
+            echo "::error::package.json version $PKG_VERSION contains -beta; betas are tag-driven and must never reach main."
+            exit 1
+          fi
+          CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)"
+          if [[ "$PKG_VERSION" != "$CARGO_VERSION" ]]; then
+            echo "::error::version drift: package.json=$PKG_VERSION but src-tauri/Cargo.toml=$CARGO_VERSION. Run 'bun run sync-version'."
+            exit 1
+          fi
       - run: bun install --frozen-lockfile
       - name: Create version PR or tag release
         id: changesets
@@ -40,10 +56,31 @@ jobs:
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build & publish DMG (Apple Silicon)
+    name: Build & publish (${{ matrix.os }})
     needs: version
     if: needs.version.outputs.published == 'true'
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            bundle-glob: src-tauri/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+          - os: windows-11-arm
+            bundle-glob: src-tauri/target/release/bundle/nsis/*-setup.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    # macOS signing + notarization read these during `bun tauri build`; empty
+    # (no secrets / a fork) falls back to an unsigned build. Never set in the
+    # pull_request CI workflow.
+    env:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -52,14 +89,32 @@ jobs:
         with:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
-      - run: ./scripts/fetch-ffmpeg.sh arm64
-      - name: Build app + DMG
-        run: bun tauri build --target aarch64-apple-darwin
+      # Import the Developer ID cert into a throwaway keychain so `tauri build`
+      # can sign with APPLE_SIGNING_IDENTITY (then notarize + staple). macOS only,
+      # and only when signing is configured — otherwise the build stays unsigned.
+      - name: Import Apple Developer ID certificate (macOS)
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" "login.keychain-db"
+          rm -f "$CERT"
+      - run: bun scripts/fetch-ffmpeg.ts
+      - name: Build app bundle
+        run: bun tauri build
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
-          cp "$DMG" "tamp_${VERSION}_aarch64.dmg"
-          gh release upload "v${VERSION}" "tamp_${VERSION}_aarch64.dmg" --clobber
+        run: gh release upload "v${VERSION}" ${{ matrix.bundle-glob }} --clobber

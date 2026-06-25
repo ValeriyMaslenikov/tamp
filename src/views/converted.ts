@@ -1,0 +1,590 @@
+import {
+  conversionThumb,
+  convertFileSrc,
+  copyFile,
+  copyFiles,
+  listConversions,
+  openFile,
+  reveal,
+  type ConversionRecord,
+} from "../lib/ipc";
+import { formatAbsolute, formatBytes, formatRelativeTime, pluralParts } from "../lib/format";
+import { groupConversions, type ConvNode, type ConvPart } from "../lib/convgroup";
+import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
+import { t } from "../i18n";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+export interface ConvertedView {
+  el: HTMLElement;
+  refresh(): Promise<void>;
+}
+
+/** Next cursor index when moving by `dir`, clamped to [0, len-1]. From "no
+ *  selection" (-1), down → first row, up → last row. -1 when there are no rows. */
+export function nextNavIndex(cur: number, dir: number, len: number): number {
+  if (len === 0) return -1;
+  if (cur < 0) return dir > 0 ? 0 : len - 1;
+  return Math.min(len - 1, Math.max(0, cur + dir));
+}
+
+/** A pre-rebuild snapshot of the Converted tab's keyboard selection: whether a
+ *  row was selected at all, and that row's stable key (its `navKey`). */
+export interface SelectionSnapshot {
+  hadSelection: boolean;
+  selectedKey: string | null;
+}
+
+/** What to re-select after a rebuild: the row carrying the previously selected
+ *  key ("preserve"), the first row ("first"), or nothing ("none"). */
+export type SelectionRestore =
+  | { kind: "preserve"; key: string }
+  | { kind: "first" }
+  | { kind: "none" };
+
+/**
+ * Decide what to re-select after the Converted list is rebuilt, from a
+ * pre-rebuild `snapshot` and whether the previously selected key still exists
+ * (`keyPresent`). The previously selected row is preserved when its key still
+ * exists; otherwise the first row is selected ONLY on a true first load (no
+ * prior selection), so a background refresh (tab switch / a finished encode)
+ * never yanks the cursor to the top just because the selected row vanished —
+ * returning "none" instead. (Key derivation — `single:`/`part:`/`group:` —
+ * lives at row-build time; this decides which outcome wins.)
+ */
+export function restoreSelection(
+  snapshot: SelectionSnapshot,
+  keyPresent: boolean,
+): SelectionRestore {
+  if (snapshot.selectedKey != null && keyPresent) {
+    return { kind: "preserve", key: snapshot.selectedKey };
+  }
+  if (!snapshot.hadSelection) return { kind: "first" };
+  return { kind: "none" };
+}
+
+function basename(p: string): string {
+  return p.split(/[\\/]/).pop() ?? p;
+}
+
+const COPY_SVG =
+  `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" ` +
+  `stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>` +
+  `<path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>`;
+const REVEAL_SVG =
+  `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" ` +
+  `stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5 2.6 4A1.5 1.5 0 0 1 4 3h2.2l1 1.5H12A1.5 1.5 0 0 1 13.5 6v5A1.5 1.5 0 0 1 12 12.5H3.5A1.5 1.5 0 0 1 2 11Z"/></svg>`;
+const PLAY_SVG =
+  `<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5v9l7-4.5z"/></svg>`;
+const CHEVRON_SVG =
+  `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" ` +
+  `stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>`;
+
+/** The Converted tab: a durable history of every conversion (journal-backed),
+ *  including videos compressed from outside the watched folders. Multi-part
+ *  (split) conversions collapse into one expandable folder-style row. */
+export function createConvertedView(): ConvertedView {
+  const el = document.createElement("div");
+  el.className = "view view-converted";
+  const scroll = document.createElement("div");
+  scroll.className = "list-scroll";
+  el.append(scroll);
+
+  type RowActions = {
+    kind: "single" | "group" | "part";
+    play?: () => void;
+    copy: () => void;
+    reveal: () => void;
+    expand?: () => void;
+    collapse?: () => void;
+    isOpen?: () => boolean;
+  };
+  const rowActions = new WeakMap<HTMLElement, RowActions>();
+  let selEl: HTMLElement | null = null;
+  // True until the first listConversions() resolves, so refresh() can show a
+  // loading affordance only on the very first load (not on later refreshes,
+  // where the prior content stays put until results arrive).
+  let firstLoad = true;
+  // The Created/Converted tooltip is attached to <body> on hover (see timeEl);
+  // tracking the live one lets refresh()/teardown remove it so a rebuild while
+  // hovering can't orphan it permanently (the row vanishes without a mouseleave).
+  let activeTip: HTMLElement | null = null;
+  function clearActiveTip(): void {
+    if (activeTip) {
+      activeTip.remove();
+      activeTip = null;
+    }
+  }
+
+  // A nav row's stable identity across rebuilds: a single's output path or a
+  // group's folder. Stored on the element so refresh() can re-select by value
+  // rather than by a now-stale DOM node.
+  function rowKey(el: HTMLElement): string | null {
+    return el.dataset.navKey ?? null;
+  }
+  /** The nav row carrying `key`, or null. (Parts of a collapsed group are kept
+   *  out of the keyboard order by navRows() but still exist in the DOM, so a
+   *  group is re-expanded before this runs to surface a selected part.) */
+  function findRowByKey(key: string): HTMLElement | null {
+    for (const el of scroll.querySelectorAll<HTMLElement>(".conv-nav")) {
+      if (rowKey(el) === key) return el;
+    }
+    return null;
+  }
+
+  // Brief pressed/active flash on Play/Reveal so a slow or backgrounded launch
+  // is acknowledged even as the panel hides on blur. Applied synchronously on
+  // activate (inline styles, no stylesheet dependency) and reverted after a beat;
+  // success itself stays silent (a toast on every reveal/play would be too noisy).
+  function pressFeedback(btn: HTMLElement | null): void {
+    if (!btn) return;
+    btn.classList.add("is-pressed");
+    const prevColor = btn.style.color;
+    const prevBorder = btn.style.borderColor;
+    const prevTransform = btn.style.transform;
+    btn.style.color = "var(--accent, rgba(124, 92, 252, 1))";
+    btn.style.borderColor = "rgba(124, 92, 252, 0.7)";
+    btn.style.transform = "scale(0.9)";
+    window.setTimeout(() => {
+      btn.classList.remove("is-pressed");
+      btn.style.color = prevColor;
+      btn.style.borderColor = prevBorder;
+      btn.style.transform = prevTransform;
+    }, 220);
+  }
+
+  const doPlay = (p: string) => openFile(p).catch((e) => showToast(friendlyError(e), "error"));
+  const doCopy = (p: string) =>
+    copyFile(p)
+      .then(() => showToast(t("converted.copiedToClipboard"), "success"))
+      .catch((e) => showToast(friendlyError(e), "error"));
+  const doReveal = (p: string) => reveal(p).catch((e) => showToast(friendlyError(e), "error"));
+
+  function actionButton(
+    label: string,
+    title: string,
+    svg: string,
+    extraClass = "",
+  ): HTMLButtonElement {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = extraClass ? `conv-act ${extraClass}` : "conv-act";
+    b.title = title;
+    b.setAttribute("aria-label", label);
+    b.innerHTML = svg;
+    return b;
+  }
+
+  /** A lazy thumbnail for one output video; falls back to an empty surface. */
+  function thumb(outputPath: string): HTMLElement {
+    const img = document.createElement("img");
+    img.className = "conv-thumb";
+    img.alt = "";
+    img.draggable = false;
+    conversionThumb(outputPath)
+      .then((path) => {
+        if (path) img.src = convertFileSrc(path);
+      })
+      .catch(() => {});
+    return img;
+  }
+
+  function playButton(outputPath: string): HTMLButtonElement {
+    const play = actionButton(
+      t("converted.playAria"),
+      t("converted.playTitle"),
+      PLAY_SVG,
+      "conv-play",
+    );
+    play.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pressFeedback(play);
+      openFile(outputPath).catch((err) => showToast(friendlyError(err), "error"));
+    });
+    return play;
+  }
+
+  function copyButton(outputPath: string): HTMLButtonElement {
+    const copy = actionButton(
+      t("converted.copyFileAria"),
+      t("converted.copyFileTitle"),
+      COPY_SVG,
+    );
+    copy.addEventListener("click", (e) => {
+      e.stopPropagation();
+      copyFile(outputPath)
+        .then(() => showToast(t("converted.copiedToClipboard"), "success"))
+        .catch((err) => showToast(friendlyError(err), "error"));
+    });
+    return copy;
+  }
+
+  function revealButton(path: string, title: string): HTMLButtonElement {
+    const rev = actionButton(t("converted.revealAria"), title, REVEAL_SVG, "conv-reveal");
+    rev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pressFeedback(rev);
+      reveal(path).catch((err) => showToast(friendlyError(err), "error"));
+    });
+    return rev;
+  }
+
+  /** A "·" middot kept out of the truncating sub-line text (and off the time's
+   *  dotted underline) so it always sits between the meta and the pinned time. */
+  function separator(): HTMLElement {
+    const sep = document.createElement("span");
+    sep.className = "conv-sep";
+    sep.textContent = "·";
+    sep.setAttribute("aria-hidden", "true");
+    return sep;
+  }
+
+  /** The time element, carrying a Recorded-vs-Converted tooltip on hover. */
+  function timeEl(recordedMs: number, convertedMs: number): HTMLElement {
+    const wrap = document.createElement("span");
+    wrap.className = "conv-time";
+    wrap.textContent = formatRelativeTime(convertedMs);
+    const tip = document.createElement("span");
+    tip.className = "conv-tip";
+    // Build each row explicitly. (A prior `querySelectorAll("span span")` also
+    // matched the row <span>s themselves — tip is a <span> — so writing the
+    // first value's textContent wiped that row's label, leaving the original
+    // recorded date under a bare "Converted" label: the exact mislabel users hit.)
+    const tipRow = (labelClass: string, label: string, value: string): HTMLElement => {
+      const row = document.createElement("span");
+      row.className = "conv-tip-row";
+      const b = document.createElement("b");
+      b.className = labelClass;
+      b.textContent = label;
+      const v = document.createElement("span");
+      v.textContent = value;
+      row.append(b, v);
+      return row;
+    };
+    tip.append(
+      tipRow("rec", t("converted.tipRecorded"), formatAbsolute(recordedMs)),
+      tipRow("conv", t("converted.tipConverted"), formatAbsolute(convertedMs)),
+    );
+    // The sub-line and scroll container clip overflow, so the popover is
+    // attached to <body> and positioned over the viewport on hover instead of
+    // nesting it (where it would be clipped and never show).
+    wrap.addEventListener("mouseenter", () => {
+      const r = wrap.getBoundingClientRect();
+      tip.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+      tip.style.bottom = `${window.innerHeight - r.top + 6}px`;
+      // Drop any previously-tracked tip (e.g. a rebuild orphaned it) before
+      // showing — and ours becomes the tracked one for refresh()/teardown.
+      clearActiveTip();
+      document.body.appendChild(tip);
+      activeTip = tip;
+    });
+    wrap.addEventListener("mouseleave", () => {
+      tip.remove();
+      if (activeTip === tip) activeTip = null;
+    });
+    return wrap;
+  }
+
+  function singleRow(node: Extract<ConvNode, { kind: "single" }>): HTMLElement {
+    const outputPath = node.output.path;
+    const r = document.createElement("div");
+    r.className = "conv-row";
+    r.classList.add("conv-nav");
+    r.dataset.navKey = `single:${outputPath}`;
+    rowActions.set(r, {
+      kind: "single",
+      play: () => doPlay(outputPath),
+      copy: () => doCopy(outputPath),
+      reveal: () => doReveal(outputPath),
+    });
+
+    // Empty toggle-gutter so the thumbnail lines up with multi-part rows, whose
+    // chevron would otherwise push their thumbnail further right (jagged edge).
+    const gutter = document.createElement("span");
+    gutter.className = "conv-gutter";
+
+    r.append(gutter, thumb(outputPath));
+
+    const meta = document.createElement("div");
+    meta.className = "conv-meta";
+    const name = document.createElement("div");
+    name.className = "conv-name";
+    name.textContent = basename(node.inputPath);
+    name.title = node.inputPath;
+    const sub = document.createElement("div");
+    sub.className = "conv-sub";
+    const subMain = document.createElement("span");
+    subMain.className = "conv-sub-main";
+    const before = node.inputBytes ? formatBytes(node.inputBytes) : "—";
+    const after = formatBytes(node.output.bytes);
+    subMain.innerHTML =
+      `${before} → <b class="conv-after">${after}</b> · ` +
+      `<span class="conv-where"></span>`;
+    (subMain.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
+    sub.append(subMain, separator(), timeEl(node.inputCreatedMs, node.completedAtMs));
+    meta.append(name, sub);
+
+    r.append(meta, playButton(outputPath), copyButton(outputPath), revealButton(outputPath, t("converted.revealInFileManager")));
+    return r;
+  }
+
+  /** One part of a split conversion: a compact text row inside the group block
+   *  (no card, no thumbnail) with a thin tree connector — like the mockup. */
+  function partRow(part: ConvPart, index: number): HTMLElement {
+    const r = document.createElement("div");
+    r.className = "conv-part";
+    r.classList.add("conv-nav");
+    r.dataset.navKey = `part:${part.path}`;
+    rowActions.set(r, {
+      kind: "part",
+      play: () => doPlay(part.path),
+      copy: () => doCopy(part.path),
+      reveal: () => doReveal(part.path),
+    });
+
+    const no = document.createElement("span");
+    no.className = "conv-partno";
+    no.textContent = String(index + 1);
+
+    const name = document.createElement("span");
+    name.className = "conv-cname";
+    name.textContent = basename(part.path);
+    name.title = part.path;
+
+    const size = document.createElement("span");
+    size.className = "conv-csize";
+    size.textContent = formatBytes(part.bytes);
+
+    r.append(
+      no,
+      name,
+      size,
+      playButton(part.path),
+      copyButton(part.path),
+      revealButton(part.path, t("converted.revealInFileManager")),
+    );
+    return r;
+  }
+
+  function groupNode(
+    node: Extract<ConvNode, { kind: "group" }>,
+  ): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "conv-tree";
+
+    const parent = document.createElement("div");
+    parent.className = "conv-tree-parent";
+
+    const chevron = document.createElement("span");
+    chevron.className = "conv-chevron";
+    chevron.innerHTML = CHEVRON_SVG;
+
+    parent.append(chevron, thumb(node.parts[0].path));
+
+    const meta = document.createElement("div");
+    meta.className = "conv-meta";
+    const name = document.createElement("div");
+    name.className = "conv-name";
+    name.textContent = basename(node.inputPath);
+    name.title = node.inputPath;
+    const sub = document.createElement("div");
+    sub.className = "conv-sub";
+    const subMain = document.createElement("span");
+    subMain.className = "conv-sub-main";
+    const before = node.inputBytes ? formatBytes(node.inputBytes) : "—";
+    const after = formatBytes(node.totalBytes);
+    subMain.innerHTML =
+      `${before} → <b class="conv-after">${after}</b> · ` +
+      `<span class="badge-parts"></span> · ` +
+      `<span class="conv-where"></span>`;
+    (subMain.querySelector(".badge-parts") as HTMLElement).textContent =
+      pluralParts(node.parts.length);
+    (subMain.querySelector(".conv-where") as HTMLElement).textContent = node.presetName;
+    sub.append(subMain, separator(), timeEl(node.inputCreatedMs, node.completedAtMs));
+    meta.append(name, sub);
+
+    const copyAll = actionButton(
+      t("converted.copyAllAria"),
+      t("converted.copyAllTitle"),
+      COPY_SVG,
+    );
+    copyAll.addEventListener("click", (e) => {
+      e.stopPropagation();
+      copyFiles(node.parts.map((p) => p.path))
+        .then(() => showToast(t("converted.copiedToClipboard"), "success"))
+        .catch((err) => showToast(friendlyError(err), "error"));
+    });
+
+    parent.append(meta, copyAll, revealButton(node.folder, t("converted.revealOutputFolder")));
+
+    const children = document.createElement("div");
+    children.className = "conv-children";
+    children.hidden = true;
+    node.parts.forEach((part, i) => children.append(partRow(part, i)));
+
+    const expand = () => { wrap.classList.add("is-open"); children.hidden = false; };
+    const collapse = () => { wrap.classList.remove("is-open"); children.hidden = true; };
+    const isOpen = () => wrap.classList.contains("is-open");
+    parent.addEventListener("click", () => (isOpen() ? collapse() : expand()));
+    parent.classList.add("conv-nav");
+    parent.dataset.navKey = `group:${node.folder}`;
+    rowActions.set(parent, {
+      kind: "group",
+      copy: () => copyFiles(node.parts.map((p) => p.path))
+        .then(() => showToast(t("converted.copiedToClipboard"), "success")).catch((e) => showToast(friendlyError(e), "error")),
+      reveal: () => doReveal(node.folder),
+      expand, collapse, isOpen,
+    });
+
+    wrap.append(parent, children);
+    return wrap;
+  }
+
+  function navRows(): HTMLElement[] {
+    return Array.from(scroll.querySelectorAll<HTMLElement>(".conv-nav")).filter((el) => {
+      const kids = el.closest(".conv-children") as HTMLElement | null;
+      return !kids || !kids.hidden; // skip parts of a collapsed group
+    });
+  }
+  function setSelected(node: HTMLElement | null): void {
+    if (selEl) selEl.classList.remove("is-sel");
+    selEl = node;
+    if (node) {
+      node.classList.add("is-sel");
+      node.scrollIntoView({ block: "nearest" });
+    }
+  }
+  function moveSel(dir: number): void {
+    const rows = navRows();
+    const cur = selEl ? rows.indexOf(selEl) : -1;
+    const i = nextNavIndex(cur, dir, rows.length);
+    setSelected(i >= 0 ? rows[i] : null);
+  }
+  function onKeyDown(e: KeyboardEvent): void {
+    if (el.hidden) return; // only when the Converted tab is active
+    if (e.key === "ArrowDown") { e.preventDefault(); moveSel(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveSel(-1); return; }
+    if (!selEl) return;
+    const a = rowActions.get(selEl);
+    if (!a) return;
+    switch (e.key) {
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (a.kind === "group") (a.isOpen?.() ? a.collapse : a.expand)?.();
+        else {
+          // Flash the row's Play button so a keyboard launch is acknowledged too.
+          pressFeedback(selEl.querySelector<HTMLElement>(".conv-play"));
+          a.play?.();
+        }
+        return;
+      case "ArrowRight":
+      case "e":
+        if (a.kind === "group" && !a.isOpen?.()) { e.preventDefault(); a.expand?.(); }
+        return;
+      case "ArrowLeft":
+        if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); }
+        return;
+      case "c": e.preventDefault(); a.copy(); return;
+      case "r":
+        e.preventDefault();
+        // Flash the row's Reveal button so a keyboard reveal is acknowledged too.
+        pressFeedback(selEl.querySelector<HTMLElement>(".conv-reveal"));
+        a.reveal();
+        return;
+      case "Escape":
+        if (a.kind === "group" && a.isOpen?.()) { e.preventDefault(); a.collapse?.(); return; }
+        e.preventDefault();
+        void getCurrentWindow().hide().catch(() => {});
+        return;
+    }
+  }
+  document.addEventListener("keydown", onKeyDown);
+  // manual: the view lives for the app's lifetime (main.ts never tears it down),
+  // so the only place a body-attached tip can be orphaned is a rebuild — handled
+  // at the top of refresh() via clearActiveTip(). If a destroy() path is ever
+  // added, call clearActiveTip() and removeEventListener there too.
+
+  /** The folders of every currently-expanded group (DOM state, pre-rebuild). */
+  function expandedFolders(): Set<string> {
+    const open = new Set<string>();
+    for (const parent of scroll.querySelectorAll<HTMLElement>(".conv-tree.is-open > .conv-tree-parent")) {
+      const key = rowKey(parent);
+      if (key) open.add(key);
+    }
+    return open;
+  }
+  /** Re-expand the groups whose folder key was open before the rebuild. */
+  function restoreExpanded(open: Set<string>): void {
+    if (open.size === 0) return;
+    for (const parent of scroll.querySelectorAll<HTMLElement>(".conv-tree > .conv-tree-parent")) {
+      const key = rowKey(parent);
+      if (key && open.has(key)) rowActions.get(parent)?.expand?.();
+    }
+  }
+
+  async function refresh(): Promise<void> {
+    // A rebuild removes the hovered row without firing mouseleave, so drop any
+    // body-attached tooltip first — otherwise it floats over the panel forever.
+    clearActiveTip();
+
+    // On the very first load, show a placeholder instead of a blank scroll while
+    // listConversions() is in flight. Later refreshes keep the prior content.
+    if (firstLoad && scroll.childElementCount === 0) {
+      const loading = document.createElement("div");
+      loading.className = "empty";
+      loading.textContent = t("converted.loading");
+      scroll.append(loading);
+    }
+
+    let records: ConversionRecord[];
+    try {
+      records = await listConversions();
+    } catch (e) {
+      // Drop the first-load placeholder so a failed first load doesn't stick on
+      // "Loading…" forever; later refreshes leave the prior content untouched.
+      if (firstLoad) scroll.innerHTML = "";
+      firstLoad = false;
+      showToast(friendlyError(e), "error");
+      return;
+    }
+    firstLoad = false;
+
+    // Remember the user's place before wiping the DOM: which row was selected
+    // (by stable key) and which groups were expanded, so a background refresh
+    // (tab switch / a finished encode) doesn't yank them to the top.
+    const hadSelection = selEl !== null;
+    const selectedKey = selEl ? rowKey(selEl) : null;
+    const open = expandedFolders();
+
+    scroll.innerHTML = "";
+    selEl = null;
+    if (records.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = t("converted.empty");
+      scroll.append(empty);
+      return;
+    }
+    for (const node of groupConversions(records)) {
+      scroll.append(node.kind === "single" ? singleRow(node) : groupNode(node));
+    }
+
+    restoreExpanded(open);
+
+    // Re-select the previously-selected row if it still exists; otherwise only
+    // fall back to the first row on a true first load (no prior selection). Match
+    // by stored key rather than a CSS attribute selector to sidestep escaping the
+    // path characters (\, /, etc.) the keys contain.
+    const restored = selectedKey ? findRowByKey(selectedKey) : null;
+    const decision = restoreSelection({ hadSelection, selectedKey }, restored !== null);
+    if (decision.kind === "preserve") setSelected(restored);
+    else if (decision.kind === "first") setSelected(navRows()[0] ?? null);
+    // manual: scroll down, select a row, expand a split group, then trigger a
+    // refresh (tab away/back, or let a queued conversion finish) — the selection
+    // and the expanded group are preserved, and no stray time tooltip is left
+    // floating over the panel.
+  }
+
+  return { el, refresh };
+}

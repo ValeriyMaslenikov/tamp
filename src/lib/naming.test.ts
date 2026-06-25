@@ -15,6 +15,22 @@ describe("stripOutputSuffix", () => {
     expect(stripOutputSuffix("clip (tamped).mp4")).toBe("clip");
   });
 
+  it("strips the named suffix (one or more name words before the hash)", () => {
+    expect(stripOutputSuffix("clip (tamped Discord a3f2).mp4")).toBe("clip");
+    expect(stripOutputSuffix("clip (tamped Discord 10MB a3f2).mp4")).toBe("clip");
+    expect(stripOutputSuffix("clip (tamped Discord a3f2 2).webm")).toBe("clip");
+    expect(stripOutputSuffix("clip (tamped Slack a3f2 p2of5).gif")).toBe("clip");
+    // a name word may itself look like a counter; the hash is still the token
+    // before the closing paren
+    expect(stripOutputSuffix("clip (tamped 2 a3f2).mp4")).toBe("clip");
+  });
+
+  it("does not strip a name without a trailing hash", () => {
+    expect(stripOutputSuffix("clip (tamped Discord).mp4")).toBe(
+      "clip (tamped Discord)",
+    );
+  });
+
   it("is extension-agnostic (webm / gif outputs)", () => {
     expect(stripOutputSuffix("clip (tamped a3f2).webm")).toBe("clip");
     expect(stripOutputSuffix("clip (tamped a3f2 2).gif")).toBe("clip");

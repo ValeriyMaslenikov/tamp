@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { defaultSplitConfig, parseSplitInputs } from "./forms";
+import {
+  defaultSplitConfig,
+  parseOptionalPositiveInt,
+  parseSplitInputs,
+} from "./forms";
+
+describe("parseOptionalPositiveInt", () => {
+  it("returns null for empty / whitespace-only input (the 'auto' / unset case)", () => {
+    expect(parseOptionalPositiveInt("")).toBeNull();
+    expect(parseOptionalPositiveInt("   ")).toBeNull();
+  });
+
+  it("parses a trimmed positive integer", () => {
+    expect(parseOptionalPositiveInt("30")).toBe(30);
+    expect(parseOptionalPositiveInt(" 720 ")).toBe(720);
+  });
+
+  it("returns undefined (invalid) for zero, negatives, fractions and non-numbers", () => {
+    for (const raw of ["0", "-1", "2.5", "abc", "10px"]) {
+      expect(parseOptionalPositiveInt(raw)).toBeUndefined();
+    }
+  });
+});
 
 describe("defaultSplitConfig", () => {
   it("mirrors the backend defaults (off, by parts, 2 parts, 30s)", () => {

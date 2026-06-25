@@ -1,26 +1,12 @@
-@font-face {
-  font-family: "Poppins";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("./assets/fonts/poppins-400.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Poppins";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("./assets/fonts/poppins-500.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Poppins";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("./assets/fonts/poppins-600.woff2") format("woff2");
-}
+﻿/* The UI typeface (Montserrat, Latin + Cyrillic) is loaded via @fontsource in
+   src/fonts.css, imported from main.ts; the body font-family below names it
+   with a Cyrillic-capable system fallback stack. */
 
-:root {
+/* Dark is the default palette; `theme.ts` sets data-theme on <html>, and the
+   light block below overrides when data-theme="light". Semantic vars
+   (--overlay, --row-hover, …) let one rule serve both themes. */
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0e0e10;
   --surface: #1a1a1e;
@@ -34,6 +20,55 @@
   --success: #2dd4a7;
   --danger: #f87171;
   --amber: #fbbf24;
+  --overlay: #202024;
+  --row-hover: #1e1e23;
+  --chip-text: #c9bdfd;
+  --accent-press: #352a64;
+  --border-strong: #3f3f46;
+  /* OFF toggle track/knob. Dark theme already separates well (light knob on a
+     dark track), so keep the existing look: track = --border, knob = #fff. */
+  --switch-track: #2e2e33;
+  --switch-knob: #fff;
+  /* >=4.5:1 on --surface-2 (#222226) for WCAG 1.4.3; ~5.0:1 */
+  --placeholder: #8a8a93;
+  --scrollbar: #3a3a40;
+  --scrim: rgba(8, 8, 10, 0.55);
+  --shadow: rgba(0, 0, 0, 0.5);
+}
+
+/* Light theme — crisp white: white panel, soft-gray cards, white elevated
+   surfaces (modals) so overlays pop against a stronger scrim. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #f5f5f7;
+  --surface-2: #e9e9ec;
+  --border: #e6e6ea;
+  --text: #16161a;
+  --text-dim: #6c6c77;
+  --accent: #7c5cfc;
+  --accent-hover: #6a45f5;
+  --accent-deep: #f1edff;
+  --success: #12a37e;
+  --danger: #dc4f4f;
+  --amber: #b8860b;
+  --overlay: #ffffff;
+  --row-hover: #f3f1fe;
+  --chip-text: #6a45f5;
+  --accent-press: #e6dfff;
+  --border-strong: #d4d4dc;
+  /* OFF toggle in light mode: a #fff knob on the pale #e6e6ea --border track is
+     nearly invisible. Darken the OFF track so on vs off is unambiguous; the
+     knob keeps its border/shadow (below) to stay legible on the darker track. */
+  --switch-track: #b4b4bf;
+  --switch-knob: #fff;
+  /* >=4.5:1 on --surface-2 (#e9e9ec) for WCAG 1.4.3; ~4.55:1.
+     Plan suggested #73737d but that is only 3.87:1 on the real --surface-2;
+     darkened to #686872 (same cool-gray hue) to clear AA. */
+  --placeholder: #686872;
+  --scrollbar: #cfcfd6;
+  --scrim: rgba(20, 20, 28, 0.42);
+  --shadow: rgba(30, 30, 50, 0.2);
 }
 
 * {
@@ -42,6 +77,21 @@
 
 [hidden] {
   display: none !important;
+}
+
+/* Uniform keyboard-focus ring across every control. :focus-visible (not
+   :focus) so mouse clicks don't ring; covers the custom-painted controls the
+   UA outline misses. manual: Tab through the app — every control incl. the
+   toggle shows the accent ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The toggle hides its native checkbox (opacity:0), so the outline lands on an
+   invisible box; ring the visible track instead. */
+.switch input:focus-visible + .track {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 html,
@@ -55,8 +105,8 @@ body {
 }
 
 body {
-  font-family: "Poppins", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  font-family: "Montserrat", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    system-ui, sans-serif;
   font-size: 12px;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -90,10 +140,14 @@ textarea {
 .panel-header {
   padding: 12px 12px 8px;
   flex: none;
+  display: flex;
+  align-items: center;
 }
 
 .seg {
   display: flex;
+  flex: 1;
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -103,6 +157,7 @@ textarea {
 
 .seg-btn {
   flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   color: var(--text-dim);
@@ -113,6 +168,13 @@ textarea {
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  /* i18n: keep each tab on one line and clip rather than wrap — Ukrainian
+     labels (e.g. "Перетворені") run a touch wider than the English, and a wrap
+     would jump the header height. Equal flex:1 + min-width:0 lets them share
+     the row; the panel is wide enough that no label actually truncates. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .seg-btn:hover {
@@ -150,7 +212,29 @@ textarea {
 
 .filter-row {
   flex: none;
-  padding: 0 12px 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  /* Top padding leaves room for the filter input's focus ring (outline-offset
+     2px + box-shadow); .content clips overflow, so a flush row sliced the ring
+     flat across the top. */
+  padding: 5px 12px 8px;
+}
+.add-file-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 0 10px;
+  height: 30px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.add-file-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .list-scroll {
@@ -168,24 +252,32 @@ textarea {
 
 .list-scroll::-webkit-scrollbar,
 .view-prefs::-webkit-scrollbar,
-.modal-body::-webkit-scrollbar {
+.modal-body::-webkit-scrollbar,
+.drawer-rows::-webkit-scrollbar,
+.quickpick::-webkit-scrollbar {
   width: 6px;
 }
 .list-scroll::-webkit-scrollbar-track,
 .view-prefs::-webkit-scrollbar-track,
-.modal-body::-webkit-scrollbar-track {
+.modal-body::-webkit-scrollbar-track,
+.drawer-rows::-webkit-scrollbar-track,
+.quickpick::-webkit-scrollbar-track {
   background: transparent;
 }
 .list-scroll::-webkit-scrollbar-thumb,
 .view-prefs::-webkit-scrollbar-thumb,
-.modal-body::-webkit-scrollbar-thumb {
+.modal-body::-webkit-scrollbar-thumb,
+.drawer-rows::-webkit-scrollbar-thumb,
+.quickpick::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 3px;
 }
 .list-scroll::-webkit-scrollbar-thumb:hover,
 .view-prefs::-webkit-scrollbar-thumb:hover,
-.modal-body::-webkit-scrollbar-thumb:hover {
-  background: #3a3a40;
+.modal-body::-webkit-scrollbar-thumb:hover,
+.drawer-rows::-webkit-scrollbar-thumb:hover,
+.quickpick::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar);
 }
 
 /* ---------- Sticky footer hints ---------- */
@@ -197,7 +289,7 @@ textarea {
   font-size: 10.5px;
   letter-spacing: 0.02em;
   color: var(--text-dim);
-  border-top: 1px solid #1c1c20;
+  border-top: 1px solid var(--border);
 }
 
 /* ---------- Tiny label / value pattern ---------- */
@@ -230,6 +322,177 @@ textarea {
   line-height: 1.6;
 }
 
+/* Inline notice for unreachable watched folders (offline share / no
+   permission). Deliberately calm — a muted info card, not an error — so a
+   transient network blip informs without alarming. Distinct from .empty. */
+.folder-notice {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.folder-notice-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.folder-notice-path {
+  margin-top: 4px;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-notice-hint {
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
+/* The one-time first-run welcome: a full-panel takeover (absolute, over the
+   content, filling 100% of the panel) so the four-step intro reads as a proper
+   welcome screen rather than a cramped notice. Overrides the folder-notice card
+   look it borrows the title styling from. Dismissed with the big "Got it" CTA. */
+.onboarding-notice {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  margin: 0;
+  padding: 20px 18px 16px;
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.onboarding-notice .folder-notice-title {
+  font-size: 16.5px;
+}
+
+/* The one-line lead under the welcome title: a calm framing sentence above the
+   numbered steps. */
+.onboarding-lead {
+  margin-top: 4px;
+  color: var(--text);
+}
+
+/* The guided four-step flow: each step is a number badge beside a bold title
+   and one detail line. A little extra top spacing sets the list off from the
+   lead. */
+.onboarding-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* The accent number badge: a small, filled circle carrying the step number, so
+   the flow reads as an ordered list at a glance. */
+.onboarding-step-badge {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
+
+.onboarding-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.onboarding-step-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.onboarding-step-detail {
+  opacity: 0.8;
+}
+
+/* Action row inside a notice card (the onboarding "Got it" / the notifications
+   "Enable" recovery button): right-aligned, a touch of top spacing. */
+.onboarding-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* In the welcome takeover the CTA fills the width and pins to the bottom (the
+   shared .onboarding-actions above still right-aligns the Preferences
+   notifications recovery buttons — these overrides are scoped to the welcome). */
+.onboarding-notice .onboarding-actions {
+  display: block;
+  margin-top: auto;
+  padding-top: 16px;
+}
+.onboarding-dismiss {
+  width: 100%;
+  padding: 13px;
+  font-size: 13.5px;
+}
+
+/* The first-run update-check consent: a default-checked checkbox the user can
+   uncheck in one click, with a calm title and a privacy sub-label beneath it.
+   The checkbox aligns to the top of the two-line text. */
+.onboarding-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.onboarding-consent input {
+  margin-top: 2px;
+  flex: none;
+}
+
+.onboarding-consent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.onboarding-consent-title {
+  font-size: 12px;
+}
+
+.onboarding-consent-sub {
+  font-size: 10.5px;
+  opacity: 0.7;
+}
+
+/* The Preferences "notifications are off" recovery row leans warning-ward
+   (amber edge) since it flags a feature that won't work until fixed. */
+.notif-notice {
+  margin-top: 10px;
+  border-left-color: var(--warning, #d9a23a);
+}
+
 .row {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -242,7 +505,7 @@ textarea {
 
 .row:hover {
   border-color: rgba(124, 92, 252, 0.4);
-  background: #1e1e23;
+  background: var(--row-hover);
 }
 
 .row.is-queued {
@@ -285,6 +548,8 @@ textarea {
 }
 
 .row-name {
+  display: flex;
+  align-items: center;
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text);
@@ -292,7 +557,17 @@ textarea {
   overflow: hidden;
 }
 
-/* Magnifier next to the file name; reveals the file in Finder. */
+/* The ellipsizing portion only; the badge + reveal button sit outside it
+   (flex:none siblings) so they're never clipped by the ellipsis. */
+.row-name-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Magnifier next to the file name; reveals the file in the file manager. */
 .row-reveal {
   display: inline-flex;
   align-items: center;
@@ -335,7 +610,7 @@ textarea {
 .meta-value {
   font-size: 11.5px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text);
 }
 
 .row-status {
@@ -361,7 +636,7 @@ textarea {
 }
 
 .done-stat {
-  color: #fff;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -437,7 +712,7 @@ textarea {
   color: var(--text);
 }
 
-/* "›" rotates into "˅" while the row is expanded. */
+/* "â€º" rotates into "Ë…" while the row is expanded. */
 .row.is-expanded .row-chevron {
   transform: rotate(90deg);
 }
@@ -541,6 +816,7 @@ textarea {
 
 .badge-compressed {
   display: inline-block;
+  flex: none;
   vertical-align: 1px;
   margin-left: 6px;
   padding: 2px 6px;
@@ -549,7 +825,7 @@ textarea {
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #c9bdfd;
+  color: var(--chip-text);
   background: var(--accent-deep);
   border: 1px solid rgba(124, 92, 252, 0.35);
 }
@@ -570,13 +846,14 @@ textarea {
   cursor: pointer;
   border: 1px solid rgba(124, 92, 252, 0.45);
   background: transparent;
-  color: #c9bdfd;
+  color: var(--chip-text);
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
 .chip:hover {
   border-color: var(--accent-hover);
-  color: #fff;
+  background: var(--accent-deep);
+  color: var(--chip-text);
 }
 
 .chip-default {
@@ -600,7 +877,7 @@ textarea {
 
 .chip:disabled:hover {
   border-color: rgba(124, 92, 252, 0.45);
-  color: #c9bdfd;
+  color: var(--chip-text);
   background: transparent;
 }
 
@@ -708,8 +985,8 @@ textarea {
 }
 
 .btn-primary:hover {
-  background: #352a64;
-  color: #c9bdfd;
+  background: var(--accent-press);
+  color: var(--chip-text);
 }
 
 .btn-block {
@@ -733,7 +1010,7 @@ textarea {
 
 .btn-ghost:hover:not(:disabled) {
   color: var(--text);
-  border-color: #3f3f46;
+  border-color: var(--border-strong);
 }
 
 .btn-ghost:disabled {
@@ -776,6 +1053,33 @@ textarea {
   margin-bottom: 6px;
 }
 
+/* A field that opens a new sub-group inside a card (e.g. "Recent videos shown"
+   under the layout-picker radios): a hairline + breathing room so it doesn't
+   crowd the control above it. */
+.field-divided {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* A sub-label that belongs to the toggle row just above it (e.g. the
+   update-check privacy line). The toggle's own bottom divider would otherwise
+   fall BETWEEN the toggle and this hint, orphaning the hint past the line; so
+   drop that divider and let the hint carry it instead — toggle + hint now read
+   as one unit, with the divider closing it off below. */
+/* `.card` prefix raises specificity to (0,3,0) so this reliably beats
+   `.toggle-row:not(:last-child)` (0,2,0) regardless of source order — a bare
+   `.toggle-row:has(...)` ties at (0,2,0) and would lose to the later rule. */
+.card .toggle-row:has(+ .toggle-hint) {
+  border-bottom: none;
+}
+.toggle-hint {
+  margin-top: -2px;
+  margin-bottom: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* ---------- "Split into parts" control (preset editor + custom page) ---------- */
 
 .split-field {
@@ -806,13 +1110,18 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 7px 10px;
-  outline: none;
   width: 100%;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+/* Suppress the UA outline only for non-keyboard (mouse) focus so the global
+   :focus-visible accent ring above is never swallowed. */
+.input:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .input::placeholder {
-  color: #5b5b63;
+  color: var(--placeholder);
 }
 
 .input:focus {
@@ -925,7 +1234,7 @@ select.input {
 }
 
 .toggle-row:not(:last-child) {
-  border-bottom: 1px solid #232328;
+  border-bottom: 1px solid var(--border);
 }
 
 .toggle-row-flat {
@@ -939,6 +1248,45 @@ select.input {
   color: var(--text);
 }
 
+.radio-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.radio-row:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
+.radio-group {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.radio-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-dim, #b8b8c0);
+  cursor: pointer;
+}
+
+.radio-item input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* manual: light mode — an OFF toggle reads clearly off (darker --switch-track +
+   knob border/shadow) vs the accent ON state; dark mode toggle unchanged. Long
+   recording/preset names ellipsize (.row-name-text, .active-bar-name) with the
+   reveal button/badge and ‹ › arrows staying put. A 16+ preset quick-pick
+   scrolls with the slim 6px scrollbar, and the activity drawer scrollbar
+   (.drawer-rows) matches the rest of the app. */
 .switch {
   position: relative;
   width: 34px;
@@ -956,7 +1304,7 @@ select.input {
 .switch .track {
   position: absolute;
   inset: 0;
-  background: var(--border);
+  background: var(--switch-track);
   border-radius: 999px;
   transition: background 0.15s;
 }
@@ -964,12 +1312,19 @@ select.input {
 .switch .track::after {
   content: "";
   position: absolute;
+  /* `* { box-sizing }` doesn't reach pseudo-elements and box-sizing isn't
+     inherited, so without this the 1px border below made the knob 18px and it
+     poked out of the 20px track top/bottom. Pin it to border-box → a true 16px. */
+  box-sizing: border-box;
   top: 2px;
   left: 2px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--switch-knob);
+  /* Keeps the #fff knob legible against the darker light-mode OFF track. */
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s;
 }
 
@@ -992,7 +1347,7 @@ select.input {
 }
 
 .folder-row:not(:last-of-type) {
-  border-bottom: 1px solid #232328;
+  border-bottom: 1px solid var(--border);
 }
 
 .folder-path {
@@ -1034,21 +1389,495 @@ select.input {
   margin: 8px 0 2px;
 }
 
+/* ---------- Converted (history) tab ---------- */
+
+.view-converted {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-converted .empty {
+  white-space: pre-line;
+}
+
+.conv-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.conv-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A flex line so the relative time stays pinned to the right and the variable
+   part (size · parts · preset name) is the only thing that truncates. Before,
+   the whole line ellipsized at its end — so on long/group rows the time (and its
+   dotted-underline tooltip affordance) got cut off, making the underline look
+   like it appeared on some rows but not others. */
+.conv-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+.conv-sub-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-sep {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.conv-after {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.conv-where {
+  color: var(--text-dim);
+}
+
+.conv-act {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.conv-act:hover {
+  color: var(--text);
+  border-color: rgba(124, 92, 252, 0.5);
+}
+
+.conv-act svg {
+  width: 15px;
+  height: 15px;
+}
+
+.conv-thumb {
+  flex: none;
+  width: 50px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.conv-play {
+  color: var(--accent);
+}
+
+.conv-play:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---- Multi-part (split) group: ONE block; parts are compact text rows ---- */
+
+.conv-tree {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.conv-tree-parent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.conv-tree-parent:hover {
+  background: var(--row-hover);
+}
+
+.conv-chevron,
+.conv-gutter {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.conv-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+.conv-chevron svg {
+  width: 13px;
+  height: 13px;
+}
+
+.conv-tree.is-open .conv-chevron {
+  transform: rotate(90deg);
+}
+
+/* Parts live inside the same block — a slim list under a divider, lightly
+   inset with a thin connector so they read as children, not separate cards. */
+.conv-children {
+  position: relative;
+  padding: 4px 10px 8px 24px;
+  border-top: 1px solid var(--border);
+}
+/* One continuous vertical guide so the parts read as a single, aligned list. */
+.conv-children::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 4px;
+  bottom: 12px;
+  width: 1.5px;
+  background: var(--border);
+}
+
+.conv-part {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+/* Short branch tick joining each part to the guide. */
+.conv-part::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 50%;
+  width: 8px;
+  height: 1.5px;
+  background: var(--border);
+}
+
+.conv-partno {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.conv-cname {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-csize {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--success);
+}
+
+/* Slightly smaller action buttons on the compact part rows. */
+.conv-part .conv-act {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.conv-part .conv-act svg {
+  width: 13px;
+  height: 13px;
+}
+
+.badge-parts {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-deep);
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.conv-time {
+  flex: none;
+  cursor: help;
+  white-space: nowrap;
+  border-bottom: 1px dotted var(--text-dim);
+}
+
+/* Attached to <body> on hover and positioned over the viewport (fixed) so it
+   escapes the sub-line / scroll-container overflow clipping. */
+.conv-tip {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--overlay);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px var(--shadow);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.conv-tip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 10.5px;
+  color: var(--text);
+}
+
+.conv-tip-row b {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conv-tip-row b.rec {
+  color: var(--amber);
+}
+
+.conv-tip-row b.conv {
+  color: var(--success);
+}
+
+.conv-tip-row > span {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+
+/* ---------- Activity drawer (download manager) ---------- */
+
+.drawer {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 50;
+  background: var(--overlay);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 -10px 30px var(--shadow);
+  padding: 10px;
+}
+
+.drawer[hidden] {
+  display: none;
+}
+
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.drawer-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.drawer-close {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.drawer-close:hover {
+  color: var(--text);
+}
+
+.drawer-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.drawer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+
+.drawer-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.drawer-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-tag {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.drawer-tag.run {
+  color: var(--accent-hover);
+  background: rgba(124, 92, 252, 0.16);
+}
+
+.drawer-tag.ok {
+  color: var(--success);
+  background: rgba(45, 212, 167, 0.14);
+}
+
+.drawer-tag.fail {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.14);
+}
+
+.drawer-bar {
+  height: 4px;
+  border-radius: 3px;
+  background: var(--border-strong);
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.drawer-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.drawer-act {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.drawer-act:hover {
+  color: var(--text);
+  border-color: rgba(124, 92, 252, 0.5);
+}
+
+.drawer-act svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Folded "N queued" / "+N more" lines: dimmer, no progress bar or actions. */
+.drawer-summary {
+  background: transparent;
+  border-style: dashed;
+  padding: 6px 10px;
+}
+
+.drawer-summary .drawer-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
 /* ---------- Toast ---------- */
 
 .toast {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: 12px;
+  /* When the activity drawer is visible it publishes its height as --drawer-h
+     on .panel (drawer.ts); offset the toast above it so the two don't overlap.
+     Falls back to the normal 12px gap when no drawer is showing (--drawer-h 0). */
+  bottom: calc(var(--drawer-h, 0px) + 12px);
   z-index: 50;
   background: var(--surface-2);
-  border: 1px solid rgba(248, 113, 113, 0.4);
+  /* Neutral default; success/error variants below recolor the accent border. */
+  border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 10px;
   color: var(--text);
   font-size: 11.5px;
   padding: 10px 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 24px var(--shadow);
+  /* The container is a persistent live region (never display:none), so SR
+     announces textContent changes. Hidden visually until `is-shown`. */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease;
+}
+
+.toast.is-shown {
+  opacity: 1;
+  visibility: visible;
+}
+
+.toast.toast-success {
+  border-left-color: var(--success);
+}
+
+.toast.toast-error {
+  border-left-color: var(--danger);
 }
 
 /* ---------- Version footer (preferences) ---------- */
@@ -1059,4 +1888,343 @@ select.input {
   font-size: 10.5px;
   color: var(--text-dim);
   opacity: 0.7;
+}
+
+/* Homepage · Wiki · Releases links under the version. */
+.version-links {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin: 0 2px 4px;
+}
+.version-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.version-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.version-sep {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+/* ---------- Active-preset bar (videos layout) ---------- */
+
+.active-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 12px 8px;
+  padding: 7px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.active-bar-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.active-bar-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Allow the control (and the name inside) to shrink so long preset names
+     truncate instead of growing the bar; the arrows stay flex:none. */
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.active-bar-name {
+  flex: 1;
+  min-width: 80px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-bar-arrow {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.active-bar-arrow:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.active-bar-arrow:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---------- Quick-pick preset overlay (videos layout) ---------- */
+
+.quickpick-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: var(--scrim);
+  backdrop-filter: blur(1.5px);
+}
+
+.quickpick {
+  width: 100%;
+  max-width: 320px;
+  /* Cap to the overlay's inner height (inset 0 minus its 18px top+bottom
+     padding) and scroll internally so arbitrarily many presets stay reachable
+     instead of clipping off the top/bottom. Stays centered for short lists. */
+  max-height: calc(100% - 36px);
+  overflow-y: auto;
+  background: var(--overlay);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 18px 50px var(--shadow);
+}
+
+.quickpick-title {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  padding: 4px 8px 8px;
+}
+
+.quickpick-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 9px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.quickpick-item.is-highlight,
+.quickpick-item:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.quickpick-num {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.quickpick-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quickpick-custom {
+  border-top: 1px solid var(--border);
+  margin-top: 3px;
+  color: var(--text-dim);
+}
+
+.quickpick-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 7px 4px 3px;
+}
+
+/* ---------- Update-available modal ---------- */
+
+/* Reuses the quickpick overlay + card chrome (scrim, centered card, accent
+   border) so the "tamp <version> is available" notice reads as the same calm,
+   dismissible surface as the preset picker — not an alarm. */
+.update-card {
+  padding: 14px 16px 12px;
+}
+
+.update-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 0 6px;
+}
+
+.update-line {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin-bottom: 12px;
+}
+
+/* Right-aligned action row: What's new / Download / Later. Wraps gracefully on
+   a narrow panel rather than clipping. */
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------- Radio option cards (preferences) ---------- */
+
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 2px;
+  cursor: pointer;
+}
+
+.option-row:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
+.option-radio {
+  margin-top: 2px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.option-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.option-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.pin-btn {
+  flex: none;
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.pin-btn.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-deep);
+}
+
+/* Explicit dismiss button, next to the pin. Mirrors .pin-btn; hovers to the
+   danger tint so it reads clearly as "close this panel". */
+.close-btn {
+  flex: none;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.close-btn:hover {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  pointer-events: none;
+}
+.drop-inner {
+  text-align: center;
+  color: var(--text);
+}
+.drop-arrow {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.drop-big {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.conv-nav.is-sel {
+  background: var(--row-hover);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: 8px;
+}
+
+/* ---------- Reduced motion ----------
+   Honor the OS "Reduce motion" setting: neutralize animations/transitions
+   globally and stop the looping preview shimmer (WCAG 2.3.3).
+   manual: enable OS Reduce-motion — the .preview-loading shimmer stops. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .preview-loading {
+    animation: none;
+  }
 }

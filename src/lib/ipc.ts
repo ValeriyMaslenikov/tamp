@@ -45,6 +45,60 @@ export interface Settings {
   shortcutTogglePanel: string | null;
   /** Notify when the compress-latest shortcut picks a video older than this. */
   staleWarnMinutes: number;
+  /** Reveal finished outputs in the file manager after converting. */
+  openAfterConvert: OpenAfterConvert;
+  /** Which preset-selection UI the Videos screen shows. */
+  videosLayout: VideosLayout;
+  /** Color theme for the panel. */
+  theme: Theme;
+  /** Windows: Explorer "Compress with tamp" right-click entry registered. */
+  contextMenuEnabled: boolean;
+  /** How many recent videos the Videos tab lists (1–200). */
+  recentsLimit: number;
+  /** Whether the one-time first-run notice has been shown and dismissed. */
+  onboardingSeen: boolean;
+  /** Whether the opt-in GitHub update check runs on launch (off by default). */
+  updateCheckEnabled: boolean;
+  /** Newest version already dismissed in the update modal; never re-nags for it. */
+  lastDismissedUpdateVersion: string | null;
+  /** UI language: "system" follows the browser language; "en"/"uk" pin it. */
+  locale: LocaleSetting;
+}
+
+/** The persisted UI-language choice. "system" resolves from the browser
+ *  language at startup; "en"/"uk" pin the locale. */
+export type LocaleSetting = "system" | "en" | "uk";
+
+/**
+ * Notification permission as a lowercase string. "unsupported" means the state
+ * couldn't be read (no API / plugin error). On desktop the plugin always
+ * reports "granted" (the OS owns the toggle), so "denied" only ever appears
+ * where the platform surfaces a real one.
+ */
+export type NotificationPermission =
+  | "granted"
+  | "denied"
+  | "prompt"
+  | "prompt-with-rationale"
+  | "unsupported";
+
+/** off = never; multipart = open the folder after a split; all = also reveal single outputs. */
+export type OpenAfterConvert = "off" | "multipart" | "all";
+
+/** quick-pick = picker per video (default); active-bar = one active preset. */
+export type VideosLayout = "quick-pick" | "active-bar";
+
+/** system = follow OS light/dark (tracks live changes); light/dark pin it. */
+export type Theme = "system" | "light" | "dark";
+
+/**
+ * A newer release the opt-in update check found. `notes` is the release body
+ * (markdown), surfaced as "What's new"; `url` is the GitHub release page.
+ */
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes: string | null;
 }
 
 /** One-off conversion settings for custom_convert. */
@@ -111,14 +165,64 @@ export interface JobState {
 export const listRecents = (): Promise<RecentVideo[]> =>
   invoke<RecentVideo[]>("list_recents");
 
+/** Watched folders that exist but can't be read now (offline share /
+ *  permission-denied), as display strings — drives the Videos-tab "couldn't
+ *  read <folder>" banner. Empty when all folders are reachable or just missing. */
+export const unreachableFolders = (): Promise<string[]> =>
+  invoke<string[]>("unreachable_folders");
+
+/** One delivered output of a conversion job: a single has one, a split has N. */
+export interface ConversionOutput {
+  path: string;
+  bytes: number;
+}
+
+/** One past conversion, from the persistent journal. */
+export interface ConversionRecord {
+  inputPath: string;
+  inputBytes: number;
+  /** The job's delivered outputs: one for a single, N for a split set. */
+  outputs: ConversionOutput[];
+  presetHash: string;
+  presetName: string;
+  targetMb: number;
+  completedAtMs: number;
+  inputCreatedMs: number;
+}
+
+export const listConversions = (): Promise<ConversionRecord[]> =>
+  invoke<ConversionRecord[]>("list_conversions");
+
 export const getSettings = (): Promise<Settings> =>
   invoke<Settings>("get_settings");
 
 export const saveSettings = (settings: Settings): Promise<Settings> =>
   invoke<Settings>("save_settings", { settings });
 
+export const setContextMenu = (enabled: boolean): Promise<void> =>
+  invoke<void>("set_context_menu", { enabled });
+
+export const setPin = (pinned: boolean): Promise<void> =>
+  invoke<void>("set_pin", { pinned });
+
+/** The current notification permission state (see {@link NotificationPermission}). */
+export const notificationPermission = (): Promise<NotificationPermission> =>
+  invoke<NotificationPermission>("notification_permission");
+
+/** Re-requests the notification permission; resolves to the resulting state. */
+export const requestNotificationPermission =
+  (): Promise<NotificationPermission> =>
+    invoke<NotificationPermission>("request_notification_permission");
+
+/** Deep-links to the OS notifications settings (no-op where unsupported). */
+export const openNotificationSettings = (): Promise<void> =>
+  invoke<void>("open_notification_settings");
+
 export const pickFolder = (): Promise<string | null> =>
   invoke<string | null>("pick_folder");
+
+export const pickVideos = (): Promise<string[]> =>
+  invoke<string[]>("pick_videos");
 
 export const enqueue = (path: string, presetId: string): Promise<string> =>
   invoke<string>("enqueue", { path, presetId });
@@ -144,6 +248,39 @@ export const ensurePreview = (path: string): Promise<string> =>
 
 export const copyFile = (path: string): Promise<void> =>
   invoke<void>("copy_file", { path });
+
+/** Copy multiple files to the clipboard in one write (a single CF_HDROP list on
+ *  Windows) so every part of a split lands — not just the last. */
+export const copyFiles = (paths: string[]): Promise<void> =>
+  invoke<void>("copy_files", { paths });
+
+export const openFile = (path: string): Promise<void> =>
+  invoke<void>("open_file", { path });
+
+/** Opens an external URL in the default browser via the Rust opener (so no CSP
+ *  widening / opener capability is needed on the panel window). */
+export const openUrl = (url: string): Promise<void> =>
+  invoke<void>("open_url", { url });
+
+/**
+ * Asks GitHub (via Rust) whether a newer tamp exists. Returns the newest release
+ * strictly newer than the installed build, or null when up to date. Rejects on
+ * any network/parse error — callers swallow that silently (never a toast). Only
+ * called when {@link Settings.updateCheckEnabled} is on.
+ */
+export const checkForUpdate = (): Promise<UpdateInfo | null> =>
+  invoke<UpdateInfo | null>("check_for_update");
+
+export const conversionThumb = (path: string): Promise<string | null> =>
+  invoke<string | null>("conversion_thumb", { path });
+
+/** Ensure (generating on miss) one recent video's thumbnail; lazy per row. */
+export const recentThumb = (path: string): Promise<string | null> =>
+  invoke<string | null>("recent_thumb", { path });
+
+/** Resolve (probing + caching on miss) one recent video's duration; lazy per row. */
+export const recentDuration = (path: string): Promise<number | null> =>
+  invoke<number | null>("recent_duration", { path });
 
 export const onPanelShown = (cb: () => void): Promise<UnlistenFn> =>
   listen("panel:shown", () => cb());

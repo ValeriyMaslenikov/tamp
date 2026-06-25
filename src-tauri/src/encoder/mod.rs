@@ -1,4 +1,5 @@
 pub mod bin;
+pub mod hw;
 pub mod plan;
 pub mod probe;
 pub mod progress;
@@ -11,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::platform::Platform as _;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -68,6 +70,8 @@ impl Phase {
 pub struct PostActions {
     pub copy_to_clipboard: bool,
     pub trash_original: bool,
+    /// Whether to reveal the finished output(s) in the file manager.
+    pub open_after: crate::settings::OpenAfterConvert,
 }
 
 /// Shared slot holding the currently running ffmpeg child so `cancel()` /
@@ -77,12 +81,12 @@ pub type ChildSlot = Arc<Mutex<Option<tokio::process::Child>>>;
 const MAX_TRACKED_JOBS: usize = 50;
 const EMIT_THROTTLE: Duration = Duration::from_millis(100);
 
-/// Bits per pixel per frame below which h264_videotoolbox's quality floor
-/// IGNORES the requested bitrate (a 498 kbit request once emitted 89.7 MB):
-/// such an attempt is wasted work that always overshoots, so the worker
-/// skips straight to two-pass software. Rare after the planner's
-/// auto-degradation — only a plan held at the 640px width floor can still
-/// sit below this.
+/// Bits per pixel per frame below which single-pass hardware encoders'
+/// quality floors IGNORE the requested bitrate (h264_videotoolbox once
+/// emitted 89.7 MB for a 498 kbit request): such an attempt is wasted work
+/// that always overshoots, so the worker skips straight to two-pass
+/// software. Rare after the planner's auto-degradation — only a plan held at
+/// the 640px width floor can still sit below this.
 pub const HW_MIN_BPP: f64 = 0.013;
 
 /// Whether a plan's bitrate is dense enough for the VideoToolbox attempt to
@@ -276,16 +280,11 @@ fn emit_state(inner: &Inner, state: &JobState, force: bool) {
 }
 
 fn update_tray(inner: &Inner, progress: Option<f64>) {
-    let text = progress.map(|p| {
-        let pct = (p.clamp(0.0, 1.0) * 100.0).round() as u32;
-        let queued = inner.pending.load(Ordering::SeqCst);
-        if queued > 0 {
-            format!("{pct}% (+{queued})")
-        } else {
-            format!("{pct}%")
-        }
+    let progress = progress.map(|p| crate::platform::TrayProgress {
+        fraction: p,
+        queued: inner.pending.load(Ordering::SeqCst),
     });
-    crate::tray::set_progress(&inner.app, text);
+    crate::platform::native().tray_progress(&inner.app, progress);
 }
 
 async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
@@ -295,7 +294,7 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
             emit_state(inner, &state, true);
         }
         if inner.pending.load(Ordering::SeqCst) == 0 {
-            crate::tray::set_progress(&inner.app, None);
+            update_tray(inner, None);
         }
         return;
     }
@@ -346,7 +345,7 @@ async fn process_job(inner: &Arc<Inner>, job: QueuedJob) {
     }
 
     if inner.pending.load(Ordering::SeqCst) == 0 {
-        crate::tray::set_progress(&inner.app, None);
+        update_tray(inner, None);
     }
 }
 
@@ -360,7 +359,7 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     // GOOD quality) falls through to the single-output path unchanged,
     // reusing the early probe.
     if job.preset.split.mode != SplitMode::Off {
-        let info = probe::probe(&job.input).await?;
+        let info = probe::probe_cached(&job.input).await?;
         let split = plan::plan_split(&info, &job.preset);
         if split.count > 1 {
             return run_split_set(inner, job, &info, split, &preset_hash, target_bytes).await;
@@ -386,7 +385,8 @@ async fn run_single(
     // unique_output probe, so the fresh encode targets the now-free base
     // expected_output path; an under-target file with mismatched provenance
     // is left alone and the fresh encode lands on a numbered sibling.
-    let expected = plan::expected_output(&job.input, preset_hash, job.preset.format);
+    let expected =
+        plan::expected_output(&job.input, &job.preset.name, preset_hash, job.preset.format);
     if let Some(output_bytes) = check_reuse(&expected, target_bytes) {
         if reuse_is_stale(&inner.app, &job.input, &expected) {
             crate::log_info!(
@@ -426,9 +426,22 @@ async fn run_single(
 
     let info = match pre_probed {
         Some(info) => info,
-        None => probe::probe(&job.input).await?,
+        None => probe::probe_cached(&job.input).await?,
     };
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
+    // The output (and its `.part` temp sibling) is upgraded to the `\\?\`
+    // verbatim form at the write boundary so an everyday deep OneDrive/synced
+    // path past the legacy 260 MAX_PATH still writes on a default Windows.
+    // Only an UNFIXABLE over-length path (a component past the 255-char cap)
+    // is rejected here with an actionable error instead of a low-level ffmpeg
+    // failure.
+    // manual: on a default-off-LongPaths Windows, a recording in a deeply
+    // nested path (output > 260) now compresses instead of failing with
+    // "cannot move finished output into place"; an unavoidably-too-long path
+    // (a 256+ char name) fails with output_too_long_error() up front.
+    if plan::path_too_long(&plan.output) {
+        return Err(output_too_long_error());
+    }
     if plan.auto_fps.is_some() || plan.auto_width.is_some() {
         let caps: Vec<String> = plan
             .auto_fps
@@ -506,7 +519,7 @@ async fn run_single(
         let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
         if use_hardware && !hardware_viable(&plan) {
             crate::log_info!(
-                "job {}: plan is {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor — it would ignore the rate and overshoot; starting on two-pass software directly",
+                "job {}: plan is {:.4} bits/pixel/frame, under the ~{HW_MIN_BPP} single-pass hardware quality floor — it would ignore the rate and overshoot; starting on two-pass software directly",
                 job.id,
                 plan.bpp
             );
@@ -526,6 +539,21 @@ async fn run_single(
         .await?
     };
 
+    // Honor a cancel that landed in the post-encode window: the engine
+    // already promoted the output onto plan.output, but post-actions (trash
+    // original, clipboard) have not run yet. Discard the just-finished output
+    // and surface the cancel so process_job ends the job Cancelled with the
+    // original untouched — once a cancel is observed, NOTHING is trashed.
+    if !should_deliver(is_cancelled()) {
+        crate::log_info!(
+            "job {}: cancelled in the post-encode window; discarding {}",
+            job.id,
+            plan.output.display()
+        );
+        let _ = std::fs::remove_file(plan::to_verbatim(&plan.output));
+        return Err(CANCELLED_ERR.to_string());
+    }
+
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Verifying;
         j.progress = 1.0;
@@ -536,8 +564,14 @@ async fn run_single(
     // Defense in depth: the engines above already enforced the target on the
     // part file before renaming it onto plan.output, but a Done job must
     // NEVER carry an over-target output, so re-verify the delivered file one
-    // last time and fail (removing it) on any violation.
-    let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+    // last time and fail (removing it) on any violation. Stat via the verbatim
+    // form so a delivered path past 260 on Windows still resolves.
+    let actual = enforce_target(
+        &plan::to_verbatim(&plan.output),
+        actual,
+        target_bytes,
+        job.preset.target_mb,
+    )?;
 
     crate::log_info!(
         "job {}: done — {} -> {} ({actual} bytes, target {} MB)",
@@ -554,7 +588,16 @@ async fn run_single(
         &job.input,
         std::slice::from_ref(&plan.output),
     );
-    append_journal(inner, job, &plan.output, preset_hash, actual);
+    // One record per job: a single = a 1-output set.
+    append_journal(
+        inner,
+        job,
+        &[crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        }],
+        preset_hash,
+    );
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Done;
         j.progress = 1.0;
@@ -582,7 +625,20 @@ async fn run_split_set(
     target_bytes: f64,
 ) -> Result<(), String> {
     let n = split.count;
-    let parts = plan::expected_part_outputs(&job.input, preset_hash, job.preset.format, n);
+    let parts = plan::expected_part_outputs(
+        &job.input,
+        &job.preset.name,
+        preset_hash,
+        job.preset.format,
+        n,
+    );
+    // A split adds a folder level + a `.part` sibling, the longest path of the
+    // job. The folder/parts are written via the `\\?\` verbatim form below, so
+    // only an UNFIXABLE over-length part (a component past the 255-char cap) is
+    // rejected here with an actionable error.
+    if parts.iter().any(|p| plan::path_too_long(p)) {
+        return Err(output_too_long_error());
+    }
     crate::log_info!(
         "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
         job.id,
@@ -625,17 +681,47 @@ async fn run_split_set(
             return Ok(());
         }
     }
-    // Anything short of a full clean set is useless: best-effort sweep of
-    // tamp-owned stale part files for this hash (any geometry), then encode
-    // the whole set fresh onto the now-free expected paths.
-    sweep_stale_parts(&plan::expected_output(
-        &job.input,
-        preset_hash,
-        job.preset.format,
-    ));
+    // Anything short of a full clean set is useless: give the fresh set a
+    // clean folder (clears any stale parts from a prior geometry of this
+    // hash), then encode the whole set onto the now-free expected paths.
+    let folder = plan::expected_part_folder(&job.input, &job.preset.name, preset_hash);
+    // Create the part folder via the `\\?\` verbatim form so a folder path
+    // past the legacy 260 MAX_PATH on Windows still resolves; the error keeps
+    // the clean, non-verbatim path for the message.
+    if let Err(e) = plan::reset_dir(&plan::to_verbatim(&folder)) {
+        return Err(format!(
+            "cannot prepare output folder {}: {e}",
+            folder.display()
+        ));
+    }
 
-    match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
-        Ok(total) => {
+    // A cancel observed in the post-encode window (the set finished but
+    // post-actions haven't run) must be honored: discard the whole set and
+    // end Cancelled with the original untouched. Mapped to the cancel
+    // sentinel so it flows through the same cleanup arm a mid-set cancel does
+    // (remove every promoted part + the folder); is_cancelled folds in
+    // shutdown exactly like the per-part closures.
+    let result = match encode_part_set(inner, job, info, split, &parts, target_bytes).await {
+        Ok(delivered)
+            if should_deliver(
+                inner.shutting_down.load(Ordering::SeqCst)
+                    || inner.cancelled.lock().unwrap().contains(&job.id),
+            ) =>
+        {
+            Ok(delivered)
+        }
+        Ok(_) => {
+            crate::log_info!(
+                "job {}: cancelled in the post-encode window; discarding the {n}-part set",
+                job.id
+            );
+            Err(CANCELLED_ERR.to_string())
+        }
+        Err(err) => Err(err),
+    };
+
+    match result {
+        Ok((total, delivered)) => {
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Verifying;
                 j.progress = 1.0;
@@ -648,6 +734,10 @@ async fn run_split_set(
                 job.input.display(),
                 job.preset.target_mb
             );
+            // One record per job: the whole set becomes a single N-output
+            // journal record, written here (past the post-encode cancel guard)
+            // so a cancel before delivery records nothing.
+            append_journal(inner, job, &delivered, preset_hash);
             // Clipboard gets ALL parts in order; the original is only ever
             // trashed once the FULL set succeeded.
             let post_error = run_post_actions(inner, &job.post, &job.input, &parts);
@@ -667,14 +757,20 @@ async fn run_split_set(
             // already cleared older files at these names, so everything here
             // is THIS run's own debris.
             for part in &parts {
-                if part.exists() {
-                    let _ = std::fs::remove_file(part);
+                // Route exists()/remove through the verbatim form so cleanup of
+                // a deep-tree part path past 260 on Windows is not a no-op.
+                let part_v = plan::to_verbatim(part);
+                if part_v.exists() {
+                    let _ = std::fs::remove_file(&part_v);
                 }
-                let tmp = plan::part_path(part);
+                let tmp = plan::to_verbatim(&plan::part_path(part));
                 if tmp.exists() {
                     let _ = std::fs::remove_file(&tmp);
                 }
             }
+            // Drop the now-empty part folder so a failed/cancelled split
+            // leaves nothing behind.
+            let _ = std::fs::remove_dir(&folder);
             Err(err)
         }
     }
@@ -684,17 +780,19 @@ async fn run_split_set(
 /// existing per-part pipeline (auto-degradation, convergence retries, .part
 /// temp + promote, enforce_target) with the input trimmed to its slice. The
 /// LAST part takes the remainder so the lengths sum to the exact duration.
-/// Returns the SUM of all part sizes; a failed part aborts the loop (the
-/// caller cleans up the half-set).
+/// Returns the SUM of all part sizes plus the delivered `{path, bytes}` of
+/// every part (in order) so the caller can write ONE journal record for the
+/// whole set; a failed part aborts the loop (the caller cleans up the
+/// half-set). The journal append is the caller's job, gated behind the
+/// post-encode cancel check, so a cancel before delivery records nothing.
 async fn encode_part_set(
     inner: &Arc<Inner>,
     job: &QueuedJob,
     info: &probe::ProbeInfo,
     split: plan::SplitPlan,
     parts: &[PathBuf],
-    preset_hash: &str,
     target_bytes: f64,
-) -> Result<u64, String> {
+) -> Result<(u64, Vec<crate::journal::Output>), String> {
     let n = split.count;
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
@@ -717,6 +815,7 @@ async fn encode_part_set(
     };
 
     let mut total: u64 = 0;
+    let mut delivered: Vec<crate::journal::Output> = Vec::with_capacity(parts.len());
     for (idx, output) in parts.iter().enumerate() {
         let i = idx as u32 + 1;
         let start = split.part_secs * f64::from(i - 1);
@@ -787,7 +886,7 @@ async fn encode_part_set(
             let mut use_hardware = job.use_hardware && job.preset.format == OutputFormat::Mp4;
             if use_hardware && !hardware_viable(&plan) {
                 crate::log_info!(
-                    "job {}: part {i}/{n} plans {:.4} bits/pixel/frame, under VideoToolbox's ~{HW_MIN_BPP} quality floor; starting on two-pass software directly",
+                    "job {}: part {i}/{n} plans {:.4} bits/pixel/frame, under the ~{HW_MIN_BPP} single-pass hardware quality floor; starting on two-pass software directly",
                     job.id,
                     plan.bpp
                 );
@@ -808,18 +907,29 @@ async fn encode_part_set(
         };
 
         // The same defense in depth as the single-output path: a delivered
-        // part must NEVER be over target.
-        let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+        // part must NEVER be over target. Stat via the verbatim form so a
+        // delivered deep-tree part path past 260 on Windows still resolves.
+        let actual = enforce_target(
+            &plan::to_verbatim(&plan.output),
+            actual,
+            target_bytes,
+            job.preset.target_mb,
+        )?;
         crate::log_info!(
             "job {}: part {i}/{n} done — {} ({actual} bytes, target {} MB)",
             job.id,
             plan.output.display(),
             job.preset.target_mb
         );
-        append_journal(inner, job, &plan.output, preset_hash, actual);
+        // Accumulate this part for the single set-level journal record; the
+        // append happens once in the caller after the whole set is delivered.
+        delivered.push(crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        });
         total += actual;
     }
-    Ok(total)
+    Ok((total, delivered))
 }
 
 /// Set-level reuse probe: `Some(sizes)` when EVERY path in `parts` is a real
@@ -837,47 +947,6 @@ pub fn check_reuse_set(parts: &[PathBuf], target_bytes: f64) -> Option<Vec<u64>>
         sizes.push(meta.len());
     }
     Some(sizes)
-}
-
-/// Best-effort sweep of tamp-owned part files belonging to `expected`'s
-/// configuration: every "{stem} (tamped {hash} p{i}of{n}).{ext}" sibling —
-/// ANY part geometry, so leftovers from a previous split shape go too — is
-/// deleted before a fresh set is encoded. Only regular files are touched;
-/// failures are logged and skipped, never fatal.
-fn sweep_stale_parts(expected: &Path) {
-    let (Some(dir), Some(base_stem), Some(ext)) = (
-        expected.parent(),
-        expected.file_stem().and_then(|s| s.to_str()),
-        expected.extension().and_then(|e| e.to_str()),
-    ) else {
-        return;
-    };
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            crate::log_warn!("cannot scan {} for stale part files: {e}", dir.display());
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        if !plan::is_part_sibling(name, base_stem, ext) {
-            continue;
-        }
-        // DirEntry::metadata does not traverse symlinks, so only a regular
-        // file is ever swept.
-        let Ok(meta) = entry.metadata() else { continue };
-        if !meta.is_file() {
-            continue;
-        }
-        if let Err(e) = std::fs::remove_file(entry.path()) {
-            crate::log_warn!(
-                "cannot remove stale part file {}: {e}",
-                entry.path().display()
-            );
-        }
-    }
 }
 
 /// The reuse short-circuit decision for the worker: `Some(bytes)` when an
@@ -981,6 +1050,29 @@ fn reuse_is_stale(app: &AppHandle, input: &Path, expected: &Path) -> bool {
         .is_some_and(|d| d.as_millis() as u64 > record.completed_at_ms)
 }
 
+/// Whether the just-finished output may be delivered (post-actions run, job
+/// goes Done). A cancel observed in the window between the engine returning
+/// `Ok` and post-actions running must be honored: the output is discarded and
+/// the original is NEVER trashed. `false` means the caller removes the output
+/// and returns the cancel sentinel so `process_job` ends the job Cancelled.
+fn should_deliver(is_cancelled: bool) -> bool {
+    !is_cancelled
+}
+
+/// The error a path returns when a cancel was observed. `process_job` keys
+/// Cancelled vs Failed off the cancelled set, not this string, so the exact
+/// text is only for the log — but it mirrors the in-engine cancel sentinel
+/// ([`run_ffmpeg_with_progress`] returns `"cancelled"`) for consistency.
+const CANCELLED_ERR: &str = "cancelled";
+
+/// The actionable error surfaced when the intended output (or a split part) is
+/// too long to write even with `\\?\` verbatim handling — a single path
+/// component past the filesystem's name cap. Points the user at the real fix
+/// (a shorter folder) instead of a low-level ffmpeg/rename failure.
+fn output_too_long_error() -> String {
+    "Output path is too long — move the recording to a shorter folder".to_string()
+}
+
 /// Final guarantee before a job goes Done: re-stat the output and confirm it
 /// fits the byte target. On violation the file is removed and the job fails
 /// with the actionable error — an oversized file must never be delivered.
@@ -1036,7 +1128,11 @@ fn promote_part(
     target_bytes: f64,
 ) -> Result<u64, String> {
     let actual = enforce_target(part, expected_len, target_bytes, target_bytes / 1_000_000.0)?;
-    if let Err(e) = std::fs::rename(part, output) {
+    // The `part` is already verbatim (the engine wrote it that way); address
+    // the rename DEST in the same `\\?\` form so a final path past the legacy
+    // 260 MAX_PATH on Windows can still be written. No-op off Windows.
+    let dest = plan::to_verbatim(output);
+    if let Err(e) = std::fs::rename(part, &dest) {
         let _ = std::fs::remove_file(part);
         return Err(format!("cannot move finished output into place: {e}"));
     }
@@ -1067,7 +1163,11 @@ pub async fn run_video_convergence(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<u64, String> {
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // ffmpeg writes the `.part` temp; on Windows that path can sit past the
+    // legacy 260 MAX_PATH in a deep synced tree, so address it in the `\\?\`
+    // verbatim form. The stored/displayed `plan.output` stays the clean,
+    // non-verbatim path; only the write boundary is upgraded.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = convergence_attempts(
         &mut work,
         info,
@@ -1106,25 +1206,49 @@ async fn convergence_attempts(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<u64, String> {
-    let mut use_hardware = use_hardware && plan.format == OutputFormat::Mp4;
+    let mut candidates: VecDeque<&'static crate::platform::HwCandidate> =
+        if use_hardware && plan.format == OutputFormat::Mp4 {
+            hw::available_candidates().await.iter().copied().collect()
+        } else {
+            VecDeque::new()
+        };
     for attempt in 0..=retry::MAX_RE_ENCODES {
-        if use_hardware {
-            let hw =
-                run_hardware_pass(plan, info, input, child_slot, is_cancelled, on_progress).await;
-            let fallback_reason = match hw {
+        // Hardware attempt: the first candidate that produces output wins; a
+        // candidate that errors or writes nothing falls through to the next
+        // (same attempt — no convergence info was gained), and an empty
+        // queue means two-pass software.
+        let mut ran_hardware = false;
+        while let Some(cand) = candidates.front().copied() {
+            let hw = run_hardware_pass(
+                cand,
+                plan,
+                info,
+                input,
+                child_slot,
+                is_cancelled,
+                on_progress,
+            )
+            .await;
+            let failure = match hw {
                 Ok(()) => match std::fs::metadata(&plan.output) {
                     Ok(meta) if meta.len() > 0 => None,
-                    _ => Some("hardware encode produced no output".to_string()),
+                    _ => Some(format!("{} produced no output", cand.name)),
                 },
                 Err(e) if is_cancelled() => return Err(e),
                 Err(e) => Some(e),
             };
-            if let Some(reason) = fallback_reason {
-                crate::log_warn!("{reason}; falling back to two-pass libx264");
-                use_hardware = false; // sticks for every later attempt too
+            match failure {
+                None => {
+                    ran_hardware = true;
+                    break;
+                }
+                Some(reason) => {
+                    crate::log_warn!("{reason}; trying the next encoder");
+                    candidates.pop_front();
+                }
             }
         }
-        if !use_hardware {
+        if !ran_hardware {
             // run_passes restarts progress from 0 on its own first callback.
             run_passes(
                 plan,
@@ -1141,7 +1265,7 @@ async fn convergence_attempts(
         let actual = std::fs::metadata(&plan.output)
             .map_err(|e| format!("encoded output missing: {e}"))?
             .len();
-        let encoder = if use_hardware {
+        let encoder = if ran_hardware {
             retry::EncoderKind::Hardware
         } else {
             retry::EncoderKind::Software
@@ -1163,7 +1287,11 @@ async fn convergence_attempts(
                     plan.video_kbit
                 );
                 plan.video_kbit = video_kbit;
-                use_hardware = next_encoder == retry::EncoderKind::Hardware;
+                if next_encoder == retry::EncoderKind::Software {
+                    // Overshoot means rate control lied — switching hardware
+                    // vendors won't fix it; all retries run two-pass x264.
+                    candidates.clear();
+                }
             }
             retry::NextAction::GiveUp => {
                 crate::log_warn!(
@@ -1190,7 +1318,7 @@ fn run_post_actions(
 ) -> Option<String> {
     let mut failures: Vec<String> = Vec::new();
     if post.copy_to_clipboard {
-        match crate::platform::copy_files_to_clipboard(&inner.app, outputs) {
+        match crate::platform::native().copy_files_to_clipboard(&inner.app, outputs) {
             Ok(()) => {
                 for output in outputs {
                     crate::log_info!("copied {} to clipboard", output.display());
@@ -1220,17 +1348,58 @@ fn run_post_actions(
             }
         }
     }
+    open_output_location(&inner.app, &post.open_after, outputs);
     (!failures.is_empty()).then(|| failures.join("; "))
 }
 
-/// Records a successful (non-reused) encode in the conversion journal.
-/// Best-effort: skipped silently when the journal isn't managed (tests).
+/// Reveals the finished outputs in the system file manager per the user's
+/// `open_after` preference: a multi-part set (more than one output) opens its
+/// containing folder; a single output is revealed in its folder, but only
+/// when the preference is `All`. Cross-platform via the opener plugin;
+/// best-effort, so a failure is logged, not surfaced as a post-error.
+fn open_output_location(
+    app: &AppHandle,
+    open_after: &crate::settings::OpenAfterConvert,
+    outputs: &[PathBuf],
+) {
+    use crate::settings::OpenAfterConvert;
+    use tauri_plugin_opener::OpenerExt as _;
+    let multipart = outputs.len() > 1;
+    let act = match open_after {
+        OpenAfterConvert::Off => false,
+        OpenAfterConvert::Multipart => multipart,
+        OpenAfterConvert::All => true,
+    };
+    if !act {
+        return;
+    }
+    let Some(first) = outputs.first() else {
+        return;
+    };
+    let result = if multipart {
+        match first.parent() {
+            Some(folder) => app
+                .opener()
+                .open_path(folder.to_string_lossy(), None::<&str>),
+            None => return,
+        }
+    } else {
+        app.opener().reveal_item_in_dir(first)
+    };
+    if let Err(e) = result {
+        crate::log_warn!("failed to open output location: {e}");
+    }
+}
+
+/// Records a successful (non-reused) encode in the conversion journal as ONE
+/// record per job: `outputs` is the whole delivered set — a single-element
+/// slice for an ordinary job, every part in order for a split set. Best-effort:
+/// skipped silently when the journal isn't managed (tests).
 fn append_journal(
     inner: &Inner,
     job: &QueuedJob,
-    output: &Path,
+    outputs: &[crate::journal::Output],
     preset_hash: &str,
-    output_bytes: u64,
 ) {
     let Some(journal) = inner.app.try_state::<crate::journal::Journal>() else {
         return;
@@ -1250,13 +1419,22 @@ fn append_journal(
     journal.append(crate::journal::ConversionRecord {
         input_path: job.input.to_string_lossy().into_owned(),
         input_bytes,
-        output_path: output.to_string_lossy().into_owned(),
-        output_bytes,
+        outputs: outputs.to_vec(),
         preset_hash: preset_hash.to_string(),
         preset_name: job.preset.name.clone(),
         target_mb: job.preset.target_mb,
         completed_at_ms,
+        input_created_ms: input_created_ms(&job.input),
     });
+}
+
+fn input_created_ms(input: &std::path::Path) -> u64 {
+    std::fs::metadata(input)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Runs both software encode passes for `plan` — libx264 for mp4, libvpx-vp9
@@ -1302,12 +1480,12 @@ pub async fn run_passes(
     .await
 }
 
-/// Runs the single-pass h264_videotoolbox encode for `plan`, reporting
-/// progress as pass 1 mapped to the FULL 0..1 range. `-allow_sw 1` lets
-/// VideoToolbox use Apple's software encoder when no hardware session is
-/// available; the worker falls back to the two-pass libx264 path when this
+/// Runs the single-pass hardware encode for `plan` on `cand`, reporting
+/// progress as pass 1 mapped to the FULL 0..1 range. The worker falls
+/// through to the next candidate (and ultimately two-pass libx264) when this
 /// errors or leaves a missing/empty output. Public for the integration test.
 pub async fn run_hardware_pass(
+    cand: &crate::platform::HwCandidate,
     plan: &plan::EncodePlan,
     info: &probe::ProbeInfo,
     input: &Path,
@@ -1315,7 +1493,7 @@ pub async fn run_hardware_pass(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1332,10 +1510,10 @@ pub async fn run_hardware_pass(
     if let Some(vf) = &plan.vf {
         cmd.arg("-vf").arg(vf);
     }
-    cmd.args(["-c:v", "h264_videotoolbox"])
+    cmd.args(["-c:v", cand.name])
         .arg("-b:v")
         .arg(format!("{}k", plan.video_kbit))
-        .args(["-allow_sw", "1"]);
+        .args(cand.extra_args);
     if plan.audio_kbit > 0 {
         cmd.args(["-c:a", "aac"])
             .arg("-b:a")
@@ -1386,7 +1564,9 @@ pub async fn run_gif(
         .gif
         .ok_or("gif plan is missing its palette parameters")?;
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // See run_video_convergence: write the `.part` via the `\\?\` verbatim
+    // form so a deep Windows path past 260 still encodes.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = gif_attempts(
         &work,
         info,
@@ -1489,7 +1669,7 @@ async fn run_gif_attempt(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1532,7 +1712,7 @@ async fn run_pass(
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<(), String> {
-    let mut cmd = tokio::process::Command::new(bin::ffmpeg_path());
+    let mut cmd = crate::platform::background_command(bin::ffmpeg_path());
     // `-v error` keeps stderr to actual error lines: without it ffmpeg's
     // input-metadata dump (com.apple.quicktime…) drowns the real failure in
     // the captured tail. `-progress pipe:1` still reports on stdout.
@@ -1645,26 +1825,11 @@ fn format_argv(cmd: &tokio::process::Command) -> String {
         .join(" ")
 }
 
-/// Free bytes on the volume holding `path` (POSIX statvfs) — logged when an
-/// encode attempt fails, since a full output volume is the classic transient
-/// cause that a re-run hours later doesn't reproduce.
-#[cfg(target_os = "macos")]
+/// Free bytes on the volume holding `path` — logged when an encode attempt
+/// fails, since a full output volume is the classic transient cause that a
+/// re-run hours later doesn't reproduce.
 fn free_disk_bytes(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
-    // SAFETY: cpath is a valid NUL-terminated path and stat points at
-    // properly sized writable memory; statvfs only writes into it.
-    if unsafe { libc::statvfs(cpath.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    let stat = unsafe { stat.assume_init() };
-    Some(u64::from(stat.f_bavail).saturating_mul(stat.f_frsize))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn free_disk_bytes(_path: &Path) -> Option<u64> {
-    None
+    fs4::available_space(path).ok()
 }
 
 /// Best-effort log of the output volume's free space after a failed attempt.
@@ -1843,6 +2008,10 @@ mod tests {
         assert!(out.is_dir(), "a squatting directory must be left alone");
     }
 
+    // Symlink creation is unprivileged only on Unix; the symlink-rejection
+    // logic itself (symlink_metadata) is platform-neutral and CI covers it
+    // on macOS.
+    #[cfg(unix)]
     #[test]
     fn check_reuse_leaves_a_symlink_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -2039,6 +2208,8 @@ mod tests {
         assert!(parts[0].exists() && parts[1].exists() && parts[2].exists());
     }
 
+    // See check_reuse_leaves_a_symlink_alone for the cfg(unix) rationale.
+    #[cfg(unix)]
     #[test]
     fn check_reuse_set_rejects_a_symlinked_part() {
         let dir = tempfile::tempdir().unwrap();
@@ -2055,34 +2226,28 @@ mod tests {
     }
 
     #[test]
-    fn sweep_stale_parts_removes_any_part_geometry_of_the_hash_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mine = dir.path().join("clip (tamped 823f p1of3).mp4");
-        std::fs::write(&mine, vec![0u8; 100]).unwrap();
-        // A leftover from a previous split geometry of the SAME hash.
-        let old_geometry = dir.path().join("clip (tamped 823f p2of7).mp4");
-        std::fs::write(&old_geometry, vec![0u8; 100]).unwrap();
-        // Everything below must survive the sweep.
-        let base = dir.path().join("clip (tamped 823f).mp4");
-        std::fs::write(&base, vec![0u8; 100]).unwrap();
-        let numbered = dir.path().join("clip (tamped 823f 2).mp4");
-        std::fs::write(&numbered, vec![0u8; 100]).unwrap();
-        let other_hash = dir.path().join("clip (tamped ffff p1of3).mp4");
-        std::fs::write(&other_hash, vec![0u8; 100]).unwrap();
-        let other_stem = dir.path().join("other (tamped 823f p1of3).mp4");
-        std::fs::write(&other_stem, vec![0u8; 100]).unwrap();
-        let in_flight = dir.path().join("clip (tamped 823f p1of3).mp4.part");
-        std::fs::write(&in_flight, vec![0u8; 100]).unwrap();
-
-        sweep_stale_parts(&base);
-        assert!(!mine.exists(), "this hash's part files must be swept");
-        assert!(!old_geometry.exists(), "old geometries must be swept too");
-        assert!(base.exists(), "the base output must survive");
-        assert!(numbered.exists(), "numbered siblings must survive");
-        assert!(other_hash.exists(), "other configurations must survive");
-        assert!(other_stem.exists(), "other inputs must survive");
-        assert!(in_flight.exists(), "in-flight temps must survive the sweep");
+    fn should_deliver_blocks_a_post_encode_cancel() {
+        // The post-encode window guard: a job may only deliver (run
+        // post-actions, go Done) when no cancel was observed. Once a cancel is
+        // seen, the output is discarded and the original is NEVER trashed.
+        assert!(should_deliver(false), "no cancel -> deliver");
+        assert!(!should_deliver(true), "cancel observed -> never deliver");
     }
+
+    // manual: with a real ffmpeg on-device, enqueue an encode that trashes the
+    // original, then click Cancel during the brief Verifying phase (after the
+    // engine finishes, before Done). Expected: the job row ends Cancelled, the
+    // original file is still present (NOT in Trash), the clipboard was not
+    // written, and the just-finished output (single file, or every split part
+    // plus the now-empty part folder) is gone. Repeat for a split preset.
+
+    // manual: append_journal needs a managed Journal behind an AppHandle, which
+    // the unit/integration harnesses can't build, so the one-record-per-job
+    // contract is checked on-device. A single conversion appends ONE record
+    // with one output (its path/bytes); an N-part split appends exactly ONE
+    // record carrying N outputs (every part's path/bytes, in order) only on
+    // full delivery — a cancel before delivery records nothing. The journal's
+    // own tests cover the resulting outputs[] shape, dedup, and find-by-part.
 
     #[test]
     fn job_state_part_serializes_as_a_pair_under_part() {

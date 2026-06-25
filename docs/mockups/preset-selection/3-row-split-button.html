@@ -1,0 +1,42 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="shared.css"></head><body>
+<div class="panel">
+  <div class="tabs"><div class="tab active">Videos</div><div class="tab">Preferences</div></div>
+  <div class="content">
+    <div class="filter">Filter recordings…</div>
+    <div class="rows">
+      <!-- distinguishing element: per-row split button (default + dropdown) -->
+      <div class="row sel"><div class="thumb"></div><div class="meta"><div class="name">Screen Recording 2026-06-14.mp4</div><div class="sub">24.3 MB · 0:20 · 15h ago</div></div>
+        <div style="display:flex;align-items:stretch;border-radius:8px;overflow:hidden">
+          <span class="btn" style="border-radius:8px 0 0 8px">Discord 10MB</span>
+          <span class="btn" style="border-radius:0 8px 8px 0;border-left:1px solid rgba(255,255,255,.25);padding:6px 8px">▾</span>
+        </div>
+      </div>
+      <div class="row"><div class="thumb"></div><div class="meta"><div class="name">Recording 2026-06-12 234149.mp4</div><div class="sub">125 MB · 2:46 · Yesterday</div></div>
+        <div style="display:flex;align-items:stretch;border-radius:8px;overflow:hidden;opacity:.85">
+          <span class="btn ghost" style="border-radius:8px 0 0 8px">Discord 10MB</span>
+          <span class="btn ghost" style="border-radius:0 8px 8px 0;border-left:1px solid var(--line);padding:6px 8px">▾</span>
+        </div>
+      </div>
+      <div class="row"><div class="thumb"></div><div class="meta"><div class="name">Demo capture final.mov</div><div class="sub">88 MB · 1:30 · Jun 12</div></div>
+        <div style="display:flex;align-items:stretch;border-radius:8px;overflow:hidden;opacity:.85">
+          <span class="btn ghost" style="border-radius:8px 0 0 8px">Discord 10MB</span>
+          <span class="btn ghost" style="border-radius:0 8px 8px 0;border-left:1px solid var(--line);padding:6px 8px">▾</span>
+        </div>
+      </div>
+    </div>
+    <!-- floating menu off the chevron -->
+    <div style="position:relative">
+      <div style="position:absolute;right:8px;top:-2px;background:#202024;border:1px solid var(--line);border-radius:10px;padding:6px;width:170px;box-shadow:0 12px 30px rgba(0,0,0,.5)">
+        <div style="padding:7px 9px;border-radius:6px;background:var(--accent);color:#fff;font-size:12px">★ Discord (10 MB)</div>
+        <div style="padding:7px 9px;font-size:12px;color:var(--text)">Slack (25 MB)</div>
+        <div style="padding:7px 9px;font-size:12px;color:var(--text)">WebM (web)</div>
+        <div style="padding:7px 9px;font-size:12px;color:var(--text)">GIF</div>
+        <div style="padding:7px 9px;font-size:12px;color:var(--dim);border-top:1px solid var(--line);margin-top:3px">Custom…</div>
+      </div>
+    </div>
+  </div>
+  <div class="footer">click a row's button to compress · ▾ for other presets</div>
+</div>
+<div class="caption"><h2>3 — Per-row split button</h2>
+Each row carries its own button: the label is the default preset (one click compresses), and the ▾ opens that row's preset menu. No global "active preset" to track — the choice lives where you act. Most discoverable, but busier rows and the preset name repeats on every row.</div>
+</body></html>

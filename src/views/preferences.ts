@@ -1,12 +1,24 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getSettings,
+  notificationPermission,
+  openNotificationSettings,
+  openUrl,
   pickFolder,
+  requestNotificationPermission,
   saveSettings,
+  setContextMenu,
+  type LocaleSetting,
+  type NotificationPermission,
+  type OpenAfterConvert,
   type OutputFormat,
   type Preset,
   type Settings,
+  type Theme,
+  type VideosLayout,
 } from "../lib/ipc";
+import { isWindows } from "../lib/platform";
 import {
   field,
   formatSelect,
@@ -17,6 +29,8 @@ import {
 } from "../lib/forms";
 import { splitSummaryLabel } from "../lib/format";
 import { showToast } from "../lib/toast";
+import { friendlyError } from "../lib/errors";
+import { t } from "../i18n";
 
 export interface PreferencesView {
   el: HTMLElement;
@@ -25,6 +39,24 @@ export interface PreferencesView {
 
 const newPresetId = (): string =>
   `preset-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/**
+ * Whether `name` collides with another preset's name. Comparison is
+ * case-insensitive and trimmed (so " Slack " duplicates "slack"), and the
+ * preset being edited (`editingId`) is excluded so re-saving it with the same
+ * name isn't flagged as a self-collision. A new preset passes `editingId =
+ * null`, which excludes nothing. Keeps the pickers able to tell presets apart.
+ */
+export function isDuplicatePresetName(
+  name: string,
+  presets: ReadonlyArray<Pick<Preset, "id" | "name">>,
+  editingId: string | null,
+): boolean {
+  const lower = name.trim().toLowerCase();
+  return presets.some(
+    (x) => x.id !== editingId && x.name.trim().toLowerCase() === lower,
+  );
+}
 
 export function createPreferencesView(opts: {
   onSettings: (s: Settings) => void;
@@ -78,7 +110,7 @@ export function createPreferencesView(opts: {
       adopt(await saveSettings(draft));
       return true;
     } catch (e) {
-      showToast(String(e));
+      showToast(friendlyError(e), "error");
       // Part of the change may have been persisted (e.g. everything except
       // launch-at-login); re-fetch and repaint from the canonical state.
       try {
@@ -98,7 +130,7 @@ export function createPreferencesView(opts: {
   function paint(): void {
     el.innerHTML = "";
     if (!current) return;
-    el.append(sectionLabel("Presets"));
+    el.append(sectionLabel(t("prefs.sectionPresets")));
     let editorPlaced = false;
     for (const p of current.presets) {
       if (editorOpen && editingId === p.id) {
@@ -113,24 +145,56 @@ export function createPreferencesView(opts: {
       // either way keep whatever the user has typed.
       el.append(editor(null));
     } else {
-      const add = button("+ New preset", "btn-primary btn-block");
+      const add = button(t("prefs.newPreset"), "btn-primary btn-block");
       add.addEventListener("click", () => openEditor(null));
       el.append(add);
     }
-    el.append(sectionLabel("Behavior"), behaviorCard());
-    el.append(sectionLabel("Shortcuts"), shortcutsCard());
-    el.append(sectionLabel("Watched folders"), foldersCard());
-    el.append(versionLine());
+    el.append(sectionLabel(t("prefs.sectionBehavior")), behaviorCard());
+    el.append(sectionLabel(t("prefs.sectionVideosScreen")), videosLayoutCard());
+    el.append(sectionLabel(t("prefs.sectionShortcuts")), shortcutsCard());
+    el.append(sectionLabel(t("prefs.sectionWatchedFolders")), foldersCard());
+    el.append(sectionLabel(t("prefs.sectionAppearance")), appearanceCard());
+    el.append(versionFooter());
   }
 
-  function versionLine(): HTMLElement {
+  /** App version + quick links (Homepage · Wiki · Releases) to find info and
+   *  get help. Links open externally via the Rust opener. */
+  function versionFooter(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "version-footer";
+
     const line = document.createElement("div");
     line.className = "version-line";
-    line.textContent = "tamp";
+    line.textContent = t("app.name");
     void getVersion().then((v) => {
-      line.textContent = `tamp v${v}`;
+      line.textContent = t("prefs.version", { name: t("app.name"), version: v });
     });
-    return line;
+
+    const links = document.createElement("div");
+    links.className = "version-links";
+    const repo = "https://github.com/ValeriyMaslenikov/tamp";
+    const items: ReadonlyArray<[string, string]> = [
+      [t("prefs.linkHomepage"), repo],
+      [t("prefs.linkWiki"), `${repo}/wiki`],
+      [t("prefs.linkReleases"), `${repo}/releases`],
+    ];
+    items.forEach(([label, url], i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "version-sep";
+        sep.setAttribute("aria-hidden", "true");
+        sep.textContent = "·";
+        links.append(sep);
+      }
+      const link = button(label, "version-link");
+      link.addEventListener("click", () => {
+        void openUrl(url).catch((e) => showToast(friendlyError(e), "error"));
+      });
+      links.append(link);
+    });
+
+    wrap.append(line, links);
+    return wrap;
   }
 
   function sectionLabel(text: string): HTMLElement {
@@ -154,7 +218,7 @@ export function createPreferencesView(opts: {
     if (p.maxFps != null) parts.push(`${p.maxFps} fps`);
     if (p.maxWidth != null) parts.push(`${p.maxWidth}px`);
     else if (p.scalePercent != null) parts.push(`${p.scalePercent}%`);
-    if (p.stripAudio) parts.push("no audio");
+    if (p.stripAudio) parts.push(t("prefs.presetNoAudio"));
     const split = splitSummaryLabel(p.split);
     if (split) parts.push(split);
     return parts.join(" · ");
@@ -192,13 +256,13 @@ export function createPreferencesView(opts: {
       }
     });
     const radioText = document.createElement("span");
-    radioText.textContent = "Default";
+    radioText.textContent = t("prefs.presetDefault");
     radioLabel.append(radio, radioText);
 
-    const edit = button("Edit", "btn-ghost");
+    const edit = button(t("prefs.presetEdit"), "btn-ghost");
     edit.addEventListener("click", () => openEditor(p.id));
 
-    const del = button("Delete", "btn-ghost btn-danger");
+    const del = button(t("prefs.presetDelete"), "btn-ghost btn-danger");
     del.disabled = s.presets.length <= 1;
     del.addEventListener("click", () => {
       void persist((d) => {
@@ -221,7 +285,7 @@ export function createPreferencesView(opts: {
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.className = "input";
-    nameInput.placeholder = "e.g. Slack (25MB)";
+    nameInput.placeholder = t("prefs.presetNamePlaceholder");
     nameInput.value = p?.name ?? "";
 
     const targetInput = numberInput(p?.targetMb ?? null, "10");
@@ -244,32 +308,35 @@ export function createPreferencesView(opts: {
 
     const split = splitControl(p?.split);
 
-    const audio = switchRow("Strip audio", p?.stripAudio ?? false);
+    const audio = switchRow(t("prefs.stripAudio"), p?.stripAudio ?? false);
 
     const grid1 = document.createElement("div");
     grid1.className = "field-grid";
-    grid1.append(field("Name", nameInput), field("Target MB", targetInput));
+    grid1.append(
+      field(t("prefs.fieldName"), nameInput),
+      field(t("prefs.fieldTargetMb"), targetInput),
+    );
 
     const grid2 = document.createElement("div");
     grid2.className = "field-grid field-grid-3";
     grid2.append(
-      field("Max FPS", fpsInput),
-      field("Max width", widthInput),
-      field("Scale %", scaleInput),
+      field(t("prefs.fieldMaxFps"), fpsInput),
+      field(t("prefs.fieldMaxWidth"), widthInput),
+      field(t("prefs.fieldScalePercent"), scaleInput),
     );
 
     const hint = document.createElement("div");
     hint.className = "field-hint";
-    hint.textContent = "Max width and scale % are mutually exclusive.";
+    hint.textContent = t("prefs.widthScaleHint");
 
     const grid3 = document.createElement("div");
     grid3.className = "field-grid";
-    grid3.append(field("Format", formatInput));
+    grid3.append(field(t("prefs.fieldFormat"), formatInput));
 
     const actions = document.createElement("div");
     actions.className = "editor-actions";
-    const save = button("Save", "btn-primary");
-    const cancel = button("Cancel", "btn-ghost");
+    const save = button(t("common.save"), "btn-primary");
+    const cancel = button(t("common.cancel"), "btn-ghost");
     cancel.addEventListener("click", () => {
       closeEditor();
       paint();
@@ -277,19 +344,25 @@ export function createPreferencesView(opts: {
     save.addEventListener("click", () => {
       const name = nameInput.value.trim();
       if (!name) {
-        showToast("Preset name is required");
+        showToast(t("prefs.errPresetNameRequired"));
+        return;
+      }
+      // Block a name already used by another preset (case-insensitive) so the
+      // pickers can always tell presets apart; excludes the one being edited.
+      if (isDuplicatePresetName(name, current?.presets ?? [], p?.id ?? null)) {
+        showToast(t("prefs.errDuplicateName", { name }));
         return;
       }
       const target = Number(targetInput.value);
       if (!(target > 0)) {
-        showToast("Target size must be greater than 0 MB");
+        showToast(t("prefs.errTargetSize"));
         return;
       }
       const fps = parseOptionalPositiveInt(fpsInput.value);
       const width = parseOptionalPositiveInt(widthInput.value);
       const scale = parseOptionalPositiveInt(scaleInput.value);
       if (fps === undefined || width === undefined || scale === undefined) {
-        showToast("FPS, width and scale must be positive whole numbers");
+        showToast(t("prefs.errFpsWidthScale"));
         return;
       }
       const splitRead = split.read();
@@ -343,35 +416,249 @@ export function createPreferencesView(opts: {
     return row;
   }
 
+  /** A labelled row of mutually-exclusive radio options. */
+  function radioRow<T extends string>(
+    labelText: string,
+    value: T,
+    options: ReadonlyArray<{ value: T; label: string }>,
+    onChange: (v: T) => void,
+  ): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "radio-row";
+    const name = `radio-${labelText.replace(/\s+/g, "-").toLowerCase()}`;
+    const label = document.createElement("span");
+    label.className = "toggle-label";
+    label.id = `${name}-label`;
+    label.textContent = labelText;
+    const group = document.createElement("div");
+    group.className = "radio-group";
+    // Name the option set so AT announces it as a group (Theme / Open after…).
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-labelledby", label.id);
+    for (const opt of options) {
+      const item = document.createElement("label");
+      item.className = "radio-item";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = name;
+      input.checked = opt.value === value;
+      input.addEventListener("change", () => {
+        if (input.checked) onChange(opt.value);
+      });
+      const text = document.createElement("span");
+      text.textContent = opt.label;
+      item.append(input, text);
+      group.append(item);
+    }
+    row.append(label, group);
+    return row;
+  }
+
+  /** Radio cards choosing how the Videos screen offers presets. */
+  function videosLayoutCard(): HTMLElement {
+    const s = current as Settings;
+    const card = document.createElement("div");
+    card.className = "card";
+    const options: { value: VideosLayout; title: string; desc: string }[] = [
+      {
+        value: "quick-pick",
+        title: t("prefs.videosLayout.quickPickTitle"),
+        desc: t("prefs.videosLayout.quickPickDesc"),
+      },
+      {
+        value: "active-bar",
+        title: t("prefs.videosLayout.activeBarTitle"),
+        desc: t("prefs.videosLayout.activeBarDesc"),
+      },
+    ];
+    // Group the layout radios so AT announces them as one named set.
+    const layoutGroup = document.createElement("div");
+    layoutGroup.setAttribute("role", "radiogroup");
+    layoutGroup.setAttribute("aria-label", t("prefs.videosLayout.ariaLabel"));
+    for (const opt of options) {
+      const row = document.createElement("label");
+      row.className = "option-row";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "videos-layout";
+      input.className = "option-radio";
+      input.checked = s.videosLayout === opt.value;
+      input.addEventListener("change", () => {
+        if (input.checked) {
+          void persist((d) => {
+            d.videosLayout = opt.value;
+          });
+        }
+      });
+      const text = document.createElement("div");
+      text.className = "option-text";
+      const title = document.createElement("div");
+      title.className = "option-title";
+      title.textContent = opt.title;
+      const desc = document.createElement("div");
+      desc.className = "option-desc";
+      desc.textContent = opt.desc;
+      text.append(title, desc);
+      row.append(input, text);
+      layoutGroup.appendChild(row);
+    }
+    // manual: SR announces "Videos screen layout, radio group" entering the set.
+    card.appendChild(layoutGroup);
+
+    const limitInput = numberInput(s.recentsLimit, "50");
+    limitInput.min = "1";
+    limitInput.max = "200";
+    limitInput.step = "1";
+    limitInput.addEventListener("change", () => {
+      const n = Math.round(Number(limitInput.value));
+      if (!Number.isFinite(n) || n < 1 || n > 200) {
+        showToast(t("prefs.errRecentVideos"));
+        limitInput.value = String((current as Settings).recentsLimit);
+        return;
+      }
+      void persist((d) => {
+        d.recentsLimit = n;
+      });
+    });
+    // A hairline separates this from the layout-picker radios above so it reads
+    // as its own setting, not a tail of the last radio's description.
+    const limitField = field(t("prefs.recentVideosShown"), limitInput);
+    limitField.classList.add("field-divided");
+    card.append(limitField);
+
+    return card;
+  }
+
+  /** Theme + language pickers. */
+  function appearanceCard(): HTMLElement {
+    const s = current as Settings;
+    const card = document.createElement("div");
+    card.className = "card";
+    card.append(
+      radioRow<Theme>(
+        t("prefs.theme"),
+        s.theme,
+        [
+          { value: "system", label: t("prefs.themeSystem") },
+          { value: "light", label: t("prefs.themeLight") },
+          { value: "dark", label: t("prefs.themeDark") },
+        ],
+        (v) =>
+          void persist((d) => {
+            d.theme = v;
+          }),
+      ),
+      // The autonyms ("English"/"Українська") stay in their own language in
+      // every locale so a user can always recognize their language.
+      radioRow<LocaleSetting>(
+        t("prefs.language"),
+        s.locale,
+        [
+          { value: "system", label: t("prefs.languageSystem") },
+          { value: "en", label: "English" },
+          { value: "uk", label: "Українська" },
+        ],
+        (v) => {
+          // Persist, then hard-reload so the whole webview re-reads settings
+          // and re-renders fully localized — the simplest reliable apply. A
+          // failed save shows a toast (via persist) and skips the reload, so
+          // the controls snap back to the persisted language.
+          // manual: switching language reloads the panel into the new locale.
+          void persist((d) => {
+            d.locale = v;
+          }).then((ok) => {
+            if (ok) location.reload();
+          });
+        },
+      ),
+    );
+    return card;
+  }
+
+  /** The privacy sub-label under the "Check for updates automatically" switch:
+   *  the single outbound request is a pull to GitHub and sends nothing about the
+   *  user. Mirrors the first-run consent wording so the choice reads the same in
+   *  both places. */
+  function updateCheckHint(): HTMLElement {
+    const hint = document.createElement("div");
+    hint.className = "field-hint toggle-hint";
+    hint.textContent = t("prefs.updateCheckHint");
+    return hint;
+  }
+
   function behaviorCard(): HTMLElement {
     const s = current as Settings;
     const card = document.createElement("div");
     card.className = "card";
     card.append(
-      toggleRow("Copy result to clipboard", s.copyToClipboard, (v) =>
+      toggleRow(t("prefs.copyToClipboard"), s.copyToClipboard, (v) =>
         void persist((d) => {
           d.copyToClipboard = v;
         }),
       ),
-      toggleRow("Move original to Trash", s.trashOriginal, (v) =>
+      toggleRow(t("prefs.moveToTrash"), s.trashOriginal, (v) =>
         void persist((d) => {
           d.trashOriginal = v;
         }),
       ),
       toggleRow(
-        "Use GPU encoder (faster, slightly lower quality)",
+        t("prefs.gpuEncoder"),
         s.useHardwareEncoder,
         (v) =>
           void persist((d) => {
             d.useHardwareEncoder = v;
           }),
       ),
-      toggleRow("Launch at login", s.launchAtLogin, (v) =>
+      toggleRow(t("prefs.launchAtLogin"), s.launchAtLogin, (v) =>
         void persist((d) => {
           d.launchAtLogin = v;
         }),
       ),
+      toggleRow(
+        t("prefs.checkForUpdates"),
+        s.updateCheckEnabled,
+        (v) =>
+          void persist((d) => {
+            d.updateCheckEnabled = v;
+          }),
+      ),
+      updateCheckHint(),
+      radioRow<OpenAfterConvert>(
+        t("prefs.openAfterConvert"),
+        s.openAfterConvert,
+        [
+          { value: "off", label: t("prefs.openAfterOff") },
+          { value: "multipart", label: t("prefs.openAfterMultipart") },
+          { value: "all", label: t("prefs.openAfterAll") },
+        ],
+        (v) =>
+          void persist((d) => {
+            d.openAfterConvert = v;
+          }),
+      ),
     );
+    // Windows-only: register/remove the Explorer "Compress with tamp" entry.
+    // The backend command both updates the registry and persists the setting,
+    // so we reflect the choice locally rather than via persist()/saveSettings.
+    if (isWindows()) {
+      card.append(
+        toggleRow(
+          t("prefs.contextMenu"),
+          s.contextMenuEnabled,
+          (v) => {
+            void setContextMenu(v)
+              .then(() => {
+                if (current) current.contextMenuEnabled = v;
+                lastJson = JSON.stringify(current);
+              })
+              .catch((e) => {
+                showToast(friendlyError(e), "error");
+                paint(); // revert the switch to the persisted state
+              });
+          },
+        ),
+      );
+    }
     return card;
   }
 
@@ -405,7 +692,7 @@ export function createPreferencesView(opts: {
     stack.className = "field-stack";
     stack.append(
       shortcutField(
-        "Compress latest recording",
+        t("prefs.shortcutCompressLatest"),
         s.shortcutCompressLatest,
         "CmdOrCtrl+Alt+T",
         (d, v) => {
@@ -413,7 +700,7 @@ export function createPreferencesView(opts: {
         },
       ),
       shortcutField(
-        "Show / hide panel",
+        t("prefs.shortcutTogglePanel"),
         s.shortcutTogglePanel,
         "CmdOrCtrl+Alt+O",
         (d, v) => {
@@ -428,7 +715,7 @@ export function createPreferencesView(opts: {
     staleInput.addEventListener("change", () => {
       const n = Number(staleInput.value);
       if (!Number.isInteger(n) || n < 0) {
-        showToast("Minutes must be a whole number (0 or more)");
+        showToast(t("prefs.errStaleMinutes"));
         staleInput.value = String((current as Settings).staleWarnMinutes);
         return;
       }
@@ -436,16 +723,82 @@ export function createPreferencesView(opts: {
         d.staleWarnMinutes = n;
       });
     });
-    stack.append(
-      field("Warn when the latest video is older than N minutes", staleInput),
-    );
+    stack.append(field(t("prefs.staleWarnField"), staleInput));
 
     const hint = document.createElement("div");
     hint.className = "field-hint";
-    hint.textContent = "Leave a shortcut empty to disable it.";
+    hint.textContent = t("prefs.shortcutEmptyHint");
 
-    card.append(stack, hint);
+    // The stale-recording warning rides on a notification, so a denied
+    // notification permission silently kills it. A recovery row appears here
+    // when permission is missing; it stays hidden when granted (the desktop
+    // default) or unreadable.
+    const notif = notificationStatusRow();
+
+    card.append(stack, hint, notif);
     return card;
+  }
+
+  /** A recovery row shown when notifications are off: it warns the
+   *  stale-recording notification won't fire and offers a re-request. The row
+   *  starts hidden and reveals itself only once the async permission probe
+   *  reports a non-granted, recoverable state — so on desktop (always
+   *  "granted") and where the API is absent ("unsupported") it never appears. */
+  function notificationStatusRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "folder-notice notif-notice";
+    row.setAttribute("role", "status");
+    row.hidden = true;
+
+    const title = document.createElement("div");
+    title.className = "folder-notice-title";
+    title.textContent = t("prefs.notifOffTitle");
+    const body = document.createElement("div");
+    body.className = "folder-notice-hint";
+    body.textContent = t("prefs.notifOffBody");
+    const actions = document.createElement("div");
+    actions.className = "onboarding-actions";
+    const enable = button(t("prefs.enableNotifications"), "btn-ghost");
+    // The open-settings deep link is the real recovery for a hard OS-level deny
+    // (where re-requesting is a no-op, e.g. macOS); the command no-ops where no
+    // deep link exists, so the button is safe to offer unconditionally.
+    const openSettings = button(t("prefs.openSystemSettings"), "btn-ghost");
+    openSettings.addEventListener("click", () => {
+      void openNotificationSettings().catch((e) =>
+        showToast(friendlyError(e), "error"),
+      );
+    });
+    actions.append(enable, openSettings);
+    row.append(title, body, actions);
+
+    const reveal = (state: NotificationPermission): void => {
+      // Only a real, recoverable "off" state shows the row. "granted" hides it;
+      // "unsupported" (no API) degrades to hidden rather than nagging.
+      row.hidden = state === "granted" || state === "unsupported";
+    };
+
+    enable.addEventListener("click", () => {
+      enable.disabled = true;
+      void requestNotificationPermission()
+        .then((state) => {
+          reveal(state);
+          if (state === "granted") {
+            showToast(t("prefs.notificationsEnabled"), "success");
+          }
+        })
+        .catch((e) => showToast(friendlyError(e), "error"))
+        .finally(() => {
+          enable.disabled = false;
+        });
+    });
+
+    void notificationPermission()
+      .then(reveal)
+      .catch(() => {
+        /* leave hidden on probe failure */
+      });
+
+    return row;
   }
 
   function foldersCard(): HTMLElement {
@@ -461,7 +814,8 @@ export function createPreferencesView(opts: {
       path.textContent = folder;
       path.title = folder;
       const remove = button("✕", "folder-remove");
-      remove.title = "Remove folder";
+      remove.title = t("prefs.removeFolder");
+      remove.setAttribute("aria-label", t("prefs.removeFolder"));
       remove.disabled = s.watchedFolders.length <= 1;
       remove.addEventListener("click", () => {
         void persist((d) => {
@@ -472,7 +826,7 @@ export function createPreferencesView(opts: {
       card.append(row);
     }
 
-    const add = button("+ Add folder", "btn-primary btn-block");
+    const add = button(t("prefs.addFolder"), "btn-primary btn-block");
     add.addEventListener("click", async () => {
       try {
         const picked = await pickFolder();
@@ -482,12 +836,28 @@ export function createPreferencesView(opts: {
           d.watchedFolders.push(picked);
         });
       } catch (e) {
-        showToast(String(e));
+        showToast(friendlyError(e), "error");
       }
     });
     card.append(add);
     return card;
   }
+
+  // Esc on the Preferences tab backs out of an open preset editor, otherwise
+  // hides the panel — matching the Videos/Converted tabs (Esc was previously a
+  // no-op here despite the footer hint). Gated on this view being the active tab.
+  document.addEventListener("keydown", (e) => {
+    if (el.hidden || e.key !== "Escape") return;
+    e.preventDefault();
+    if (editorOpen) {
+      closeEditor();
+      paint();
+      return;
+    }
+    void getCurrentWindow()
+      .hide()
+      .catch((err) => showToast(friendlyError(err), "error"));
+  });
 
   return { el, render };
 }

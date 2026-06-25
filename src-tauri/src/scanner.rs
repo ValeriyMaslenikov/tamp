@@ -31,65 +31,34 @@ pub struct RecentVideo {
 
 const VIDEO_EXTS: [&str; 6] = ["mov", "mp4", "m4v", "webm", "mkv", "avi"];
 
-fn has_video_ext(path: &Path) -> bool {
+pub(crate) fn has_video_ext(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| VIDEO_EXTS.iter().any(|v| ext.eq_ignore_ascii_case(v)))
         .unwrap_or(false)
 }
 
+/// Whether `path` can be represented as UTF-8 without loss. Non-UTF-8 recording
+/// filenames are declared unsupported and skipped at scan time (see `scan`):
+/// `RecentVideo.path` is a `String` that round-trips through IPC and back into
+/// probe/copy/reveal, so a `to_string_lossy()` replacement (U+FFFD) would point
+/// those at a wrong or nonexistent file. Rejecting here means the IPC layer only
+/// ever sees a path that maps back to the real file. The clipboard's
+/// `paths_to_utf8` guard (platform/mod.rs) is the same predicate, kept as a
+/// backstop for paths that arrive by other routes (drops, the picker).
+pub(crate) fn is_supported_filename(path: &Path) -> bool {
+    path.to_str().is_some()
+}
+
 /// If `stem` ends with a tamped-output suffix, returns the derived original
 /// stem (the stem with the whole suffix removed); `None` otherwise.
 ///
-/// The suffix grammar (must agree with output naming in `encoder::plan`):
-/// `" (tamped"` + optional `" "` + 4 lowercase hex chars + optional `" "` +
-/// (collision-counter digits OR a `p<digits>of<digits>` part token — never
-/// both) + `")"`. That covers hashed names like `clip (tamped a3f2)` /
-/// `clip (tamped a3f2 2)`, split parts like `clip (tamped a3f2 p2of5)`, and
-/// the legacy `clip (tamped)` / `clip (tamped 2)` ones.
+/// The recognizer lives in `encoder::plan` (the planner that emits these
+/// names); the scanner delegates so the two can never drift. Covers hashed
+/// names like `clip (tamped a3f2)` / `clip (tamped a3f2 2)`, named ones like
+/// `clip (tamped Discord a3f2)`, split parts, and the legacy forms.
 pub fn tamped_original_stem(stem: &str) -> Option<&str> {
-    let inner = stem.strip_suffix(')')?;
-    let idx = inner.rfind(" (tamped")?;
-    let rest = &inner[idx + " (tamped".len()..];
-    suffix_args_match(rest).then(|| &inner[..idx])
-}
-
-/// Matches what may sit between `" (tamped"` and the closing `")"`:
-/// nothing, `" {hash}"`, `" {digits}"`, `" {part}"`, `" {hash} {digits}"`,
-/// or `" {hash} {part}"`.
-fn suffix_args_match(rest: &str) -> bool {
-    if rest.is_empty() {
-        return true;
-    }
-    let Some(rest) = rest.strip_prefix(' ') else {
-        return false;
-    };
-    match rest.split_once(' ') {
-        None => is_preset_hash(rest) || is_digits(rest) || is_part_token(rest),
-        Some((hash, arg)) => is_preset_hash(hash) && (is_digits(arg) || is_part_token(arg)),
-    }
-}
-
-/// Exactly 4 lowercase hex chars, the shape `encoder::plan::preset_hash` emits.
-fn is_preset_hash(s: &str) -> bool {
-    s.len() == 4 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn is_digits(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// `p<digits>of<digits>` — the split-part token (`encoder::plan` emits
-/// `p{i}of{n}`). Purely shape-based: no range checks, so e.g. `p0of0` is
-/// recognised; the planner only ever writes 1-based `i <= n` names.
-fn is_part_token(s: &str) -> bool {
-    let Some(rest) = s.strip_prefix('p') else {
-        return false;
-    };
-    match rest.split_once("of") {
-        Some((i, n)) => is_digits(i) && is_digits(n),
-        None => false,
-    }
+    crate::encoder::plan::output_original_stem(stem)
 }
 
 fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
@@ -102,13 +71,52 @@ fn created_unix_ms(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether a `read_dir` error means the folder is *unreachable* (offline UNC
+/// share, permission-denied, …) as opposed to legitimately missing. A
+/// not-yet-created watched folder (e.g. Windows' `Videos\Screen Recordings`
+/// before the first recording) returns `NotFound` and is NOT unreachable — it
+/// is just empty. Everything else (PermissionDenied, network errors, …) is.
+///
+/// `scan` and `unreachable` both route their `read_dir` error through this so
+/// the "empty vs. unreachable" classification can never drift between the list
+/// the panel renders and the banner it shows.
+fn is_unreachable_err(err: &std::io::Error) -> bool {
+    err.kind() != std::io::ErrorKind::NotFound
+}
+
+/// The watched folders that exist but can't be read right now (offline network
+/// drive, permission-denied), as display strings. A legitimately-missing
+/// (`NotFound`) folder is omitted: it's an empty source, not an error worth
+/// surfacing. Used by the `unreachable_folders` command to drive the Videos
+/// tab's "couldn't read <folder>" banner, distinct from the empty state.
+pub fn unreachable(folders: &[PathBuf]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for folder in folders {
+        if let Err(e) = std::fs::read_dir(folder) {
+            if is_unreachable_err(&e) {
+                crate::log_warn!("watched folder {} is unreachable: {e}", folder.display());
+                out.push(folder.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out
+}
+
 pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
     let mut videos: Vec<RecentVideo> = Vec::new();
     for folder in folders {
         let entries = match std::fs::read_dir(folder) {
             Ok(entries) => entries,
+            // An unreachable folder (offline UNC, permission-denied) is
+            // surfaced separately by `unreachable()` and the Videos-tab
+            // banner; a not-yet-created default folder (NotFound) is expected
+            // and not worth a warning on every scan. Either way, skip it here.
             Err(e) => {
-                crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
+                if is_unreachable_err(&e) {
+                    crate::log_warn!("cannot read watched folder {}: {e}", folder.display());
+                } else {
+                    crate::log_debug!("watched folder {} does not exist yet", folder.display());
+                }
                 continue;
             }
         };
@@ -119,6 +127,19 @@ pub fn scan(folders: &[PathBuf], limit: usize) -> Vec<RecentVideo> {
         for entry in entries.flatten() {
             let path = entry.path();
             if !has_video_ext(&path) {
+                continue;
+            }
+            // Non-UTF-8 filenames are unsupported: `RecentVideo.path` is a
+            // `String`, and emitting a `to_string_lossy()` version (U+FFFD)
+            // would mangle the path so probe/copy/reveal act on a wrong or
+            // nonexistent file. Skip it here so the lossy string never enters
+            // IPC, and warn so the skip is a distinct, visible condition (not a
+            // silent drop) — `path.display()` itself is lossy for logging only.
+            if !is_supported_filename(&path) {
+                crate::log_warn!(
+                    "skipping recording with a non-UTF-8 filename: {}",
+                    path.display()
+                );
                 continue;
             }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -174,6 +195,44 @@ mod tests {
     fn touch(dir: &Path, name: &str) {
         let mut file = File::create(dir.join(name)).unwrap();
         file.write_all(b"video bytes").unwrap();
+    }
+
+    /// A filename `<stem>.<ext>` whose stem is NOT valid UTF-8 (the extension
+    /// stays ASCII so it still passes the video-extension gate). On Unix a raw
+    /// continuation byte 0x80 is never valid UTF-8 on its own; on Windows an
+    /// unpaired high surrogate (0xD800) has no UTF-8 mapping. Either way
+    /// `OsString::to_str()` returns `None`.
+    fn non_utf8_name(stem: &str, ext: &str) -> std::ffi::OsString {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = stem.as_bytes().to_vec();
+            bytes.push(0x80); // lone continuation byte: invalid UTF-8
+            bytes.push(b'.');
+            bytes.extend_from_slice(ext.as_bytes());
+            std::ffi::OsString::from_vec(bytes)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<u16> = stem.encode_utf16().collect();
+            units.push(0xD800); // unpaired high surrogate: no UTF-8 mapping
+            units.extend(format!(".{ext}").encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (stem, ext);
+            std::ffi::OsString::from("placeholder.mp4")
+        }
+    }
+
+    /// Best-effort create an empty file with an arbitrary (possibly non-UTF-8)
+    /// `OsString` name; `None` if the filesystem refuses the byte sequence.
+    fn touch_os(dir: &Path, name: &std::ffi::OsStr) -> Option<()> {
+        let mut file = File::create(dir.join(name)).ok()?;
+        file.write_all(b"video bytes").ok()?;
+        Some(())
     }
 
     fn names(videos: &[RecentVideo]) -> Vec<&str> {
@@ -484,6 +543,80 @@ mod tests {
         let mut got = names(&found);
         got.sort();
         assert_eq!(got, vec!["a.mov", "b.mp4"]);
+    }
+
+    #[test]
+    fn unreachable_reports_unreadable_but_not_missing_folders() {
+        // A folder that exists and is readable is reachable.
+        let ok = tempfile::tempdir().unwrap();
+        // A path that exists but can't be enumerated as a directory (here, a
+        // regular file) stands in for an offline/permission-denied folder:
+        // read_dir returns an error whose kind is NOT NotFound — exactly the
+        // class `is_unreachable_err` flags. (Cross-platform; no ACL fiddling.)
+        let blocked_dir = tempfile::tempdir().unwrap();
+        let blocked = blocked_dir.path().join("not-a-dir");
+        touch(blocked_dir.path(), "not-a-dir");
+        assert!(std::fs::read_dir(&blocked).unwrap_err().kind() != std::io::ErrorKind::NotFound);
+        // A simply-missing folder is NOT unreachable: it's an empty source.
+        let missing = PathBuf::from("/nonexistent/tamp-unreachable-test");
+        assert_eq!(
+            std::fs::read_dir(&missing).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        let got = unreachable(&[ok.path().to_path_buf(), blocked.clone(), missing]);
+        assert_eq!(got, vec![blocked.to_string_lossy().into_owned()]);
+        // manual: add an offline UNC path as a watched folder → the Videos tab
+        // shows the "couldn't read <folder>" banner, not "no recordings".
+    }
+
+    #[test]
+    fn is_supported_filename_gates_on_lossless_utf8() {
+        // ASCII / valid UTF-8 paths are supported.
+        assert!(is_supported_filename(Path::new("/rec/clip.mov")));
+        assert!(is_supported_filename(Path::new(
+            "/rec/café (tamped a3f2).mp4"
+        )));
+
+        // A path whose filename is NOT valid UTF-8 is rejected, so the scanner
+        // never laundered it through `to_string_lossy` into a `RecentVideo`.
+        let bad = non_utf8_name("clip", "mp4");
+        assert!(
+            bad.to_str().is_none(),
+            "test fixture must be a genuinely non-UTF-8 name"
+        );
+        assert!(!is_supported_filename(&PathBuf::from("/rec").join(&bad)));
+    }
+
+    #[test]
+    fn scan_skips_non_utf8_filenames_instead_of_mangling_them() {
+        let dir = tempfile::tempdir().unwrap();
+        // A normal recording alongside one with a non-UTF-8 filename and a valid
+        // `.mp4` extension (the extension is ASCII; only the stem is invalid —
+        // exactly the case `to_string_lossy` would have mangled into a U+FFFD
+        // path that probe/copy/reveal then mis-target).
+        touch(dir.path(), "good.mp4");
+        if touch_os(dir.path(), &non_utf8_name("bad", "mp4")).is_none() {
+            // Some filesystems reject the byte sequence outright; the UTF-8 gate
+            // itself is still covered by `is_supported_filename_gates_*`.
+            return;
+        }
+        let folders = vec![dir.path().to_path_buf()];
+
+        // The non-UTF-8 row is skipped, never emitted as a lossy RecentVideo…
+        let found = scan(&folders, 100);
+        assert_eq!(names(&found), vec!["good.mp4"]);
+        // …so no row carries a laundered path: `to_string_lossy` would have
+        // injected the U+FFFD replacement char, and that mangled string would
+        // not round-trip back to the real file for copy/reveal/probe.
+        assert!(
+            found
+                .iter()
+                .all(|v| !v.path.contains('\u{FFFD}') && !v.name.contains('\u{FFFD}')),
+            "no row may carry a U+FFFD-mangled path or name"
+        );
+        // manual: a file with a non-UTF-8 name is skipped (with a warn log),
+        // never mangled into a broken row that probe/copy/reveal mis-targets.
     }
 
     #[test]

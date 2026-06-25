@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "settings.json";
@@ -106,6 +106,46 @@ pub struct Preset {
     pub split: SplitConfig,
 }
 
+/// When to reveal finished outputs in the system file manager after a
+/// conversion completes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenAfterConvert {
+    /// Never open anything (the default).
+    #[default]
+    Off,
+    /// Open the part folder when a multi-part split finishes; do nothing for
+    /// single outputs.
+    Multipart,
+    /// Open the part folder for splits, and reveal the file for single
+    /// outputs.
+    All,
+}
+
+/// Which color theme the panel renders in. `System` follows the OS
+/// light/dark setting (and tracks live changes); `Light`/`Dark` pin it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// How the Videos screen offers presets when compressing a recording.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideosLayout {
+    /// Clicking a video opens a preset picker (default highlighted) — best
+    /// when you choose a preset per clip.
+    #[default]
+    QuickPick,
+    /// A persistent bar holds one active preset; clicking a video applies it
+    /// immediately — best when you mostly use one preset.
+    ActiveBar,
+}
+
 // Field-level defaults keep previously stored settings readable when new
 // fields are added later (missing keys no longer fail deserialization).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +177,43 @@ pub struct Settings {
     /// user thinks they're compressing.
     #[serde(default = "default_stale_warn_minutes")]
     pub stale_warn_minutes: u32,
+    /// Whether to open finished outputs in the file manager when a conversion
+    /// completes (off / multi-part splits only / all conversions).
+    #[serde(default)]
+    pub open_after_convert: OpenAfterConvert,
+    /// Which preset-selection UI the Videos screen shows.
+    #[serde(default)]
+    pub videos_layout: VideosLayout,
+    /// Color theme for the panel (system / light / dark).
+    #[serde(default)]
+    pub theme: Theme,
+    /// Windows: whether the Explorer "Compress with tamp" right-click entry is
+    /// registered. Ignored on other platforms.
+    #[serde(default = "default_true")]
+    pub context_menu_enabled: bool,
+    /// How many recent videos the Videos tab lists. 1..=200.
+    #[serde(default = "default_recents_limit")]
+    pub recents_limit: usize,
+    /// Whether the one-time first-run notice (tray-location hint + how to
+    /// reopen) has been shown and dismissed. Defaults to `false` so a fresh
+    /// profile sees it once; the frontend flips it to `true` on dismiss.
+    #[serde(default)]
+    pub onboarding_seen: bool,
+    /// Whether the opt-in GitHub update check runs on launch. Defaults to
+    /// `false` — off until the first-run consent or the Preferences toggle
+    /// turns it on. The single outbound request sends nothing about the user.
+    #[serde(default)]
+    pub update_check_enabled: bool,
+    /// The newest version the user has already dismissed in the update modal,
+    /// so it never re-nags for it — only a strictly newer release reappears.
+    /// `None` until something is dismissed; old stores read as `None`.
+    #[serde(default)]
+    pub last_dismissed_update_version: Option<String>,
+    /// UI language: `"system"` (resolved from the browser language, the
+    /// default), `"en"`, or `"uk"`. Stores written before the field existed
+    /// read as `"system"`.
+    #[serde(default = "default_locale")]
+    pub locale: String,
 }
 
 fn default_true() -> bool {
@@ -155,19 +232,26 @@ fn default_stale_warn_minutes() -> u32 {
     10
 }
 
+fn default_recents_limit() -> usize {
+    50
+}
+
+fn default_locale() -> String {
+    "system".into()
+}
+
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// Default settings. Needs the app handle because the default watched folder
-/// is `~/Desktop` and home resolution goes through the Tauri path resolver.
+/// Default settings. Needs the app handle because the default watched
+/// folders come from the platform strategy (wherever this OS's screen
+/// recorders save) via the Tauri path resolver.
 pub fn default_settings(app: &AppHandle) -> Settings {
-    let watched_folders = app
-        .path()
-        .home_dir()
-        .map(|home| vec![home.join("Desktop").to_string_lossy().into_owned()])
-        .unwrap_or_else(|e| {
-            crate::log_warn!("cannot resolve home dir for default watched folder: {e}");
-            Vec::new()
-        });
+    use crate::platform::Platform as _;
+    let watched_folders = crate::platform::native()
+        .default_watched_folders(app)
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     Settings {
         watched_folders,
         copy_to_clipboard: true,
@@ -189,6 +273,15 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         shortcut_compress_latest: default_shortcut_compress_latest(),
         shortcut_toggle_panel: default_shortcut_toggle_panel(),
         stale_warn_minutes: default_stale_warn_minutes(),
+        open_after_convert: OpenAfterConvert::default(),
+        videos_layout: VideosLayout::default(),
+        theme: Theme::default(),
+        context_menu_enabled: true,
+        recents_limit: 50,
+        onboarding_seen: false,
+        update_check_enabled: false,
+        last_dismissed_update_version: None,
+        locale: default_locale(),
     }
 }
 
@@ -299,6 +392,24 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
             return Err(format!("preset \"{}\": {e}", preset.name));
         }
     }
+    // Preset names must be unique so every picker can tell them apart
+    // (case-insensitive, trimmed). The editor blocks this client-side; this is
+    // the backing guarantee (also catches hand-edited settings files).
+    let mut seen_names = std::collections::HashSet::new();
+    for preset in &settings.presets {
+        if !seen_names.insert(preset.name.trim().to_lowercase()) {
+            return Err(format!(
+                "two presets are named \"{}\"; give each preset a unique name",
+                preset.name.trim()
+            ));
+        }
+    }
+    if !(1..=200).contains(&settings.recents_limit) {
+        return Err("recent videos shown must be between 1 and 200".into());
+    }
+    if !matches!(settings.locale.as_str(), "system" | "en" | "uk") {
+        return Err(format!("unsupported locale \"{}\"", settings.locale));
+    }
     Ok(())
 }
 
@@ -358,6 +469,26 @@ mod tests {
             serde_json::json!("gif")
         );
         assert_eq!(OutputFormat::default(), OutputFormat::Mp4);
+    }
+
+    #[test]
+    fn theme_serializes_lowercase_and_defaults_to_system() {
+        assert_eq!(Theme::default(), Theme::System);
+        assert_eq!(
+            serde_json::to_value(Theme::System).unwrap(),
+            serde_json::json!("system")
+        );
+        assert_eq!(
+            serde_json::to_value(Theme::Light).unwrap(),
+            serde_json::json!("light")
+        );
+        assert_eq!(
+            serde_json::to_value(Theme::Dark).unwrap(),
+            serde_json::json!("dark")
+        );
+        // Stores written before the field existed default to System.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert_eq!(settings.theme, Theme::System);
     }
 
     #[test]
@@ -447,6 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_duplicate_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut dup = settings.presets[0].clone();
+        dup.id = "dup-id".to_string();
+        // Same name but different case + surrounding whitespace — still a dup.
+        dup.name = format!("  {}  ", settings.presets[0].name.to_uppercase());
+        settings.presets.push(dup);
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("unique name"), "{err}");
+    }
+
+    #[test]
+    fn validate_allows_distinct_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut other = settings.presets[0].clone();
+        other.id = "other-id".to_string();
+        other.name = "A genuinely different name".to_string();
+        settings.presets.push(other);
+        assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
     fn validate_accepts_off_and_smart_regardless_of_numbers() {
         for mode in [SplitMode::Off, SplitMode::Smart] {
             let split = SplitConfig {
@@ -510,6 +663,102 @@ mod tests {
             seconds: 15,
         };
         assert!(validate(&settings_with_split(split)).is_ok());
+    }
+
+    #[test]
+    fn recents_limit_defaults_to_50_and_is_bounded() {
+        let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.recents_limit, 50);
+    }
+
+    #[test]
+    fn onboarding_seen_defaults_to_false_for_old_stores() {
+        // A store written before the field existed must read as "not yet
+        // seen" so the one-time notice still appears once.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.onboarding_seen);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.onboarding_seen);
+    }
+
+    #[test]
+    fn update_check_fields_default_off_for_old_stores() {
+        // Stores written before the update-check feature must load with the
+        // check OFF (privacy: opt-in) and no dismissed version recorded.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.update_check_enabled);
+        assert_eq!(settings.last_dismissed_update_version, None);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.update_check_enabled);
+        assert_eq!(empty.last_dismissed_update_version, None);
+    }
+
+    #[test]
+    fn update_check_fields_round_trip_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.update_check_enabled = true;
+        settings.last_dismissed_update_version = Some("0.3.0-beta.7".into());
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["updateCheckEnabled"], serde_json::json!(true));
+        assert_eq!(
+            json["lastDismissedUpdateVersion"],
+            serde_json::json!("0.3.0-beta.7")
+        );
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert!(back.update_check_enabled);
+        assert_eq!(
+            back.last_dismissed_update_version.as_deref(),
+            Some("0.3.0-beta.7")
+        );
+    }
+
+    #[test]
+    fn validate_bounds_recents_limit() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.recents_limit = 0;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        settings.recents_limit = 201;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        for limit in [1, 50, 200] {
+            settings.recents_limit = limit;
+            assert!(validate(&settings).is_ok(), "{limit}");
+        }
+    }
+
+    #[test]
+    fn locale_defaults_to_system_for_old_stores() {
+        // Stores written before the locale field existed must read as
+        // "system" so the UI follows the browser language.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert_eq!(settings.locale, "system");
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.locale, "system");
+    }
+
+    #[test]
+    fn locale_round_trips_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.locale = "uk".into();
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["locale"], serde_json::json!("uk"));
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.locale, "uk");
+    }
+
+    #[test]
+    fn validate_accepts_known_locales_and_rejects_others() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        for locale in ["system", "en", "uk"] {
+            settings.locale = locale.into();
+            assert!(validate(&settings).is_ok(), "{locale}");
+        }
+        for locale in ["", "fr", "EN", "uk-UA"] {
+            settings.locale = locale.into();
+            let err = validate(&settings).unwrap_err();
+            assert!(err.contains("unsupported locale"), "{err}");
+        }
     }
 
     #[test]
