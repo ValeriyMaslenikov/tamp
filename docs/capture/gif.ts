@@ -11,7 +11,7 @@ import { demoRecents } from "./demo-data";
 import { GIF_PAD, viewport } from "./frame";
 import type { JobState, Phase } from "../../src/lib/ipc";
 
-const STAR = demoRecents().find((r) => r.name.startsWith("ranked-match"))!; // 895 MB → big drop
+const STAR = demoRecents().find((r) => r.name.startsWith("ranked-match"))!; // 260 MB / 0:42 → 9.4 MB
 
 function job(phase: Phase, progress: number, over: Partial<JobState> = {}): JobState {
   return {
@@ -24,7 +24,7 @@ function job(phase: Phase, progress: number, over: Partial<JobState> = {}): JobS
     phase,
     progress,
     inputBytes: STAR.sizeBytes,
-    outputBytes: phase === "done" ? 9_600_000 : null,
+    outputBytes: phase === "done" ? 9_400_000 : null,
     reused: false,
     part: null,
     error: null,
