@@ -42,4 +42,15 @@ test.describe("panel renders against mocked IPC", () => {
       "screen-recording-1.mov",
     );
   });
+
+  test("the close (×) button hides the panel", async ({ tamp, page }) => {
+    await tamp.goto();
+    await page.locator("#close-btn").click();
+    await expect
+      .poll(async () => {
+        const calls = await tamp.calls();
+        return calls.some((c) => c.cmd === "plugin:window|hide");
+      })
+      .toBe(true);
+  });
 });

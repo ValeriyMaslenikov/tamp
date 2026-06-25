@@ -247,6 +247,7 @@
     "tabConverted": "Converted",
     "tabPrefs": "Preferences",
     "pinTitle": "Keep panel open",
+    "closeTitle": "Close panel",
     "footerVideos": "↑↓ select · →← expand · ⏎ pick preset · 1–9 preset · esc close",
     "footerConverted": "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc close",
     "footerPrefs": "esc close"

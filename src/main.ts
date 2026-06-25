@@ -1,5 +1,6 @@
 import "./fonts.css";
 import "./styles.css";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   checkForUpdate,
   getSettings,
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
           <button type="button" class="seg-btn" data-tab="prefs" role="tab" id="tab-prefs" aria-controls="panel-prefs" aria-selected="false" tabindex="-1">${t("main.tabPrefs")}</button>
         </div>
         <button type="button" class="pin-btn" id="pin-btn" aria-pressed="false" title="${t("main.pinTitle")}">📌</button>
+        <button type="button" class="close-btn" id="close-btn" title="${t("main.closeTitle")}" aria-label="${t("main.closeTitle")}">✕</button>
       </header>
       <main class="content" id="content"></main>
       <footer class="panel-footer">${t("main.footerVideos")}</footer>
@@ -69,6 +71,14 @@ async function main(): Promise<void> {
     pinBtn.classList.toggle("is-on", pinned);
     pinBtn.setAttribute("aria-pressed", String(pinned));
     void setPin(pinned);
+  });
+
+  // An explicit dismiss: hides the panel (same as Esc / clicking the tray icon).
+  // Reliable on macOS, where click-outside-to-hide is unreliable (the panel's
+  // blur can land mid-click). The app stays in the tray — quit from its menu.
+  const closeBtn = document.getElementById("close-btn") as HTMLButtonElement;
+  closeBtn.addEventListener("click", () => {
+    void getCurrentWindow().hide();
   });
 
   const listView = createListView(() => settings);

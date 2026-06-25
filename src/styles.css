@@ -2100,6 +2100,27 @@ select.input {
   background: var(--accent-deep);
 }
 
+/* Explicit dismiss button, next to the pin. Mirrors .pin-btn; hovers to the
+   danger tint so it reads clearly as "close this panel". */
+.close-btn {
+  flex: none;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.close-btn:hover {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
 .drop-overlay {
   position: absolute;
   inset: 0;
