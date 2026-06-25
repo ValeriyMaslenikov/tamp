@@ -31,12 +31,39 @@ Everything runs on your machine with a bundled FFmpeg — no uploads, no telemet
 no account.
 
 <p align="center">
-  <img src="docs/panel.png" width="420" alt="Tamp panel showing recent recordings" />
+  <img src="docs/demo.webp" width="460" alt="compressing a recording in one click — pick a video, watch it shrink just under the target" />
 </p>
 
+<p align="center"><em>One click — pick a recording, watch it land just under your target.</em></p>
+
+<details>
+<summary>📎 <strong>Too long for one file? Split it, then paste every part into chat</strong></summary>
+
+<br/>
+
 <p align="center">
-  <img src="docs/convert.gif" width="360" alt="compressing a recording in one click — click a video, watch it shrink under the target" />
+  <img src="docs/multipart.webp" width="600" alt="Tamp splits a long recording into parts that each fit, then Copy all pastes both into a chat — each under 10 MB" />
 </p>
+
+When a recording can't fit your target in one file, Tamp splits it into parts that
+each land under the limit. **Copy all** puts every part on your clipboard, so you
+paste them straight into Discord, Slack, or your bug tracker.
+
+</details>
+
+<details>
+<summary>🪟 <strong>Drag &amp; drop a recording onto the panel</strong></summary>
+
+<br/>
+
+<p align="center">
+  <img src="docs/dragdrop.webp" width="464" alt="Pin the panel open, drag a recording in from Finder, and Tamp compresses it on drop" />
+</p>
+
+Pin the panel open, then drag any recording in from Finder — Tamp compresses it
+with your active preset the moment you drop it.
+
+</details>
 
 ## 📖 Documentation
 
