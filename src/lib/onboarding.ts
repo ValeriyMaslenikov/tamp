@@ -142,7 +142,7 @@ export function buildOnboardingNotice(
   actions.className = "onboarding-actions";
   const dismiss = document.createElement("button");
   dismiss.type = "button";
-  dismiss.className = "btn-ghost";
+  dismiss.className = "btn-primary onboarding-dismiss";
   dismiss.textContent = t("common.gotIt");
   dismiss.addEventListener("click", () => onDismiss(consentBox.checked));
   actions.appendChild(dismiss);
