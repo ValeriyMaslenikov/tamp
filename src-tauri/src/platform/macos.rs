@@ -37,11 +37,13 @@ impl Platform for MacOs {
     }
 
     fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
-        // Menu bar is at the top, so the panel hangs below the icon.
-        if panel
-            .move_window_constrained(Position::TrayBottomCenter)
-            .is_ok()
-        {
+        // Menu bar is at the top, so the panel hangs below the icon. Use the
+        // plain positioner move, NOT the *constrained* variant: on a
+        // multi-monitor Mac the constrain step clamps to the wrong display and
+        // throws the panel onto another screen's corner. `move_window` anchors
+        // to the clicked tray rect on the correct display — the behavior macOS
+        // had before the platform refactor adopted `move_window_constrained`.
+        if panel.move_window(Position::TrayBottomCenter).is_ok() {
             return;
         }
         // No cached tray rect to anchor against: fall back to the work
