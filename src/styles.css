@@ -355,12 +355,28 @@ textarea {
   opacity: 0.8;
 }
 
-/* The one-time first-run notice reuses the calm folder-notice card but mounts
-   at the very top of the panel (above the content), with the accent edge to
-   read as a friendly welcome rather than a warning. */
+/* The one-time first-run welcome: a full-panel takeover (absolute, over the
+   content, filling 100% of the panel) so the four-step intro reads as a proper
+   welcome screen rather than a cramped notice. Overrides the folder-notice card
+   look it borrows the title styling from. Dismissed with the big "Got it" CTA. */
 .onboarding-notice {
-  margin: 8px 12px 0;
-  border-left-color: var(--accent);
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  margin: 0;
+  padding: 20px 18px 16px;
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.onboarding-notice .folder-notice-title {
+  font-size: 16.5px;
 }
 
 /* The one-line lead under the welcome title: a calm framing sentence above the
@@ -376,8 +392,8 @@ textarea {
 .onboarding-steps {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 14px;
+  margin-top: 16px;
 }
 
 .onboarding-step {
@@ -423,6 +439,20 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+/* In the welcome takeover the CTA fills the width and pins to the bottom (the
+   shared .onboarding-actions above still right-aligns the Preferences
+   notifications recovery buttons — these overrides are scoped to the welcome). */
+.onboarding-notice .onboarding-actions {
+  display: block;
+  margin-top: auto;
+  padding-top: 16px;
+}
+.onboarding-dismiss {
+  width: 100%;
+  padding: 13px;
+  font-size: 13.5px;
 }
 
 /* The first-run update-check consent: a default-checked checkbox the user can
