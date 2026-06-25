@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "../i18n";
 
 type OS = "macos" | "windows" | "linux";
 
@@ -18,7 +19,9 @@ export async function initPlatform(): Promise<void> {
  * strings naming OS concepts (file manager, etc.).
  */
 export function revealLabel(): string {
-  return os === "macos" ? "Reveal in Finder" : "Show in Explorer";
+  return os === "macos"
+    ? t("platform.revealFinder")
+    : t("platform.revealExplorer");
 }
 
 /** Whether the backend OS is Windows (gates Windows-only Preferences). */

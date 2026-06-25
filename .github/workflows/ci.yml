@@ -20,6 +20,42 @@ jobs:
       - run: bun run test
       - run: bun run build
 
+  e2e:
+    name: E2E (Playwright, mocked IPC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # Cache the downloaded browser keyed on the installed Playwright version,
+      # so a CI run only re-downloads Chromium when the pinned version changes.
+      - name: Resolve Playwright version
+        id: pw
+        run: echo "version=$(bunx playwright --version | tr -d 'A-Za-z ')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+      # Cache miss: download the browser AND its OS deps.
+      - name: Install Chromium (+ OS deps)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: bunx playwright install --with-deps chromium
+      # Cache hit: the browser is restored from cache but its OS deps aren't, so
+      # install just the deps to let the cached Chromium launch.
+      - name: Install Chromium OS deps (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: bunx playwright install-deps chromium
+      - name: Run Playwright tests
+        run: bunx playwright test
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
   rust:
     name: Rust (${{ matrix.os }})
     strategy:
@@ -52,3 +88,56 @@ jobs:
       - name: tests
         run: cargo test
         working-directory: src-tauri
+
+  e2e-native:
+    name: E2E native (tauri-driver smoke)
+    # Windows-only: tauri-driver drives the WebView2 window via msedgedriver.
+    # macOS's WKWebView has no stable WebDriver story, so this layer is Windows.
+    runs-on: windows-latest
+    # NOTE: continue-on-error while this smoke suite is new — the full-app
+    # WebDriver path (release build + WebView2 + msedgedriver version match) is
+    # the flakiest layer, and a transient hiccup must not block the pipeline.
+    # HARDEN: once it has proven stable across a few runs, drop this line so a
+    # real boot/panel regression fails CI.
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install frontend deps + build (tauri's generate_context! embeds ../dist)
+        run: bun install --frozen-lockfile && bun run build
+      # The hosted windows-latest runner is x64, so fetch the x64 sidecars to
+      # match the release binary tauri-driver will launch.
+      - name: Fetch FFmpeg sidecars (x64)
+        run: bun scripts/fetch-ffmpeg.ts x64
+      # Release build: the smoke suite drives src-tauri/target/release/tamp.exe.
+      # (Switch to a debug build here if build time becomes the bottleneck — the
+      # wdio.conf APP_BINARY path would then need to point at target/debug.)
+      - name: Build the app
+        run: bun tauri build
+      # tauri-driver is the WebDriver proxy; it lands in ~/.cargo/bin (already on
+      # PATH for the runner's default user).
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      # msedgedriver must match the installed WebView2 / Edge runtime. The Tauri-
+      # official approach: msedgedriver-tool fetches the matching driver, then we
+      # prepend its dir to PATH so tauri-driver discovers msedgedriver.exe (its
+      # default native driver). See https://v2.tauri.app/develop/tests/webdriver/ci/
+      - name: Install matching msedgedriver
+        shell: pwsh
+        run: |
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          & "$HOME/.cargo/bin/msedgedriver-tool.exe"
+          $PWD.Path >> $env:GITHUB_PATH
+      - name: Install WDIO suite deps
+        run: bun install
+        working-directory: e2e-native
+      - name: Run tauri-driver smoke suite
+        run: bun run test
+        working-directory: e2e-native

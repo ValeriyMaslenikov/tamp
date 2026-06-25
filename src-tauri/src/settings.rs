@@ -191,6 +191,29 @@ pub struct Settings {
     /// registered. Ignored on other platforms.
     #[serde(default = "default_true")]
     pub context_menu_enabled: bool,
+    /// How many recent videos the Videos tab lists. 1..=200.
+    #[serde(default = "default_recents_limit")]
+    pub recents_limit: usize,
+    /// Whether the one-time first-run notice (tray-location hint + how to
+    /// reopen) has been shown and dismissed. Defaults to `false` so a fresh
+    /// profile sees it once; the frontend flips it to `true` on dismiss.
+    #[serde(default)]
+    pub onboarding_seen: bool,
+    /// Whether the opt-in GitHub update check runs on launch. Defaults to
+    /// `false` — off until the first-run consent or the Preferences toggle
+    /// turns it on. The single outbound request sends nothing about the user.
+    #[serde(default)]
+    pub update_check_enabled: bool,
+    /// The newest version the user has already dismissed in the update modal,
+    /// so it never re-nags for it — only a strictly newer release reappears.
+    /// `None` until something is dismissed; old stores read as `None`.
+    #[serde(default)]
+    pub last_dismissed_update_version: Option<String>,
+    /// UI language: `"system"` (resolved from the browser language, the
+    /// default), `"en"`, or `"uk"`. Stores written before the field existed
+    /// read as `"system"`.
+    #[serde(default = "default_locale")]
+    pub locale: String,
 }
 
 fn default_true() -> bool {
@@ -207,6 +230,14 @@ fn default_shortcut_toggle_panel() -> Option<String> {
 
 fn default_stale_warn_minutes() -> u32 {
     10
+}
+
+fn default_recents_limit() -> usize {
+    50
+}
+
+fn default_locale() -> String {
+    "system".into()
 }
 
 pub struct SettingsState(pub Mutex<Settings>);
@@ -246,6 +277,11 @@ pub fn default_settings(app: &AppHandle) -> Settings {
         videos_layout: VideosLayout::default(),
         theme: Theme::default(),
         context_menu_enabled: true,
+        recents_limit: 50,
+        onboarding_seen: false,
+        update_check_enabled: false,
+        last_dismissed_update_version: None,
+        locale: default_locale(),
     }
 }
 
@@ -355,6 +391,24 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
         if let Err(e) = validate_split(&preset.split) {
             return Err(format!("preset \"{}\": {e}", preset.name));
         }
+    }
+    // Preset names must be unique so every picker can tell them apart
+    // (case-insensitive, trimmed). The editor blocks this client-side; this is
+    // the backing guarantee (also catches hand-edited settings files).
+    let mut seen_names = std::collections::HashSet::new();
+    for preset in &settings.presets {
+        if !seen_names.insert(preset.name.trim().to_lowercase()) {
+            return Err(format!(
+                "two presets are named \"{}\"; give each preset a unique name",
+                preset.name.trim()
+            ));
+        }
+    }
+    if !(1..=200).contains(&settings.recents_limit) {
+        return Err("recent videos shown must be between 1 and 200".into());
+    }
+    if !matches!(settings.locale.as_str(), "system" | "en" | "uk") {
+        return Err(format!("unsupported locale \"{}\"", settings.locale));
     }
     Ok(())
 }
@@ -524,6 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_duplicate_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut dup = settings.presets[0].clone();
+        dup.id = "dup-id".to_string();
+        // Same name but different case + surrounding whitespace — still a dup.
+        dup.name = format!("  {}  ", settings.presets[0].name.to_uppercase());
+        settings.presets.push(dup);
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("unique name"), "{err}");
+    }
+
+    #[test]
+    fn validate_allows_distinct_preset_names() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        let mut other = settings.presets[0].clone();
+        other.id = "other-id".to_string();
+        other.name = "A genuinely different name".to_string();
+        settings.presets.push(other);
+        assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
     fn validate_accepts_off_and_smart_regardless_of_numbers() {
         for mode in [SplitMode::Off, SplitMode::Smart] {
             let split = SplitConfig {
@@ -587,6 +663,102 @@ mod tests {
             seconds: 15,
         };
         assert!(validate(&settings_with_split(split)).is_ok());
+    }
+
+    #[test]
+    fn recents_limit_defaults_to_50_and_is_bounded() {
+        let s: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.recents_limit, 50);
+    }
+
+    #[test]
+    fn onboarding_seen_defaults_to_false_for_old_stores() {
+        // A store written before the field existed must read as "not yet
+        // seen" so the one-time notice still appears once.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.onboarding_seen);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.onboarding_seen);
+    }
+
+    #[test]
+    fn update_check_fields_default_off_for_old_stores() {
+        // Stores written before the update-check feature must load with the
+        // check OFF (privacy: opt-in) and no dismissed version recorded.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert!(!settings.update_check_enabled);
+        assert_eq!(settings.last_dismissed_update_version, None);
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!empty.update_check_enabled);
+        assert_eq!(empty.last_dismissed_update_version, None);
+    }
+
+    #[test]
+    fn update_check_fields_round_trip_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.update_check_enabled = true;
+        settings.last_dismissed_update_version = Some("0.3.0-beta.7".into());
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["updateCheckEnabled"], serde_json::json!(true));
+        assert_eq!(
+            json["lastDismissedUpdateVersion"],
+            serde_json::json!("0.3.0-beta.7")
+        );
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert!(back.update_check_enabled);
+        assert_eq!(
+            back.last_dismissed_update_version.as_deref(),
+            Some("0.3.0-beta.7")
+        );
+    }
+
+    #[test]
+    fn validate_bounds_recents_limit() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.recents_limit = 0;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        settings.recents_limit = 201;
+        let err = validate(&settings).unwrap_err();
+        assert!(err.contains("recent videos"), "{err}");
+        for limit in [1, 50, 200] {
+            settings.recents_limit = limit;
+            assert!(validate(&settings).is_ok(), "{limit}");
+        }
+    }
+
+    #[test]
+    fn locale_defaults_to_system_for_old_stores() {
+        // Stores written before the locale field existed must read as
+        // "system" so the UI follows the browser language.
+        let settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        assert_eq!(settings.locale, "system");
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.locale, "system");
+    }
+
+    #[test]
+    fn locale_round_trips_camel_case() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        settings.locale = "uk".into();
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["locale"], serde_json::json!("uk"));
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.locale, "uk");
+    }
+
+    #[test]
+    fn validate_accepts_known_locales_and_rejects_others() {
+        let mut settings: Settings = serde_json::from_str(LEGACY_SETTINGS_JSON).unwrap();
+        for locale in ["system", "en", "uk"] {
+            settings.locale = locale.into();
+            assert!(validate(&settings).is_ok(), "{locale}");
+        }
+        for locale in ["", "fr", "EN", "uk-UA"] {
+            settings.locale = locale.into();
+            let err = validate(&settings).unwrap_err();
+            assert!(err.contains("unsupported locale"), "{err}");
+        }
     }
 
     #[test]

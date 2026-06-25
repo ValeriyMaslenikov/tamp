@@ -37,11 +37,13 @@ impl Platform for MacOs {
     }
 
     fn position_panel_at_tray(&self, panel: &tauri::WebviewWindow) {
-        // Menu bar is at the top, so the panel hangs below the icon.
-        if panel
-            .move_window_constrained(Position::TrayBottomCenter)
-            .is_ok()
-        {
+        // Menu bar is at the top, so the panel hangs below the icon. Use the
+        // plain positioner move, NOT the *constrained* variant: on a
+        // multi-monitor Mac the constrain step clamps to the wrong display and
+        // throws the panel onto another screen's corner. `move_window` anchors
+        // to the clicked tray rect on the correct display — the behavior macOS
+        // had before the platform refactor adopted `move_window_constrained`.
+        if panel.move_window(Position::TrayBottomCenter).is_ok() {
             return;
         }
         // No cached tray rect to anchor against: fall back to the work
@@ -94,14 +96,60 @@ impl Platform for MacOs {
     }
 
     fn primary_mouse_button_down(&self) -> bool {
-        // Bit 0 of the pressed-button mask is the left button.
-        (unsafe { objc2_app_kit::NSEvent::pressedMouseButtons() } & 1) != 0
+        // Bit 0 of the pressed-button mask is the left button. The pinned
+        // objc2-app-kit marks this call safe, so no `unsafe` block is needed
+        // (an unnecessary one is a hard error under `-D warnings`).
+        (objc2_app_kit::NSEvent::pressedMouseButtons() & 1) != 0
     }
 
     fn resolve_accelerator(&self, accelerator: &str) -> String {
         // macOS hotkeys are positional; rewrite the key token to the position
         // that types the configured character in the active layout.
         super::rewrite_accelerator_key(accelerator, super::macos_keyboard::layout_token)
+    }
+
+    fn cleanup_legacy_autostart(&self) {
+        remove_legacy_launch_agent();
+    }
+}
+
+/// Best-effort removal of stale LaunchAgent plists left by older builds. The
+/// autostart plugin names its plist by the current product name "Tamp"
+/// (`~/Library/LaunchAgents/Tamp.plist`), which is overwritten on re-enable — but
+/// two earlier names are orphaned and would otherwise fire a missing/old binary
+/// at every login:
+///   - `com.joystudios.tamp.plist` — a build that keyed the agent off the legacy
+///     bundle identifier (`LEGACY_IDENTIFIER`).
+///   - `tamp.plist` — the lowercase product name used before the app was renamed
+///     "tamp" -> "Tamp". (Safe to delete here only because this code ships with
+///     productName "Tamp"; the active agent is "Tamp.plist".)
+///
+/// Mirrors the data-side `migrate_legacy_data` cleanup: runs once at startup
+/// before the current agent is re-enabled, and swallows every error.
+fn remove_legacy_launch_agent() {
+    // ~/Library/LaunchAgents is where per-user agents live; $HOME is always set
+    // for a logged-in macOS session (the autostart plugin resolves it the same
+    // way via dirs::home_dir).
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let agents = PathBuf::from(home).join("Library").join("LaunchAgents");
+    let legacy = [
+        format!("{}.plist", crate::LEGACY_IDENTIFIER),
+        "tamp.plist".to_string(),
+    ];
+    for name in legacy {
+        let plist = agents.join(&name);
+        if !plist.exists() {
+            continue;
+        }
+        match std::fs::remove_file(&plist) {
+            Ok(()) => crate::log_info!("removed legacy LaunchAgent {}", plist.display()),
+            Err(e) => crate::log_warn!(
+                "failed to remove legacy LaunchAgent {}: {e}",
+                plist.display()
+            ),
+        }
     }
 }
 

@@ -1,0 +1,272 @@
+{
+  "app": {
+    "name": "Tamp"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "later": "Later",
+    "gotIt": "Got it"
+  },
+  "units": {
+    "parts": {
+      "one": "{count} part",
+      "other": "{count} parts"
+    }
+  },
+  "videos": {
+    "empty": "No videos in your watched folders yet — record something!",
+    "noMatch": "No recordings match your filter.",
+    "filterPlaceholder": "Filter recordings…",
+    "addFile": "＋ Add file…",
+    "addFileTitle": "Compress a video from anywhere",
+    "trashGuardHint": "'Move original to Trash' is on, so the original disappears after the first conversion — only one preset per video. Turn the toggle off in Preferences to export several formats.",
+    "metaSize": "Size",
+    "metaLength": "Length",
+    "metaRecorded": "Recorded",
+    "compressedBadge": "compressed",
+    "customChip": "Custom…",
+    "customChipTitle": "One-off conversion with custom settings",
+    "compressWithName": "Compress with {name}",
+    "cancelTitle": "Cancel",
+    "cancelAria": "Cancel conversion",
+    "detailsTitle": "Details (e)",
+    "detailsAria": "Details",
+    "preparingPreview": "Preparing preview…",
+    "previewUnavailable": "Preview unavailable",
+    "copiedToClipboard": "Copied to clipboard",
+    "noVideoFilesInDrop": "No video files in that drop",
+    "activeBar": {
+      "label": "Compress with",
+      "none": "—",
+      "prevTitle": "Previous preset ([)",
+      "prevAria": "Previous preset",
+      "nextTitle": "Next preset (])",
+      "nextAria": "Next preset"
+    },
+    "quickPick": {
+      "title": "Compress with…",
+      "titleMany": "Compress {count} files with…",
+      "dialogAria": "Choose a preset",
+      "custom": "Custom…",
+      "hint": "1–9 apply · ⏎ default · ↑↓ move · esc cancel"
+    },
+    "drop": {
+      "pickPreset": "Drop to pick a preset",
+      "withName": "Drop to compress with {name}"
+    },
+    "footer": {
+      "activeBar": "↑↓ select · →← expand · [ ] preset · ⏎ convert · esc close",
+      "quickPick": "↑↓ select · →← expand · ⏎ pick preset · 1–9 preset · esc close"
+    },
+    "status": {
+      "queued": "Queued",
+      "pass1": "Pass 1",
+      "pass2": "Pass 2",
+      "verifying": "Verifying",
+      "part": " · Part {current}/{total}",
+      "reused": "Already compressed — reused",
+      "retry": "↻ Retry",
+      "retryTitle": "Click to retry with the same preset",
+      "encodingFailed": "Encoding failed",
+      "cancelled": "Cancelled"
+    },
+    "donePartsSize": "{parts} · {size}",
+    "unreachable": {
+      "titleOne": "Couldn't read a watched folder",
+      "titleMany": {
+        "one": "Couldn't read {count} watched folder",
+        "other": "Couldn't read {count} watched folders"
+      },
+      "hint": "It may be offline or you may lack permission."
+    }
+  },
+  "converted": {
+    "loading": "Loading…",
+    "empty": "No conversions yet.\nCompress a video and it'll show up here — including files from outside your watched folders.",
+    "tipRecorded": "Recorded",
+    "tipConverted": "Converted",
+    "copiedToClipboard": "Copied to clipboard",
+    "playAria": "Play",
+    "playTitle": "Play the converted video",
+    "copyFileAria": "Copy file",
+    "copyFileTitle": "Copy compressed file",
+    "copyAllAria": "Copy all",
+    "copyAllTitle": "Copy all parts",
+    "revealAria": "Reveal",
+    "revealInFileManager": "Show in file manager",
+    "revealOutputFolder": "Open output folder",
+    "percentSmaller": "{percent}% smaller",
+    "smartSplit": "smart split",
+    "splitInterval": "split {interval}",
+    "intervalUnit": {
+      "s": "s",
+      "m": "m",
+      "h": "h"
+    }
+  },
+  "prefs": {
+    "sectionPresets": "Presets",
+    "sectionBehavior": "Behavior",
+    "sectionVideosScreen": "Videos screen",
+    "sectionShortcuts": "Shortcuts",
+    "sectionWatchedFolders": "Watched folders",
+    "sectionAppearance": "Appearance",
+    "newPreset": "+ New preset",
+    "presetDefault": "Default",
+    "presetEdit": "Edit",
+    "presetDelete": "Delete",
+    "presetNoAudio": "no audio",
+    "presetNamePlaceholder": "e.g. Slack (25MB)",
+    "fieldName": "Name",
+    "fieldTargetMb": "Target MB",
+    "fieldMaxFps": "Max FPS",
+    "fieldMaxWidth": "Max width",
+    "fieldScalePercent": "Scale %",
+    "fieldFormat": "Format",
+    "stripAudio": "Strip audio",
+    "widthScaleHint": "Max width and scale % are mutually exclusive.",
+    "errPresetNameRequired": "Preset name is required",
+    "errDuplicateName": "A preset named \"{name}\" already exists — choose a different name.",
+    "errTargetSize": "Target size must be greater than 0 MB",
+    "errFpsWidthScale": "FPS, width and scale must be positive whole numbers",
+    "videosLayout": {
+      "ariaLabel": "Videos screen layout",
+      "quickPickTitle": "Pick a preset each time",
+      "quickPickDesc": "Clicking a video opens a quick menu — your default is preselected, or press 1–9 to choose another.",
+      "activeBarTitle": "Keep one preset active",
+      "activeBarDesc": "A bar holds one active preset; clicking a video applies it instantly. Switch it with ‹ › or [ ]."
+    },
+    "recentVideosShown": "Recent videos shown",
+    "errRecentVideos": "Recent videos shown must be a whole number from 1 to 200",
+    "theme": "Theme",
+    "themeSystem": "System",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "language": "Language",
+    "languageSystem": "System",
+    "copyToClipboard": "Copy result to clipboard",
+    "moveToTrash": "Move original to Trash",
+    "gpuEncoder": "Use GPU encoder (faster, slightly lower quality)",
+    "launchAtLogin": "Launch at login",
+    "checkForUpdates": "Check for updates automatically",
+    "updateCheckHint": "Only asks GitHub for the latest version — nothing about you is sent.",
+    "openAfterConvert": "Open in file manager after converting",
+    "openAfterOff": "Off",
+    "openAfterMultipart": "Multi-part splits only",
+    "openAfterAll": "All conversions",
+    "contextMenu": "Add “Compress with Tamp” to Explorer’s right-click menu",
+    "shortcutCompressLatest": "Compress latest recording",
+    "shortcutTogglePanel": "Show / hide panel",
+    "staleWarnField": "Warn when the latest video is older than N minutes",
+    "errStaleMinutes": "Minutes must be a whole number (0 or more)",
+    "shortcutEmptyHint": "Leave a shortcut empty to disable it.",
+    "notifOffTitle": "Notifications are off",
+    "notifOffBody": "The stale-recording warning (when the latest video is older than the limit above) won't show. Re-request below, or open System Settings if it's been turned off there.",
+    "enableNotifications": "Enable notifications",
+    "openSystemSettings": "Open System Settings",
+    "notificationsEnabled": "Notifications enabled",
+    "removeFolder": "Remove folder",
+    "addFolder": "+ Add folder",
+    "version": "{name} v{version}",
+    "linkHomepage": "Homepage",
+    "linkWiki": "Wiki",
+    "linkReleases": "Releases"
+  },
+  "forms": {
+    "splitIntoParts": "Split into parts",
+    "splitMode": "Split mode",
+    "splitModeOff": "Off",
+    "splitModeSmart": "Smart",
+    "splitModeStatic": "Static",
+    "splitBy": "Split by",
+    "splitByParts": "By parts",
+    "splitBySeconds": "By duration",
+    "splitParts": "Parts (2–20)",
+    "splitSeconds": "≈ every N seconds",
+    "errSplitParts": "Split parts must be a whole number from 2 to 20",
+    "errSplitDuration": "Split duration must be a whole number of seconds (10 or more)"
+  },
+  "onboarding": {
+    "title": "Welcome to Tamp 👋",
+    "lead": "Shrink screen recordings to a size you can share — in four steps.",
+    "step1Title": "Open it",
+    "step1Detail": "Tamp sits in your tray, near the clock. On Windows it hides under the ^ overflow arrow. Press {shortcut} to show or hide this panel anytime.",
+    "step2Title": "Make a preset",
+    "step2Detail": "In Preferences, create one for where you share — say \"Discord\", capped at 10 MB. (Discord (10 MB) comes built in.)",
+    "step3Title": "Convert a recording",
+    "step3Detail": "Drop a video here, right-click one in Explorer → \"Compress with Tamp\", or press {shortcut} to shrink your latest.",
+    "step4Title": "Use it",
+    "step4Detail": "The smaller file is copied to your clipboard — just paste it wherever you're sharing.",
+    "updateConsentTitle": "Check for new versions automatically",
+    "updatePrivacyHint": "Only asks GitHub for the latest version — nothing about you is sent."
+  },
+  "update": {
+    "available": "Tamp {version} is available",
+    "body": "A newer version of Tamp is ready. Update whenever it suits you — this won't change anything until you choose to.",
+    "whatsNew": "What's new",
+    "download": "Download",
+    "later": "Later"
+  },
+  "drawer": {
+    "dismiss": "Dismiss",
+    "titleRunning": "Compressing… {running} running",
+    "titleRunningWithDone": "Compressing… {running} running, {done} done",
+    "titleIdle": "Conversions · {done} done",
+    "queued": "queued",
+    "doneSize": "✓ {size}",
+    "done": "✓ done",
+    "failed": "✕ failed",
+    "copyFile": "Copy compressed file",
+    "reveal": "Show in file manager",
+    "copiedToClipboard": "Copied to clipboard",
+    "cancelled": "Cancelled",
+    "queuedSummary": {
+      "one": "{count} queued",
+      "other": "{count} queued"
+    },
+    "more": {
+      "one": "+{count} more",
+      "other": "+{count} more"
+    }
+  },
+  "custom": {
+    "title": "Custom conversion",
+    "back": "Back",
+    "backTitle": "Back (Esc)",
+    "targetMb": "Target MB",
+    "format": "Format",
+    "maxFps": "Max FPS",
+    "maxWidth": "Max width",
+    "scalePercent": "Scale %",
+    "stripAudio": "Strip audio",
+    "widthScaleHint": "Max width and scale % are mutually exclusive.",
+    "convert": "Convert",
+    "errTargetSize": "Target size must be greater than 0 MB",
+    "errFpsWidthScale": "FPS, width and scale must be positive whole numbers"
+  },
+  "main": {
+    "tabVideos": "Videos",
+    "tabConverted": "Converted",
+    "tabPrefs": "Preferences",
+    "pinTitle": "Keep panel open",
+    "closeTitle": "Close panel",
+    "footerVideos": "↑↓ select · →← expand · ⏎ pick preset · 1–9 preset · esc close",
+    "footerConverted": "↑↓ select · ⏎ play · →/e expand · c copy · r reveal · esc close",
+    "footerPrefs": "esc close"
+  },
+  "errors": {
+    "generic": "Something went wrong. Check the logs (tray → Open Logs) for details.",
+    "recentsScan": "Couldn't refresh your recordings. Try again.",
+    "noLongerExists": "That file is no longer there — it may have been moved or deleted.",
+    "clipboard": "Couldn't copy the file. Try again, or reveal it in your file manager.",
+    "reveal": "Couldn't show the file in your file manager.",
+    "open": "Couldn't open the file — it may have been moved or deleted.",
+    "ffmpeg": "The video tool hit an error. Check the logs (tray → Open Logs) for details.",
+    "shortcut": "Couldn't update the keyboard shortcut."
+  },
+  "platform": {
+    "revealFinder": "Reveal in Finder",
+    "revealExplorer": "Show in Explorer"
+  }
+}

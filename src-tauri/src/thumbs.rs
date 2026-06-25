@@ -1,12 +1,8 @@
-use crate::scanner::RecentVideo;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Manager};
-use tokio::task::JoinSet;
-
-const MAX_CONCURRENT: usize = 4;
 
 /// Cache key over path|mtime|size, shared by the thumbnail and duration
 /// caches (`durations.rs`). DefaultHasher output may change across releases —
@@ -78,55 +74,39 @@ async fn generate(ffmpeg: &Path, input: &Path, output: &Path) -> bool {
     false
 }
 
-fn apply(videos: &mut [RecentVideo], idx: usize, thumb: Option<PathBuf>) {
-    if let (Some(video), Some(path)) = (videos.get_mut(idx), thumb) {
-        video.thumb_path = Some(path.to_string_lossy().into_owned());
-    }
-}
-
-pub async fn ensure_thumbs(app: &AppHandle, videos: &mut [RecentVideo]) {
-    let thumbs_dir = match app.path().app_cache_dir() {
+/// Resolves (creating it) the thumbnail cache directory.
+fn thumbs_dir(app: &AppHandle) -> Option<PathBuf> {
+    let dir = match app.path().app_cache_dir() {
         Ok(dir) => dir.join("thumbs"),
         Err(e) => {
             crate::log_warn!("cannot resolve cache dir for thumbnails: {e}");
-            return;
+            return None;
         }
     };
-    if let Err(e) = std::fs::create_dir_all(&thumbs_dir) {
+    if let Err(e) = std::fs::create_dir_all(&dir) {
         crate::log_warn!("cannot create thumbnail cache dir: {e}");
-        return;
+        return None;
+    }
+    Some(dir)
+}
+
+/// The cached thumbnail path for `path` (keyed over path|mtime|size).
+fn thumb_out(dir: &Path, path: &str) -> PathBuf {
+    let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    dir.join(format!("{}.jpg", cache_key(path, size_bytes)))
+}
+
+/// Ensures (generating on miss) a thumbnail for a single video and returns its
+/// cached path, or `None` on failure. Backs both the Videos tab's per-row lazy
+/// `recent_thumb` command and the Converted tab's `conversion_thumb` command.
+pub async fn ensure_one(app: &AppHandle, path: &Path) -> Option<String> {
+    let dir = thumbs_dir(app)?;
+    let out = thumb_out(&dir, &path.to_string_lossy());
+    if is_valid_thumb(&out) {
+        return Some(out.to_string_lossy().into_owned());
     }
     let ffmpeg = crate::encoder::bin::ffmpeg_path();
-
-    let mut pending: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
-    for (idx, video) in videos.iter_mut().enumerate() {
-        let out = thumbs_dir.join(format!("{}.jpg", cache_key(&video.path, video.size_bytes)));
-        if is_valid_thumb(&out) {
-            video.thumb_path = Some(out.to_string_lossy().into_owned());
-        } else {
-            pending.push((idx, PathBuf::from(&video.path), out));
-        }
-    }
-
-    let mut tasks: JoinSet<(usize, Option<PathBuf>)> = JoinSet::new();
-    for (idx, input, out) in pending {
-        while tasks.len() >= MAX_CONCURRENT {
-            match tasks.join_next().await {
-                Some(Ok((done_idx, thumb))) => apply(videos, done_idx, thumb),
-                Some(Err(e)) => crate::log_warn!("thumbnail task failed: {e}"),
-                None => break,
-            }
-        }
-        let ffmpeg = ffmpeg.clone();
-        tasks.spawn(async move {
-            let ok = generate(&ffmpeg, &input, &out).await;
-            (idx, ok.then_some(out))
-        });
-    }
-    while let Some(joined) = tasks.join_next().await {
-        match joined {
-            Ok((idx, thumb)) => apply(videos, idx, thumb),
-            Err(e) => crate::log_warn!("thumbnail task failed: {e}"),
-        }
-    }
+    generate(&ffmpeg, path, &out)
+        .await
+        .then(|| out.to_string_lossy().into_owned())
 }

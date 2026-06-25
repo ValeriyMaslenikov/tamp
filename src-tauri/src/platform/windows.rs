@@ -19,15 +19,44 @@ fn taskbar_is_light() -> bool {
         .unwrap_or(false)
 }
 
+/// The tray ink on a dark taskbar (the historical default).
+const WHITE_INK: [u8; 3] = [0xff, 0xff, 0xff];
+/// The tray ink on a light taskbar, where white would vanish.
+const NEAR_BLACK_INK: [u8; 3] = [0x26, 0x26, 0x2b];
+
 /// Ink for the tray glyph, contrasting with the current taskbar: white on the
 /// default dark taskbar, near-black on a light one (where white would vanish).
 fn tray_ink() -> [u8; 3] {
-    const WHITE: [u8; 3] = [0xff, 0xff, 0xff];
-    const NEAR_BLACK: [u8; 3] = [0x26, 0x26, 0x2b];
     if taskbar_is_light() {
-        NEAR_BLACK
+        NEAR_BLACK_INK
     } else {
-        WHITE
+        WHITE_INK
+    }
+}
+
+/// The dedup key for the tray's DISPLAYED state, so repeated calls that would
+/// paint the same icon are skipped. Folds together the encode progress and the
+/// taskbar ink (`light`): a live light/dark flip changes the key even while
+/// idle, so the ThemeChanged repaint isn't swallowed. Layout keeps every real
+/// key clear of the reserved sentinels — bits 0..32 hold the clamped queue
+/// depth, bits 32..63 the whole percent (0..=100), and bit 63 is set on a
+/// LIGHT taskbar.
+///
+/// `SEED_KEY` (distinct from any real key) is the pre-first-paint value so the
+/// very first call always paints; the two idle keys differ only in the ink bit
+/// so an idle theme flip still repaints.
+const INK_BIT: u64 = 1 << 63;
+const IDLE_DARK: u64 = u64::MAX >> 1; // every progress bit set, ink bit clear
+const IDLE_LIGHT: u64 = u64::MAX; // IDLE_DARK with the ink bit set
+const SEED_KEY: u64 = IDLE_DARK - 1; // never produced by any progress or idle key
+fn tray_dedup_key(progress: Option<TrayProgress>, light: bool) -> u64 {
+    let ink_key = if light { INK_BIT } else { 0 };
+    match progress {
+        None if light => IDLE_LIGHT,
+        None => IDLE_DARK,
+        Some(p) => {
+            ink_key | (u64::from(p.percent()) << 32) | (p.queued.min(u32::MAX as usize) as u64)
+        }
     }
 }
 
@@ -134,16 +163,14 @@ impl Platform for Windows {
     fn tray_progress(&self, app: &tauri::AppHandle, progress: Option<TrayProgress>) {
         // ffmpeg reports progress every few hundred ms; re-rasterizing the
         // ring and poking the shell is only worth it when the DISPLAYED state
-        // (whole percent + queue depth) actually changed. IDLE marks the
-        // cleared state; NEVER is the pre-first-paint seed so the very first
-        // call — including the startup idle paint — always draws the
-        // theme-aware icon (the tray was built with the unrecolored template).
-        const IDLE: u64 = u64::MAX;
-        const NEVER: u64 = u64::MAX - 1;
-        static LAST_SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(NEVER);
-        let shown = progress.map_or(IDLE, |p| {
-            (p.percent() as u64) << 32 | p.queued.min(u32::MAX as usize) as u64
-        });
+        // actually changed (see `tray_dedup_key`). The key folds in the taskbar
+        // ink so a live light/dark flip — which the on_window_event ThemeChanged
+        // hook surfaces as a tray_progress(None) repaint — redraws even while
+        // idle, instead of being swallowed as "same idle".
+        static LAST_SHOWN: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(SEED_KEY);
+        let ink = tray_ink();
+        let shown = tray_dedup_key(progress, ink == WHITE_INK);
         if LAST_SHOWN.swap(shown, std::sync::atomic::Ordering::Relaxed) == shown {
             return;
         }
@@ -151,14 +178,13 @@ impl Platform for Windows {
         let Some(tray) = app.tray_by_id("main") else {
             return;
         };
-        let ink = tray_ink();
         let result = match progress {
             Some(p) => {
                 let pct = p.percent();
                 let tooltip = if p.queued > 0 {
-                    format!("tamp — {pct}% (+{} queued)", p.queued)
+                    format!("Tamp — {pct}% (+{} queued)", p.queued)
                 } else {
-                    format!("tamp — {pct}%")
+                    format!("Tamp — {pct}%")
                 };
                 const SIZE: u32 = 32;
                 let icon = tauri::image::Image::new_owned(
@@ -171,7 +197,7 @@ impl Platform for Windows {
             }
             None => tray
                 .set_icon(Some(idle_icon(ink)))
-                .and_then(|()| tray.set_tooltip(Some("tamp"))),
+                .and_then(|()| tray.set_tooltip(Some("Tamp"))),
         };
         if let Err(e) = result {
             crate::log_warn!("failed to update tray progress: {e}");
@@ -218,5 +244,82 @@ impl Platform for Windows {
         // Windows hotkeys go through the active layout already (RegisterHotKey
         // is virtual-key based), so the configured character works as typed.
         accelerator.to_string()
+    }
+
+    fn cleanup_legacy_autostart(&self) {
+        // Nothing to clean at runtime: the autostart Run value is keyed by the
+        // product name "Tamp" (rewritten on enable), and the uninstaller drops
+        // both "Tamp" and the pre-rename legacy "tamp" (see nsis-hooks.nsh).
+        // There was never a legacy-identifier variant on Windows. See macOS impl.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tray_dedup_key, SEED_KEY};
+    use crate::platform::TrayProgress;
+
+    fn progress(fraction: f64, queued: usize) -> TrayProgress {
+        TrayProgress { fraction, queued }
+    }
+
+    // manual: on a Windows device, flip Settings → Personalization → Colors
+    // → mode while tamp sits idle in the tray; the idle glyph must immediately
+    // repaint to contrast the new taskbar (white⇄near-black), not stay
+    // invisible until the next encode.
+    #[test]
+    fn idle_key_changes_with_the_taskbar_ink() {
+        // The whole point: an idle theme flip must NOT dedup to the same key,
+        // or the ThemeChanged repaint would be swallowed and the glyph would
+        // keep the stale ink.
+        assert_ne!(
+            tray_dedup_key(None, true),
+            tray_dedup_key(None, false),
+            "idle-light and idle-dark must force a repaint"
+        );
+    }
+
+    #[test]
+    fn same_displayed_state_dedups() {
+        // Identical progress + ink ⇒ same key ⇒ the cheap path skips a redraw.
+        assert_eq!(
+            tray_dedup_key(Some(progress(0.5005, 2)), false),
+            tray_dedup_key(Some(progress(0.5004, 2)), false),
+            "both round to 50% with the same queue/ink"
+        );
+    }
+
+    #[test]
+    fn progress_ink_and_idle_keys_never_alias_the_seed_or_each_other() {
+        // SEED_KEY is the pre-first-paint value; no real key may equal it, or
+        // the first paint after seeding would be skipped.
+        let mut seen = std::collections::HashSet::new();
+        for &light in &[false, true] {
+            assert_ne!(tray_dedup_key(None, light), SEED_KEY);
+            assert!(
+                seen.insert(tray_dedup_key(None, light)),
+                "idle keys distinct"
+            );
+            for pct in 0..=100u32 {
+                for &queued in &[0usize, 1, u32::MAX as usize] {
+                    let key = tray_dedup_key(Some(progress(pct as f64 / 100.0, queued)), light);
+                    assert_ne!(key, SEED_KEY, "progress key aliased the seed");
+                    assert_ne!(
+                        key,
+                        tray_dedup_key(None, light),
+                        "progress key aliased an idle key"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_same_percent_under_different_ink_differs() {
+        assert_ne!(
+            tray_dedup_key(Some(progress(0.42, 0)), true),
+            tray_dedup_key(Some(progress(0.42, 0)), false),
+            "a live theme flip mid-encode must repaint the ring too"
+        );
     }
 }

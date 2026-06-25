@@ -29,3 +29,12 @@ public/autotest.json
 
 # demo assets for README screenshots (staged locally by scripts, never shipped)
 public/mock/
+
+# Playwright UI E2E artifacts
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Local UI mockup/scratch renders (not committed)
+.mockups/

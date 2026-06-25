@@ -359,7 +359,7 @@ async fn run_job(inner: &Arc<Inner>, job: &QueuedJob) -> Result<(), String> {
     // GOOD quality) falls through to the single-output path unchanged,
     // reusing the early probe.
     if job.preset.split.mode != SplitMode::Off {
-        let info = probe::probe(&job.input).await?;
+        let info = probe::probe_cached(&job.input).await?;
         let split = plan::plan_split(&info, &job.preset);
         if split.count > 1 {
             return run_split_set(inner, job, &info, split, &preset_hash, target_bytes).await;
@@ -426,9 +426,22 @@ async fn run_single(
 
     let info = match pre_probed {
         Some(info) => info,
-        None => probe::probe(&job.input).await?,
+        None => probe::probe_cached(&job.input).await?,
     };
     let mut plan = plan::build_plan(&info, &job.preset, &job.input)?;
+    // The output (and its `.part` temp sibling) is upgraded to the `\\?\`
+    // verbatim form at the write boundary so an everyday deep OneDrive/synced
+    // path past the legacy 260 MAX_PATH still writes on a default Windows.
+    // Only an UNFIXABLE over-length path (a component past the 255-char cap)
+    // is rejected here with an actionable error instead of a low-level ffmpeg
+    // failure.
+    // manual: on a default-off-LongPaths Windows, a recording in a deeply
+    // nested path (output > 260) now compresses instead of failing with
+    // "cannot move finished output into place"; an unavoidably-too-long path
+    // (a 256+ char name) fails with output_too_long_error() up front.
+    if plan::path_too_long(&plan.output) {
+        return Err(output_too_long_error());
+    }
     if plan.auto_fps.is_some() || plan.auto_width.is_some() {
         let caps: Vec<String> = plan
             .auto_fps
@@ -526,6 +539,21 @@ async fn run_single(
         .await?
     };
 
+    // Honor a cancel that landed in the post-encode window: the engine
+    // already promoted the output onto plan.output, but post-actions (trash
+    // original, clipboard) have not run yet. Discard the just-finished output
+    // and surface the cancel so process_job ends the job Cancelled with the
+    // original untouched — once a cancel is observed, NOTHING is trashed.
+    if !should_deliver(is_cancelled()) {
+        crate::log_info!(
+            "job {}: cancelled in the post-encode window; discarding {}",
+            job.id,
+            plan.output.display()
+        );
+        let _ = std::fs::remove_file(plan::to_verbatim(&plan.output));
+        return Err(CANCELLED_ERR.to_string());
+    }
+
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Verifying;
         j.progress = 1.0;
@@ -536,8 +564,14 @@ async fn run_single(
     // Defense in depth: the engines above already enforced the target on the
     // part file before renaming it onto plan.output, but a Done job must
     // NEVER carry an over-target output, so re-verify the delivered file one
-    // last time and fail (removing it) on any violation.
-    let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+    // last time and fail (removing it) on any violation. Stat via the verbatim
+    // form so a delivered path past 260 on Windows still resolves.
+    let actual = enforce_target(
+        &plan::to_verbatim(&plan.output),
+        actual,
+        target_bytes,
+        job.preset.target_mb,
+    )?;
 
     crate::log_info!(
         "job {}: done — {} -> {} ({actual} bytes, target {} MB)",
@@ -554,7 +588,16 @@ async fn run_single(
         &job.input,
         std::slice::from_ref(&plan.output),
     );
-    append_journal(inner, job, &plan.output, preset_hash, actual);
+    // One record per job: a single = a 1-output set.
+    append_journal(
+        inner,
+        job,
+        &[crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        }],
+        preset_hash,
+    );
     if let Some(state) = update_job(inner, &job.id, |j| {
         j.phase = Phase::Done;
         j.progress = 1.0;
@@ -589,6 +632,13 @@ async fn run_split_set(
         job.preset.format,
         n,
     );
+    // A split adds a folder level + a `.part` sibling, the longest path of the
+    // job. The folder/parts are written via the `\\?\` verbatim form below, so
+    // only an UNFIXABLE over-length part (a component past the 255-char cap) is
+    // rejected here with an actionable error.
+    if parts.iter().any(|p| plan::path_too_long(p)) {
+        return Err(output_too_long_error());
+    }
     crate::log_info!(
         "job {}: splitting {:.2}s into {n} parts of ~{:.2}s, each targeting {} MB",
         job.id,
@@ -635,15 +685,43 @@ async fn run_split_set(
     // clean folder (clears any stale parts from a prior geometry of this
     // hash), then encode the whole set onto the now-free expected paths.
     let folder = plan::expected_part_folder(&job.input, &job.preset.name, preset_hash);
-    if let Err(e) = plan::reset_dir(&folder) {
+    // Create the part folder via the `\\?\` verbatim form so a folder path
+    // past the legacy 260 MAX_PATH on Windows still resolves; the error keeps
+    // the clean, non-verbatim path for the message.
+    if let Err(e) = plan::reset_dir(&plan::to_verbatim(&folder)) {
         return Err(format!(
             "cannot prepare output folder {}: {e}",
             folder.display()
         ));
     }
 
-    match encode_part_set(inner, job, info, split, &parts, preset_hash, target_bytes).await {
-        Ok(total) => {
+    // A cancel observed in the post-encode window (the set finished but
+    // post-actions haven't run) must be honored: discard the whole set and
+    // end Cancelled with the original untouched. Mapped to the cancel
+    // sentinel so it flows through the same cleanup arm a mid-set cancel does
+    // (remove every promoted part + the folder); is_cancelled folds in
+    // shutdown exactly like the per-part closures.
+    let result = match encode_part_set(inner, job, info, split, &parts, target_bytes).await {
+        Ok(delivered)
+            if should_deliver(
+                inner.shutting_down.load(Ordering::SeqCst)
+                    || inner.cancelled.lock().unwrap().contains(&job.id),
+            ) =>
+        {
+            Ok(delivered)
+        }
+        Ok(_) => {
+            crate::log_info!(
+                "job {}: cancelled in the post-encode window; discarding the {n}-part set",
+                job.id
+            );
+            Err(CANCELLED_ERR.to_string())
+        }
+        Err(err) => Err(err),
+    };
+
+    match result {
+        Ok((total, delivered)) => {
             if let Some(state) = update_job(inner, &job.id, |j| {
                 j.phase = Phase::Verifying;
                 j.progress = 1.0;
@@ -656,6 +734,10 @@ async fn run_split_set(
                 job.input.display(),
                 job.preset.target_mb
             );
+            // One record per job: the whole set becomes a single N-output
+            // journal record, written here (past the post-encode cancel guard)
+            // so a cancel before delivery records nothing.
+            append_journal(inner, job, &delivered, preset_hash);
             // Clipboard gets ALL parts in order; the original is only ever
             // trashed once the FULL set succeeded.
             let post_error = run_post_actions(inner, &job.post, &job.input, &parts);
@@ -675,10 +757,13 @@ async fn run_split_set(
             // already cleared older files at these names, so everything here
             // is THIS run's own debris.
             for part in &parts {
-                if part.exists() {
-                    let _ = std::fs::remove_file(part);
+                // Route exists()/remove through the verbatim form so cleanup of
+                // a deep-tree part path past 260 on Windows is not a no-op.
+                let part_v = plan::to_verbatim(part);
+                if part_v.exists() {
+                    let _ = std::fs::remove_file(&part_v);
                 }
-                let tmp = plan::part_path(part);
+                let tmp = plan::to_verbatim(&plan::part_path(part));
                 if tmp.exists() {
                     let _ = std::fs::remove_file(&tmp);
                 }
@@ -695,17 +780,19 @@ async fn run_split_set(
 /// existing per-part pipeline (auto-degradation, convergence retries, .part
 /// temp + promote, enforce_target) with the input trimmed to its slice. The
 /// LAST part takes the remainder so the lengths sum to the exact duration.
-/// Returns the SUM of all part sizes; a failed part aborts the loop (the
-/// caller cleans up the half-set).
+/// Returns the SUM of all part sizes plus the delivered `{path, bytes}` of
+/// every part (in order) so the caller can write ONE journal record for the
+/// whole set; a failed part aborts the loop (the caller cleans up the
+/// half-set). The journal append is the caller's job, gated behind the
+/// post-encode cancel check, so a cancel before delivery records nothing.
 async fn encode_part_set(
     inner: &Arc<Inner>,
     job: &QueuedJob,
     info: &probe::ProbeInfo,
     split: plan::SplitPlan,
     parts: &[PathBuf],
-    preset_hash: &str,
     target_bytes: f64,
-) -> Result<u64, String> {
+) -> Result<(u64, Vec<crate::journal::Output>), String> {
     let n = split.count;
     let tmp = tempfile::tempdir().map_err(|e| format!("cannot create temp dir: {e}"))?;
 
@@ -728,6 +815,7 @@ async fn encode_part_set(
     };
 
     let mut total: u64 = 0;
+    let mut delivered: Vec<crate::journal::Output> = Vec::with_capacity(parts.len());
     for (idx, output) in parts.iter().enumerate() {
         let i = idx as u32 + 1;
         let start = split.part_secs * f64::from(i - 1);
@@ -819,18 +907,29 @@ async fn encode_part_set(
         };
 
         // The same defense in depth as the single-output path: a delivered
-        // part must NEVER be over target.
-        let actual = enforce_target(&plan.output, actual, target_bytes, job.preset.target_mb)?;
+        // part must NEVER be over target. Stat via the verbatim form so a
+        // delivered deep-tree part path past 260 on Windows still resolves.
+        let actual = enforce_target(
+            &plan::to_verbatim(&plan.output),
+            actual,
+            target_bytes,
+            job.preset.target_mb,
+        )?;
         crate::log_info!(
             "job {}: part {i}/{n} done — {} ({actual} bytes, target {} MB)",
             job.id,
             plan.output.display(),
             job.preset.target_mb
         );
-        append_journal(inner, job, &plan.output, preset_hash, actual);
+        // Accumulate this part for the single set-level journal record; the
+        // append happens once in the caller after the whole set is delivered.
+        delivered.push(crate::journal::Output {
+            path: plan.output.to_string_lossy().into_owned(),
+            bytes: actual,
+        });
         total += actual;
     }
-    Ok(total)
+    Ok((total, delivered))
 }
 
 /// Set-level reuse probe: `Some(sizes)` when EVERY path in `parts` is a real
@@ -951,6 +1050,29 @@ fn reuse_is_stale(app: &AppHandle, input: &Path, expected: &Path) -> bool {
         .is_some_and(|d| d.as_millis() as u64 > record.completed_at_ms)
 }
 
+/// Whether the just-finished output may be delivered (post-actions run, job
+/// goes Done). A cancel observed in the window between the engine returning
+/// `Ok` and post-actions running must be honored: the output is discarded and
+/// the original is NEVER trashed. `false` means the caller removes the output
+/// and returns the cancel sentinel so `process_job` ends the job Cancelled.
+fn should_deliver(is_cancelled: bool) -> bool {
+    !is_cancelled
+}
+
+/// The error a path returns when a cancel was observed. `process_job` keys
+/// Cancelled vs Failed off the cancelled set, not this string, so the exact
+/// text is only for the log — but it mirrors the in-engine cancel sentinel
+/// ([`run_ffmpeg_with_progress`] returns `"cancelled"`) for consistency.
+const CANCELLED_ERR: &str = "cancelled";
+
+/// The actionable error surfaced when the intended output (or a split part) is
+/// too long to write even with `\\?\` verbatim handling — a single path
+/// component past the filesystem's name cap. Points the user at the real fix
+/// (a shorter folder) instead of a low-level ffmpeg/rename failure.
+fn output_too_long_error() -> String {
+    "Output path is too long — move the recording to a shorter folder".to_string()
+}
+
 /// Final guarantee before a job goes Done: re-stat the output and confirm it
 /// fits the byte target. On violation the file is removed and the job fails
 /// with the actionable error — an oversized file must never be delivered.
@@ -1006,7 +1128,11 @@ fn promote_part(
     target_bytes: f64,
 ) -> Result<u64, String> {
     let actual = enforce_target(part, expected_len, target_bytes, target_bytes / 1_000_000.0)?;
-    if let Err(e) = std::fs::rename(part, output) {
+    // The `part` is already verbatim (the engine wrote it that way); address
+    // the rename DEST in the same `\\?\` form so a final path past the legacy
+    // 260 MAX_PATH on Windows can still be written. No-op off Windows.
+    let dest = plan::to_verbatim(output);
+    if let Err(e) = std::fs::rename(part, &dest) {
         let _ = std::fs::remove_file(part);
         return Err(format!("cannot move finished output into place: {e}"));
     }
@@ -1037,7 +1163,11 @@ pub async fn run_video_convergence(
     on_progress: &mut (dyn FnMut(u8, f64) + Send),
 ) -> Result<u64, String> {
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // ffmpeg writes the `.part` temp; on Windows that path can sit past the
+    // legacy 260 MAX_PATH in a deep synced tree, so address it in the `\\?\`
+    // verbatim form. The stored/displayed `plan.output` stays the clean,
+    // non-verbatim path; only the write boundary is upgraded.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = convergence_attempts(
         &mut work,
         info,
@@ -1261,14 +1391,15 @@ fn open_output_location(
     }
 }
 
-/// Records a successful (non-reused) encode in the conversion journal.
-/// Best-effort: skipped silently when the journal isn't managed (tests).
+/// Records a successful (non-reused) encode in the conversion journal as ONE
+/// record per job: `outputs` is the whole delivered set — a single-element
+/// slice for an ordinary job, every part in order for a split set. Best-effort:
+/// skipped silently when the journal isn't managed (tests).
 fn append_journal(
     inner: &Inner,
     job: &QueuedJob,
-    output: &Path,
+    outputs: &[crate::journal::Output],
     preset_hash: &str,
-    output_bytes: u64,
 ) {
     let Some(journal) = inner.app.try_state::<crate::journal::Journal>() else {
         return;
@@ -1288,13 +1419,22 @@ fn append_journal(
     journal.append(crate::journal::ConversionRecord {
         input_path: job.input.to_string_lossy().into_owned(),
         input_bytes,
-        output_path: output.to_string_lossy().into_owned(),
-        output_bytes,
+        outputs: outputs.to_vec(),
         preset_hash: preset_hash.to_string(),
         preset_name: job.preset.name.clone(),
         target_mb: job.preset.target_mb,
         completed_at_ms,
+        input_created_ms: input_created_ms(&job.input),
     });
+}
+
+fn input_created_ms(input: &std::path::Path) -> u64 {
+    std::fs::metadata(input)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Runs both software encode passes for `plan` — libx264 for mp4, libvpx-vp9
@@ -1424,7 +1564,9 @@ pub async fn run_gif(
         .gif
         .ok_or("gif plan is missing its palette parameters")?;
     let mut work = plan.clone();
-    work.output = plan::part_path(&plan.output);
+    // See run_video_convergence: write the `.part` via the `\\?\` verbatim
+    // form so a deep Windows path past 260 still encodes.
+    work.output = plan::to_verbatim(&plan::part_path(&plan.output));
     let result = gif_attempts(
         &work,
         info,
@@ -2082,6 +2224,30 @@ mod tests {
             "the symlink must be left alone"
         );
     }
+
+    #[test]
+    fn should_deliver_blocks_a_post_encode_cancel() {
+        // The post-encode window guard: a job may only deliver (run
+        // post-actions, go Done) when no cancel was observed. Once a cancel is
+        // seen, the output is discarded and the original is NEVER trashed.
+        assert!(should_deliver(false), "no cancel -> deliver");
+        assert!(!should_deliver(true), "cancel observed -> never deliver");
+    }
+
+    // manual: with a real ffmpeg on-device, enqueue an encode that trashes the
+    // original, then click Cancel during the brief Verifying phase (after the
+    // engine finishes, before Done). Expected: the job row ends Cancelled, the
+    // original file is still present (NOT in Trash), the clipboard was not
+    // written, and the just-finished output (single file, or every split part
+    // plus the now-empty part folder) is gone. Repeat for a split preset.
+
+    // manual: append_journal needs a managed Journal behind an AppHandle, which
+    // the unit/integration harnesses can't build, so the one-record-per-job
+    // contract is checked on-device. A single conversion appends ONE record
+    // with one output (its path/bytes); an N-part split appends exactly ONE
+    // record carrying N outputs (every part's path/bytes, in order) only on
+    // full delivery — a cancel before delivery records nothing. The journal's
+    // own tests cover the resulting outputs[] shape, dedup, and find-by-part.
 
     #[test]
     fn job_state_part_serializes_as_a_pair_under_part() {

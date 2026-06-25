@@ -1,6 +1,8 @@
 [package]
 name = "tamp"
-version = "0.1.0"
+# Kept in lockstep with package.json (the single source of version truth) by
+# `bun run sync-version`; CI also enforces a match. Do not hand-edit.
+version = "0.2.0"
 description = "Shrink screen recordings to a target size, right from your menu bar."
 authors = ["Valerii Maslenykov"]
 license = "MIT"
@@ -41,6 +43,17 @@ tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 # Free space on the output volume, logged when an encode attempt fails.
 fs4 = "0.13"
+# Minimal blocking HTTP client for the opt-in GitHub update check. We use the
+# OS-native TLS (`native-tls` → SChannel on Windows, Security.framework on
+# macOS) rather than rustls: rustls' crypto providers (ring / aws-lc-rs) need a
+# C/clang toolchain to build their aarch64 assembly, which isn't available on
+# the aarch64-pc-windows-msvc target this must compile for. native-tls keeps us
+# clear of OpenSSL on every platform tamp ships (Windows + macOS) while staying
+# a tiny blocking client. `json` parses the releases list into serde_json.
+ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }
+# Parses and orders release tags (incl. prerelease ordering) for "is there a
+# newer version?" without hand-rolling semver comparison.
+semver = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # CF_HDROP file lists — pasting outputs as files into Explorer/chat apps.

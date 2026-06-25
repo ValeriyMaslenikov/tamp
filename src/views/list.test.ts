@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isTerminal, shouldPickPreset, videoListSignature } from "./list";
+import {
+  failedRetryDecision,
+  isTerminal,
+  presetIndexForDigit,
+  shouldPickPreset,
+  videoListSignature,
+} from "./list";
 import type { RecentVideo } from "../lib/ipc";
 
 const video = (overrides: Partial<RecentVideo> = {}): RecentVideo => ({
@@ -26,6 +32,40 @@ describe("isTerminal", () => {
     expect(isTerminal("pass1")).toBe(false);
     expect(isTerminal("pass2")).toBe(false);
     expect(isTerminal("verifying")).toBe(false);
+  });
+});
+
+describe("presetIndexForDigit", () => {
+  it("maps '1' to the first preset", () => {
+    expect(presetIndexForDigit("1", 3)).toBe(0);
+  });
+  it("maps '3' to index 2 when in range", () => {
+    expect(presetIndexForDigit("3", 3)).toBe(2);
+  });
+  it("returns null when the digit is past the preset count", () => {
+    expect(presetIndexForDigit("4", 3)).toBeNull();
+  });
+  it("returns null for a non-digit", () => {
+    expect(presetIndexForDigit("x", 3)).toBeNull();
+  });
+});
+
+describe("failedRetryDecision", () => {
+  const presets = [{ id: "preset-fast" }, { id: "preset-tiny" }];
+
+  it("retries the same preset when it still exists", () => {
+    expect(failedRetryDecision("preset-tiny", presets)).toEqual({
+      kind: "retry",
+      presetId: "preset-tiny",
+    });
+  });
+
+  it("falls back to the picker when the failed job's preset was deleted", () => {
+    expect(failedRetryDecision("preset-gone", presets)).toEqual({ kind: "pick" });
+  });
+
+  it("falls back to the picker when there are no presets at all", () => {
+    expect(failedRetryDecision("preset-fast", [])).toEqual({ kind: "pick" });
   });
 });
 
@@ -86,6 +126,22 @@ describe("videoListSignature", () => {
         }),
       ]),
     ).not.toBe(orphan);
+  });
+
+  it("changes when a watched folder becomes unreachable", () => {
+    const base = videoListSignature([video()]);
+    const offline = videoListSignature([video()], ["\\\\nas\\recordings"]);
+    expect(offline).not.toBe(base);
+    // and is stable for the same unreachable set
+    expect(offline).toBe(
+      videoListSignature([video()], ["\\\\nas\\recordings"]),
+    );
+  });
+
+  it("defaults to no unreachable folders (back-compat)", () => {
+    expect(videoListSignature([video()])).toBe(
+      videoListSignature([video()], []),
+    );
   });
 
   it("is order-sensitive", () => {

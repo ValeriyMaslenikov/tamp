@@ -1,0 +1,55 @@
+name: Publish Wiki
+
+# Mirrors docs/wiki/ (the source of truth, versioned with the code) into the
+# GitHub Wiki repo (<repo>.wiki.git) whenever the docs change on main. GitHub has
+# no Wiki REST API — the wiki is only reachable over its own git remote — so we
+# push to it with the built-in GITHUB_TOKEN.
+#
+# ONE-TIME PREREQUISITE: the .wiki.git repo doesn't exist until the wiki is
+# initialized. Open the repo's Wiki tab once and "Create the first page" (any
+# content — this run overwrites it). After that, this workflow keeps it in sync.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/wiki/**"
+      - ".github/workflows/publish-wiki.yml"
+  workflow_dispatch: {} # allow publishing on demand
+
+permissions:
+  contents: write # lets GITHUB_TOKEN push to the same repo's wiki
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mirror docs/wiki → wiki repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" wiki
+
+          # Replace the page set: drop the old top-level *.md (keep .git), copy ours.
+          find wiki -maxdepth 1 -name '*.md' -delete
+          cp docs/wiki/*.md wiki/
+
+          cd wiki
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date — nothing to publish."
+            exit 0
+          fi
+          git commit -m "docs(wiki): sync from docs/wiki/ @ ${GITHUB_SHA::7}"
+          git push
+          echo "Published $(ls *.md | wc -l) wiki pages."

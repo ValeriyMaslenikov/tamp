@@ -72,8 +72,13 @@ pub(crate) fn work_area_corner(
     Some(tauri::PhysicalPosition::new(x, y))
 }
 
-/// Clipboard implementations need their paths as UTF-8; reject (rather than
-/// mangle) the exotic ones so the error names the offending file.
+/// Clipboard implementations need their paths as UTF-8. Recording paths are
+/// already screened upstream — the scanner rejects non-UTF-8 filenames at scan
+/// time (`scanner::is_supported_filename`), so a `RecentVideo` never carries a
+/// mangled path — so in practice every path reaching here is valid UTF-8. This
+/// stays a backstop for paths that arrive by other routes (an OS file drop, the
+/// native picker): rather than mangle an exotic one, it rejects so the error
+/// names the offending file instead of acting on a wrong/nonexistent path.
 fn paths_to_utf8(paths: &[PathBuf]) -> Result<Vec<String>, String> {
     if paths.is_empty() {
         return Err("no files to copy".to_string());
@@ -152,6 +157,18 @@ pub trait Platform {
     /// this (its hotkey API is positional); other platforms return the
     /// accelerator unchanged. See [`rewrite_accelerator_key`].
     fn resolve_accelerator(&self, accelerator: &str) -> String;
+
+    /// Best-effort removal of stale launch-at-login agents left by older builds,
+    /// run once at startup BEFORE the current agent ("Tamp") is re-enabled. Only
+    /// macOS leaves orphans worth cleaning: the autostart plugin names its
+    /// LaunchAgent plist by the product name, so the active `Tamp.plist` is
+    /// overwritten in place — but a build under the legacy bundle identifier
+    /// (`com.joystudios.tamp.plist`) and the pre-rename lowercase `tamp.plist`
+    /// are named differently and would otherwise linger, firing a missing/old
+    /// binary at every login. Windows has nothing to clean at runtime (the Run
+    /// value is rewritten on enable, and the uninstaller drops both "Tamp" and
+    /// the legacy "tamp"), so it's a no-op.
+    fn cleanup_legacy_autostart(&self);
 }
 
 /// Replaces the trailing key token of an accelerator ("CmdOrCtrl+Alt+T" ->

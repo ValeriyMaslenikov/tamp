@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct ProbeInfo {
@@ -7,6 +10,49 @@ pub struct ProbeInfo {
     pub height: u32,
     pub fps: f64,
     pub has_audio: bool,
+}
+
+/// Process-lifetime in-memory probe cache: the same `path|mtime|size` key the
+/// thumbnail/duration caches use (`thumbs::cache_key`) mapped to the full
+/// `ProbeInfo`. Lets a single open → hover → convert of one file spawn one
+/// ffprobe instead of three. Only **successful** probes are stored — a failure
+/// is never memoized, so a transient error or a since-fixed file re-probes.
+fn cache() -> &'static Mutex<HashMap<String, ProbeInfo>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, ProbeInfo>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The cache key for `path`, derived from its current path/mtime/size so a
+/// re-recorded file (same path, new content) misses and re-probes.
+fn key_for(path: &Path) -> String {
+    let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    crate::thumbs::cache_key(&path.to_string_lossy(), size_bytes)
+}
+
+/// Returns the cached `ProbeInfo` for `path`, or probes once with ffprobe and
+/// stores the result. Used by `durations::ensure_one`, `previews::generate`,
+/// and the encoder so the same file is probed at most once per content version.
+pub async fn probe_cached(path: &Path) -> Result<ProbeInfo, String> {
+    probe_cached_with(path, || probe(path)).await
+}
+
+/// Cache core, generic over the probe function so tests can inject a
+/// call-counting stub. Returns a cache hit without invoking `probe_fn`; on a
+/// miss it runs `probe_fn`, storing only a successful (`Ok`) result. Public so
+/// the integration suite can exercise the cache via the same injectable path
+/// the in-crate unit test uses — without spawning ffprobe.
+pub async fn probe_cached_with<F, Fut>(path: &Path, probe_fn: F) -> Result<ProbeInfo, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<ProbeInfo, String>>,
+{
+    let key = key_for(path);
+    if let Some(info) = cache().lock().unwrap().get(&key).cloned() {
+        return Ok(info);
+    }
+    let info = probe_fn().await?;
+    cache().lock().unwrap().insert(key, info.clone());
+    Ok(info)
 }
 
 pub async fn probe(path: &Path) -> Result<ProbeInfo, String> {
@@ -115,7 +161,8 @@ fn parse_frame_rate(rate: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_frame_rate;
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn parses_rational_frame_rates() {
@@ -124,5 +171,86 @@ mod tests {
         assert_eq!(parse_frame_rate("0/0"), 0.0);
         assert_eq!(parse_frame_rate("60"), 60.0);
         assert_eq!(parse_frame_rate(""), 0.0);
+    }
+
+    fn sample_info(duration: f64) -> ProbeInfo {
+        ProbeInfo {
+            duration_secs: duration,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            has_audio: true,
+        }
+    }
+
+    #[test]
+    fn second_lookup_hits_the_cache_without_reprobing() {
+        // A unique on-disk file so the path|mtime|size key can't collide with
+        // another test sharing the process-global cache.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mp4");
+        std::fs::write(&path, b"sample").unwrap();
+
+        let calls = AtomicUsize::new(0);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let first = runtime.block_on(probe_cached_with(&path, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(sample_info(12.0)) }
+        }));
+        assert_eq!(first.unwrap().duration_secs, 12.0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Second lookup for the same key must return the cached value and
+        // NOT invoke the probe fn again.
+        let second = runtime.block_on(probe_cached_with(&path, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(sample_info(99.0)) }
+        }));
+        assert_eq!(second.unwrap().duration_secs, 12.0);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "probe fn re-invoked on a hit"
+        );
+    }
+
+    #[test]
+    fn a_failed_probe_is_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mp4");
+        std::fs::write(&path, b"sample").unwrap();
+
+        let calls = AtomicUsize::new(0);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        // First probe fails — the failure must not be memoized.
+        let first = runtime.block_on(probe_cached_with(&path, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err("transient ffprobe failure".to_string()) }
+        }));
+        assert!(first.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A later probe for the same key re-invokes the probe fn (the Err was
+        // not cached) and this time succeeds.
+        let second = runtime.block_on(probe_cached_with(&path, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(sample_info(7.0)) }
+        }));
+        assert_eq!(second.unwrap().duration_secs, 7.0);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "Err was cached — fn not re-invoked"
+        );
+
+        // The successful probe IS now cached: a third lookup is a hit.
+        let third = runtime.block_on(probe_cached_with(&path, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(sample_info(123.0)) }
+        }));
+        assert_eq!(third.unwrap().duration_secs, 7.0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

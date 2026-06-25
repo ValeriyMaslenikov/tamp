@@ -1,0 +1,20 @@
+{
+  "name": "tamp-e2e-native",
+  "private": true,
+  "type": "module",
+  "description": "tauri-driver smoke suite for the built tamp app (WebdriverIO).",
+  "scripts": {
+    "test": "wdio run ./wdio.conf.ts"
+  },
+  "devDependencies": {
+    "@wdio/cli": "^9.20.0",
+    "@wdio/globals": "^9.20.0",
+    "@wdio/local-runner": "^9.20.0",
+    "@wdio/mocha-framework": "^9.20.0",
+    "@wdio/spec-reporter": "^9.20.0",
+    "@wdio/types": "^9.20.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.6.2",
+    "webdriverio": "^9.20.0"
+  }
+}

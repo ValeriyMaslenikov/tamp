@@ -10,6 +10,7 @@ pub mod settings;
 mod shortcuts;
 mod thumbs;
 mod tray;
+mod update_check;
 
 use platform::Platform as _;
 use std::sync::atomic::AtomicBool;
@@ -124,6 +125,33 @@ pub(crate) fn toggle_panel_fallback(app: &AppHandle) {
     show_panel_fallback(app);
 }
 
+/// True only when the `TAMP_E2E` env var is exactly `"1"`. Pure (takes the
+/// already-read value) so the guard is unit-testable without touching the
+/// process environment; any other value — including unset (`None`), empty, or
+/// `"0"` — keeps the test mode off.
+fn e2e_mode_enabled(var: Option<&str>) -> bool {
+    var == Some("1")
+}
+
+/// E2E test mode: when `TAMP_E2E=1` is set at startup, surface the panel and
+/// set the session pin so it stays open. The release-only hide-on-blur handler
+/// closes the panel the instant WebDriver's automation window takes focus
+/// (smart-hide); pinning it (the same flag the pin button toggles via
+/// `set_pin`) keeps it attachable so `tauri-driver` can drive the WebView2
+/// window. Strictly guarded by the env var: a complete no-op on every normal
+/// run (the var is never set outside the WDIO harness), so there is zero effect
+/// on shipped behavior.
+fn apply_e2e_mode(app: &AppHandle) {
+    if !e2e_mode_enabled(std::env::var("TAMP_E2E").ok().as_deref()) {
+        return;
+    }
+    log_info!("TAMP_E2E=1: showing and pinning the panel for WebDriver");
+    if let Some(state) = app.try_state::<Pinned>() {
+        state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    show_panel_fallback(app);
+}
+
 /// Whether the panel should hide when it loses focus. It stays open while a
 /// native dialog is up, while pinned, or while the primary mouse button is held
 /// (a drag is in flight and may be heading to us). Only the release-only
@@ -178,8 +206,13 @@ pub fn run() {
             migrate_legacy_data(app.handle());
             let loaded = settings::load(app.handle());
 
-            // The pre-rebrand LaunchAgent pointed at the old bundle
-            // identifier; re-enabling rewrites it against the current app.
+            // Drop any stale launch-at-login agent a pre-rebrand build left
+            // behind (a macOS LaunchAgent named by the legacy bundle id), then
+            // re-enable under the current identity. The modern agent is named by
+            // the rebrand-stable product name, so re-enabling rewrites it in
+            // place; this only sweeps the orphan the rename would miss. No-op on
+            // Windows.
+            platform::native().cleanup_legacy_autostart();
             if loaded.launch_at_login {
                 if let Err(e) = app.autolaunch().enable() {
                     log_warn!("failed to refresh launch-at-login agent: {e}");
@@ -246,9 +279,25 @@ pub fn run() {
             // tamp for the first time, or `tamp <file>` from a shell).
             let argv: Vec<String> = std::env::args().collect();
             compress_file_args(app.handle(), &argv);
+
+            // Guarded test mode (no-op unless TAMP_E2E=1): show + pin the panel
+            // so the tauri-driver smoke suite can attach to the WebView2 window.
+            apply_e2e_mode(app.handle());
             Ok(())
         })
         .on_window_event(|_window, _event| {
+            // A live system light/dark flip while idle must repaint the tray:
+            // platforms that recolor the glyph per taskbar theme (Windows) pick
+            // their ink at icon-update time, so without this the idle glyph can
+            // become invisible until the next encode. tray_progress(None) re-reads
+            // the current ink and repaints the idle icon; it's a no-op beyond a
+            // title clear on macOS, whose template icon auto-inverts. The
+            // app-theme event is the agreed best-effort proxy for the taskbar
+            // theme (the panel window pins no theme, so it's delivered).
+            if let tauri::WindowEvent::ThemeChanged(_) = _event {
+                platform::native().tray_progress(_window.app_handle(), None);
+            }
+
             // Hiding on focus loss is release-only: in dev the devtools window
             // steals focus and would close the panel the moment it opens.
             #[cfg(not(debug_assertions))]
@@ -275,6 +324,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_recents,
+            commands::unreachable_folders,
             commands::get_settings,
             commands::save_settings,
             commands::pick_folder,
@@ -282,14 +332,24 @@ pub fn run() {
             commands::custom_convert,
             commands::cancel_job,
             commands::queue_state,
+            commands::notification_permission,
+            commands::request_notification_permission,
+            commands::open_notification_settings,
             commands::ensure_preview,
             commands::copy_file,
+            commands::copy_files,
             commands::reveal,
             commands::os_info,
             commands::list_conversions,
             commands::set_context_menu,
             commands::set_pin,
-            commands::pick_videos
+            commands::pick_videos,
+            commands::open_file,
+            commands::open_url,
+            commands::conversion_thumb,
+            commands::recent_thumb,
+            commands::recent_duration,
+            update_check::check_for_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tamp");
@@ -334,6 +394,24 @@ mod arg_tests {
     fn returns_none_without_a_video_arg() {
         let args = vec!["tamp.exe".to_string(), "--toggle".to_string()];
         assert_eq!(first_video_arg(&args), None);
+    }
+}
+
+#[cfg(test)]
+mod e2e_mode_tests {
+    use super::e2e_mode_enabled;
+
+    #[test]
+    fn enabled_only_for_exactly_one() {
+        assert!(e2e_mode_enabled(Some("1")));
+    }
+
+    #[test]
+    fn disabled_when_unset_or_other_value() {
+        assert!(!e2e_mode_enabled(None), "unset");
+        assert!(!e2e_mode_enabled(Some("")), "empty");
+        assert!(!e2e_mode_enabled(Some("0")), "zero");
+        assert!(!e2e_mode_enabled(Some("true")), "true");
     }
 }
 

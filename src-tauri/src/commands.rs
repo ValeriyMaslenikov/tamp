@@ -8,8 +8,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 
-const RECENTS_LIMIT: usize = 8;
-
 const TRASH_MULTI_PRESET_ERR: &str = "'Move original to Trash' is on, so the original disappears after the first conversion — only one preset per video. Turn the toggle off in Preferences to export several formats.";
 
 fn lock_settings(state: &SettingsState) -> MutexGuard<'_, Settings> {
@@ -20,15 +18,17 @@ fn lock_settings(state: &SettingsState) -> MutexGuard<'_, Settings> {
 
 #[tauri::command]
 pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
-    let folders: Vec<PathBuf> = {
+    let (folders, limit): (Vec<PathBuf>, usize) = {
         let state = app.state::<SettingsState>();
         let guard = lock_settings(&state);
-        guard.watched_folders.iter().map(PathBuf::from).collect()
+        (
+            guard.watched_folders.iter().map(PathBuf::from).collect(),
+            guard.recents_limit,
+        )
     };
-    let mut videos =
-        tauri::async_runtime::spawn_blocking(move || scanner::scan(&folders, RECENTS_LIMIT))
-            .await
-            .map_err(|e| format!("recents scan failed: {e}"))?;
+    let mut videos = tauri::async_runtime::spawn_blocking(move || scanner::scan(&folders, limit))
+        .await
+        .map_err(|e| format!("recents scan failed: {e}"))?;
     // Orphaned outputs only know their on-disk size; the journal remembers
     // what they were compressed from and with which preset.
     if let Some(journal) = app.try_state::<crate::journal::Journal>() {
@@ -37,13 +37,40 @@ pub async fn list_recents(app: AppHandle) -> Result<Vec<RecentVideo>, String> {
                 if let Some(meta) = video.conversion.as_mut() {
                     meta.original_bytes = Some(record.input_bytes);
                     meta.preset_name = Some(record.preset_name);
+                    // The record can hold several outputs (a split set); use the
+                    // size recorded for the specific part this row is.
+                    if let Some(out) = record.outputs.iter().find(|o| o.path == video.path) {
+                        meta.output_bytes = out.bytes;
+                    }
                 }
             }
         }
     }
-    crate::thumbs::ensure_thumbs(&app, &mut videos).await;
-    crate::durations::fill(&app, &mut videos).await;
+    // Thumbnails and durations are NOT filled here: a cold cache would block the
+    // panel for many seconds (ffmpeg/ffprobe per miss, up to 200 videos). Rows
+    // return immediately with thumb_path/duration_secs = None; the frontend
+    // lazy-loads each row's thumbnail (`recent_thumb`) and duration
+    // (`recent_duration`) as it scrolls into view (mirrors the Converted tab).
     Ok(videos)
+}
+
+/// The watched folders that exist but can't be read right now (offline network
+/// drive, permission-denied), as display strings. Empty when every folder is
+/// reachable or merely not-yet-created. The Videos tab uses this to show a
+/// distinct "couldn't read <folder>" banner instead of the misleading
+/// "no recordings" empty state when a share is offline. `list_recents`' own
+/// return shape stays unchanged, so existing callers are unaffected.
+#[tauri::command]
+pub async fn unreachable_folders(app: AppHandle) -> Result<Vec<String>, String> {
+    let folders: Vec<PathBuf> = {
+        let state = app.state::<SettingsState>();
+        let guard = lock_settings(&state);
+        guard.watched_folders.iter().map(PathBuf::from).collect()
+    };
+    // read_dir on an offline UNC share can block, so probe off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || scanner::unreachable(&folders))
+        .await
+        .map_err(|e| format!("unreachable-folder probe failed: {e}"))
 }
 
 #[tauri::command]
@@ -347,12 +374,34 @@ pub async fn copy_file(app: AppHandle, path: String) -> Result<(), String> {
     .map_err(|e| format!("clipboard task failed: {e}"))?
 }
 
+/// Copies ALL `paths` to the clipboard in a single write (one CF_HDROP file
+/// list on Windows), so a multi-part group lands every part — unlike calling
+/// `copy_file` per path, where each write replaces the clipboard and only the
+/// last survives.
 #[tauri::command]
-pub fn reveal(app: AppHandle, path: String) {
+pub async fn copy_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    use crate::platform::Platform as _;
+    tauri::async_runtime::spawn_blocking(move || {
+        let pbs: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        crate::platform::native().copy_files_to_clipboard(&app, &pbs)
+    })
+    .await
+    .map_err(|e| format!("clipboard task failed: {e}"))?
+}
+
+/// Reveals `path` in the OS file manager (Finder/Explorer/…). Returns an error
+/// the frontend can toast: a moved/deleted output is caught by the existence
+/// pre-check (the opener would otherwise fail or silently no-op), mirroring
+/// `open_file`/`copy_file` so a real failure surfaces instead of only logging.
+#[tauri::command]
+pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt as _;
-    if let Err(e) = app.opener().reveal_item_in_dir(&path) {
-        crate::log_error!("failed to reveal {path}: {e}");
+    if !Path::new(&path).exists() {
+        return Err(format!("File no longer exists at {path}"));
     }
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| format!("couldn't reveal {path}: {e}"))
 }
 
 /// The backend OS ("macos" | "windows" | "linux") for per-platform UI labels.
@@ -361,7 +410,54 @@ pub fn os_info() -> &'static str {
     std::env::consts::OS
 }
 
-/// The conversion history (newest first) for the Converted tab.
+/// The current notification permission state as a lowercase string
+/// ("granted" | "denied" | "prompt" | "prompt-with-rationale" | "unsupported").
+/// Drives the Preferences "notifications are off" recovery row: only a real
+/// "denied" surfaces it. On desktop the notification plugin always reports
+/// "granted" (the OS owns the toggle), so the row stays hidden there.
+#[tauri::command]
+pub fn notification_permission(app: AppHandle) -> &'static str {
+    crate::shortcuts::permission_state_str(&app)
+}
+
+/// Re-requests the notification permission (the Preferences "Enable" button when
+/// notifications are off) and returns the resulting state in the same vocabulary
+/// as `notification_permission`. A hard OS-level deny is unaffected — the user
+/// must flip it in System Settings — but the call is safe and reports back.
+#[tauri::command]
+pub fn request_notification_permission(app: AppHandle) -> &'static str {
+    crate::shortcuts::request_permission_str(&app)
+}
+
+/// Deep-links to the OS notifications settings so a user with a hard "denied"
+/// state (where re-requesting is a no-op, e.g. macOS) has a one-click recovery
+/// path instead of hunting through System Settings by hand. The per-OS URL is
+/// `#[cfg]`-gated; on platforms without a known deep link this is an Ok no-op so
+/// the frontend can offer the button unconditionally without erroring.
+#[tauri::command]
+pub fn open_notification_settings(app: AppHandle) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        use tauri_plugin_opener::OpenerExt as _;
+        #[cfg(target_os = "macos")]
+        let url = "x-apple.systempreferences:com.apple.preference.notifications";
+        #[cfg(target_os = "windows")]
+        let url = "ms-settings:notifications";
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|e| format!("couldn't open notification settings: {e}"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+/// The conversion history (newest first) for the Converted tab. The source's
+/// creation time is frozen in the record: it's captured at encode time and
+/// backfilled once during the journal's one-time migration, never re-read live
+/// here (a moved/edited source must not change the recorded "Created" time).
 #[tauri::command]
 pub fn list_conversions(app: AppHandle) -> Vec<crate::journal::ConversionRecord> {
     app.try_state::<crate::journal::Journal>()
@@ -432,6 +528,53 @@ pub fn set_pin(app: AppHandle, pinned: bool) {
     if let Some(state) = app.try_state::<crate::Pinned>() {
         state.0.store(pinned, Ordering::SeqCst);
     }
+}
+
+/// Opens `path` in the OS default application (used by the Converted tab's
+/// ▶ play button to preview an output).
+#[tauri::command]
+pub fn open_file(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt as _;
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| format!("couldn't open {path}: {e}"))
+}
+
+/// Opens an external `url` in the default browser. Backs the update-available
+/// modal's "What's new" / "Download" actions: opening through Rust keeps the
+/// panel window's CSP and capabilities unchanged (no opener permission for the
+/// frontend). Mirrors `open_notification_settings`' opener use.
+#[tauri::command]
+pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt as _;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("couldn't open {url}: {e}"))
+}
+
+/// Ensures (generating on miss) a thumbnail for a single video and returns its
+/// cached path, or None on failure. Backs the Converted tab's per-row preview.
+#[tauri::command]
+pub async fn conversion_thumb(app: AppHandle, path: String) -> Option<String> {
+    // Reuse the same single-frame thumbnail generation ensure_thumbs uses.
+    crate::thumbs::ensure_one(&app, Path::new(&path)).await
+}
+
+/// Ensures (generating on miss) a thumbnail for one recent video, returning its
+/// cached path or None. The Videos tab calls this per row as it scrolls into
+/// view so the panel opens instantly instead of blocking on the whole list.
+#[tauri::command]
+pub async fn recent_thumb(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    Ok(crate::thumbs::ensure_one(&app, Path::new(&path)).await)
+}
+
+/// Resolves the duration (seconds) for one recent video: a cache hit returns
+/// immediately, a miss probes once with ffprobe and caches the result. The
+/// Videos tab calls this per row (lazy, like `recent_thumb`). None when the
+/// probe fails (retried on the next listing).
+#[tauri::command]
+pub async fn recent_duration(app: AppHandle, path: String) -> Result<Option<f64>, String> {
+    Ok(crate::durations::ensure_one(&app, Path::new(&path)).await)
 }
 
 #[cfg(test)]
@@ -527,17 +670,36 @@ mod scope_tests {
     use super::dir_to_allow;
     use std::path::{Path, PathBuf};
 
+    // `dir_to_allow`'s containment/parent logic is the same on every OS, but the
+    // literals must use the test platform's own separators and root — a Windows
+    // `C:\…` string is a single (parent-less) component on Unix, so reuse one set
+    // of paths per OS.
+    #[cfg(windows)]
+    mod paths {
+        pub const WATCHED: &str = "C:\\Users\\me\\Videos";
+        pub const OUTSIDE_FILE: &str = "C:\\Downloads\\clip.mp4";
+        pub const OUTSIDE_DIR: &str = "C:\\Downloads";
+        pub const INSIDE_FILE: &str = "C:\\Users\\me\\Videos\\rec.mp4";
+    }
+    #[cfg(not(windows))]
+    mod paths {
+        pub const WATCHED: &str = "/home/me/Videos";
+        pub const OUTSIDE_FILE: &str = "/home/me/Downloads/clip.mp4";
+        pub const OUTSIDE_DIR: &str = "/home/me/Downloads";
+        pub const INSIDE_FILE: &str = "/home/me/Videos/rec.mp4";
+    }
+
     #[test]
     fn allows_parent_of_a_file_outside_watched_folders() {
-        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
-        let got = dir_to_allow(Path::new("C:\\Downloads\\clip.mp4"), &watched);
-        assert_eq!(got, Some(PathBuf::from("C:\\Downloads")));
+        let watched = vec![paths::WATCHED.to_string()];
+        let got = dir_to_allow(Path::new(paths::OUTSIDE_FILE), &watched);
+        assert_eq!(got, Some(PathBuf::from(paths::OUTSIDE_DIR)));
     }
 
     #[test]
     fn skips_files_already_inside_a_watched_folder() {
-        let watched = vec!["C:\\Users\\me\\Videos".to_string()];
-        let got = dir_to_allow(Path::new("C:\\Users\\me\\Videos\\rec.mp4"), &watched);
+        let watched = vec![paths::WATCHED.to_string()];
+        let got = dir_to_allow(Path::new(paths::INSIDE_FILE), &watched);
         assert_eq!(got, None);
     }
 }
