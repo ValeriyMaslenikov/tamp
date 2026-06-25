@@ -5,9 +5,23 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::platform::Platform as _;
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    // A disabled item at the top shows the running version at a glance (handy
+    // when reporting a bug); "Help (Wiki)" opens the docs in the browser.
+    let version =
+        MenuItemBuilder::with_id("version", format!("Tamp v{}", app.package_info().version))
+            .enabled(false)
+            .build(app)?;
+    let wiki = MenuItemBuilder::with_id("wiki", "Help (Wiki)").build(app)?;
     let open_logs = MenuItemBuilder::with_id("open-logs", "Open Logs").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit Tamp").build(app)?;
-    let menu = MenuBuilder::new(app).item(&open_logs).item(&quit).build()?;
+    let menu = MenuBuilder::new(app)
+        .item(&version)
+        .separator()
+        .item(&wiki)
+        .item(&open_logs)
+        .separator()
+        .item(&quit)
+        .build()?;
 
     TrayIconBuilder::with_id("main")
         .icon(tauri::include_image!("icons/trayicon.png"))
@@ -17,6 +31,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open-logs" => open_logs_dir(app),
+            "wiki" => open_wiki(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -35,6 +50,16 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+const WIKI_URL: &str = "https://github.com/ValeriyMaslenikov/tamp/wiki";
+
+/// Opens the project wiki (end-user docs) in the default browser.
+fn open_wiki(app: &AppHandle) {
+    use tauri_plugin_opener::OpenerExt as _;
+    if let Err(e) = app.opener().open_url(WIKI_URL, None::<&str>) {
+        crate::log_error!("failed to open wiki {WIKI_URL}: {e}");
+    }
 }
 
 /// Opens the app's log directory in the system file manager. The dir is

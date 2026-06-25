@@ -168,7 +168,10 @@
     "notificationsEnabled": "Notifications enabled",
     "removeFolder": "Remove folder",
     "addFolder": "+ Add folder",
-    "version": "{name} v{version}"
+    "version": "{name} v{version}",
+    "linkHomepage": "Homepage",
+    "linkWiki": "Wiki",
+    "linkReleases": "Releases"
   },
   "forms": {
     "splitIntoParts": "Split into parts",

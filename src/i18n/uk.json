@@ -172,7 +172,10 @@
     "notificationsEnabled": "Сповіщення увімкнено",
     "removeFolder": "Вилучити папку",
     "addFolder": "+ Додати папку",
-    "version": "{name} v{version}"
+    "version": "{name} v{version}",
+    "linkHomepage": "Репозиторій",
+    "linkWiki": "Wiki",
+    "linkReleases": "Випуски"
   },
   "forms": {
     "splitIntoParts": "Розбити на частини",

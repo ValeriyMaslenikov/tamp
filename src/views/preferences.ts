@@ -4,6 +4,7 @@ import {
   getSettings,
   notificationPermission,
   openNotificationSettings,
+  openUrl,
   pickFolder,
   requestNotificationPermission,
   saveSettings,
@@ -153,17 +154,47 @@ export function createPreferencesView(opts: {
     el.append(sectionLabel(t("prefs.sectionShortcuts")), shortcutsCard());
     el.append(sectionLabel(t("prefs.sectionWatchedFolders")), foldersCard());
     el.append(sectionLabel(t("prefs.sectionAppearance")), appearanceCard());
-    el.append(versionLine());
+    el.append(versionFooter());
   }
 
-  function versionLine(): HTMLElement {
+  /** App version + quick links (Homepage · Wiki · Releases) to find info and
+   *  get help. Links open externally via the Rust opener. */
+  function versionFooter(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "version-footer";
+
     const line = document.createElement("div");
     line.className = "version-line";
     line.textContent = t("app.name");
     void getVersion().then((v) => {
       line.textContent = t("prefs.version", { name: t("app.name"), version: v });
     });
-    return line;
+
+    const links = document.createElement("div");
+    links.className = "version-links";
+    const repo = "https://github.com/ValeriyMaslenikov/tamp";
+    const items: ReadonlyArray<[string, string]> = [
+      [t("prefs.linkHomepage"), repo],
+      [t("prefs.linkWiki"), `${repo}/wiki`],
+      [t("prefs.linkReleases"), `${repo}/releases`],
+    ];
+    items.forEach(([label, url], i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "version-sep";
+        sep.setAttribute("aria-hidden", "true");
+        sep.textContent = "·";
+        links.append(sep);
+      }
+      const link = button(label, "version-link");
+      link.addEventListener("click", () => {
+        void openUrl(url).catch((e) => showToast(friendlyError(e), "error"));
+      });
+      links.append(link);
+    });
+
+    wrap.append(line, links);
+    return wrap;
   }
 
   function sectionLabel(text: string): HTMLElement {

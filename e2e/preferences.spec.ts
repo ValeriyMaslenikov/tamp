@@ -72,4 +72,22 @@ test.describe("preferences", () => {
     // The control snaps back to the persisted value (50).
     await expect(limitInput).toHaveValue("50");
   });
+
+  test("the footer Wiki link opens the wiki URL externally", async ({
+    tamp,
+    page,
+  }) => {
+    await tamp.goto();
+    await page.locator("#tab-prefs").click();
+    await expect(page.locator(".view-prefs")).toBeVisible();
+
+    await page.locator(".version-link", { hasText: "Wiki" }).click();
+
+    await expect
+      .poll(async () => {
+        const calls = await tamp.calls();
+        return calls.find((c) => c.cmd === "open_url")?.args?.url;
+      })
+      .toBe("https://github.com/ValeriyMaslenikov/tamp/wiki");
+  });
 });
