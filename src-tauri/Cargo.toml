@@ -2,7 +2,7 @@
 name = "tamp"
 # Kept in lockstep with package.json (the single source of version truth) by
 # `bun run sync-version`; CI also enforces a match. Do not hand-edit.
-version = "0.2.0"
+version = "0.3.0"
 description = "Shrink screen recordings to a target size, right from your menu bar."
 authors = ["Valerii Maslenykov"]
 license = "MIT"
