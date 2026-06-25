@@ -9,9 +9,10 @@ async function settle(page: Page): Promise<void> {
 }
 
 export async function shootStills(browser: Browser, outDir: string): Promise<void> {
-  // 1) Videos list (hero) — quick-pick layout.
+  // 1) Videos list (hero) — active-bar layout, matching the conversion GIF (the
+  //    persistent "Compress with ‹Discord (10MB)›" bar is visible).
   {
-    const { context, page } = await bootPanel(browser, { layout: "quick-pick", still: true });
+    const { context, page } = await bootPanel(browser, { layout: "active-bar", still: true });
     await settle(page);
     await page.screenshot({ path: join(outDir, "panel.png") });
     await context.close();
