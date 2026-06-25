@@ -8,6 +8,7 @@ import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { bootPanel } from "./harness";
 import { demoRecents } from "./demo-data";
+import { GIF_PAD, viewport } from "./frame";
 import type { JobState, Phase } from "../../src/lib/ipc";
 
 const STAR = demoRecents().find((r) => r.name.startsWith("ranked-match"))!; // 895 MB → big drop
@@ -48,9 +49,12 @@ export async function shootGif(
 ): Promise<void> {
   rmSync(scratchDir, { recursive: true, force: true });
   // active-bar layout: one click on a row converts with the visible preset.
+  // Tight framing so the panel fills the frame and its text is legible when the
+  // GIF is embedded near its native width.
   const { context, page } = await bootPanel(browser, {
     layout: "active-bar",
     recordVideoDir: scratchDir,
+    pad: GIF_PAD,
   });
 
   // Beat 1: hold on the list (thumbnails settled).
@@ -84,10 +88,11 @@ export async function shootGif(
   const src = join(scratchDir, webm);
 
   // Two-pass palette GIF: generate an optimized 128-colour palette, then apply
-  // it. 380px wide (displayed at 360 in the README → ~1:1, crisp) at 12fps keeps
-  // motion smooth while holding the file size down on the gradient backdrop.
+  // it. Encoded at the tight frame's native width so the panel text stays crisp
+  // and legible when embedded ~1:1. 12fps keeps motion smooth without bloating.
+  const gifW = viewport(GIF_PAD).width; // 464
   const palette = join(scratchDir, "palette.png");
-  const vf = "fps=12,scale=380:-1:flags=lanczos";
+  const vf = `fps=12,scale=${gifW}:-1:flags=lanczos`;
   execFileSync("ffmpeg", [
     "-y", "-i", src,
     "-vf", `${vf},palettegen=stats_mode=diff:max_colors=128`,

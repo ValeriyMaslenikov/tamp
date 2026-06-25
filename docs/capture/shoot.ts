@@ -46,7 +46,7 @@ async function main(): Promise<void> {
       console.log("• shooting stills");
       await shootStills(browser, DOCS);
       console.log("• shooting the conversion gif");
-      await shootGif(browser, join(DOCS, "convert.gif"), join(SCRATCH, "gif"));
+      await shootGif(browser, join(DOCS, "demo.gif"), join(SCRATCH, "gif"));
     } finally {
       await browser.close();
     }

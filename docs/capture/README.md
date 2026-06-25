@@ -25,7 +25,7 @@ This regenerates the emoji thumbnails, starts a throwaway Vite server on port
 - `docs/preset-quickpick.png`, `docs/preset-active-bar.png` — preset layouts
 - `docs/preferences.png` — Preferences tab
 - `docs/expanded.png` — an expanded row with preview + preset chips
-- `docs/convert.gif` — the one-click conversion demo
+- `docs/demo.gif` — the one-click conversion demo
 
 ## Editing the demo cast
 

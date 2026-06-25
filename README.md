@@ -35,7 +35,7 @@ no account.
 </p>
 
 <p align="center">
-  <img src="docs/convert.gif" width="360" alt="compressing a recording in one click — click a video, watch it shrink under the target" />
+  <img src="docs/demo.gif" width="460" alt="compressing a recording in one click — click a video, watch it shrink under the target" />
 </p>
 
 ## 📖 Documentation

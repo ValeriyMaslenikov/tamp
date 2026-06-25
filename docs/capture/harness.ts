@@ -12,7 +12,7 @@ import { installTauriMock } from "../../e2e/mock-ipc";
 import { defaultSettings } from "../../e2e/canned";
 import type { Settings } from "../../src/lib/ipc";
 import { demoRecents, demoConversions, THUMB_BY_PATH } from "./demo-data";
-import { FRAME_CSS, STILL_TWEAKS_CSS, VIEW_W, VIEW_H } from "./frame";
+import { frameCss, STILL_TWEAKS_CSS, STILL_PAD, viewport } from "./frame";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const THUMBS = join(HERE, "thumbs");
@@ -26,6 +26,8 @@ export interface BootOpts {
   settings?: Partial<Settings>;
   recordVideoDir?: string;
   still?: boolean;
+  /** Backdrop padding around the panel; defaults to the roomy still framing. */
+  pad?: { x: number; y: number };
 }
 
 export async function bootPanel(
@@ -40,11 +42,13 @@ export async function bootPanel(
     ...opts.settings,
   } as unknown as Record<string, unknown>;
 
+  const pad = opts.pad ?? STILL_PAD;
+  const view = viewport(pad);
   const context = await browser.newContext({
-    viewport: { width: VIEW_W, height: VIEW_H },
+    viewport: view,
     deviceScaleFactor: 2,
     ...(opts.recordVideoDir
-      ? { recordVideo: { dir: opts.recordVideoDir, size: { width: VIEW_W, height: VIEW_H } } }
+      ? { recordVideo: { dir: opts.recordVideoDir, size: view } }
       : {}),
   });
 
@@ -106,7 +110,7 @@ export async function bootPanel(
   await page.goto(BASE_URL);
   await page.waitForSelector(".panel .seg", { state: "attached" });
 
-  await page.addStyleTag({ content: FRAME_CSS });
+  await page.addStyleTag({ content: frameCss(pad) });
   if (opts.still) await page.addStyleTag({ content: STILL_TWEAKS_CSS });
 
   return { context, page };
